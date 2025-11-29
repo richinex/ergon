@@ -1,39 +1,58 @@
-//! Deferred Execution Module for Auto-Parallel Steps
+//! DAG (Directed Acyclic Graph) Parallel Execution Module
 //!
-//! This module provides a `StepHandle` type that enables deferred step execution.
-//! Instead of executing immediately when awaited, steps return handles that are
-//! collected and resolved in parallel at the end of the flow.
+//! This module enables automatic parallel execution of independent steps by building
+//! a dependency graph at runtime and executing steps in topological order.
+//!
+//! # Design Decision Hidden
+//!
+//! Following Parnas's information hiding principle, this module hides:
+//! **"How parallel DAG execution works"**
+//!
+//! The implementation uses deferred handles and dependency tracking, but users
+//! only see the high-level DAG flow abstraction.
 //!
 //! # How It Works
 //!
 //! 1. Steps return `StepHandle<T>` instead of `T` directly
 //! 2. The handle contains step metadata and a factory function
 //! 3. When handles are used as inputs to other steps, dependencies are tracked
-//! 4. At flow completion, the `DeferredExecutor` resolves all handles in parallel
+//! 4. The `DeferredExecutor` builds a dependency graph (DAG)
+//! 5. At flow completion, independent steps execute in parallel via tokio::spawn
+//! 6. Dependent steps wait for their dependencies to complete first
 //!
-//! # Example (Conceptual)
+//! # Example
 //!
 //! ```ignore
-//! #[deferred_step]
-//! async fn fetch_user(&self) -> User { ... }
+//! #[dag_flow]
+//! async fn process_order(self: Arc<Self>) -> OrderResult {
+//!     // These three steps are independent - execute in parallel
+//!     let user = self.fetch_user();           // StepHandle<User>
+//!     let inventory = self.check_inventory(); // StepHandle<Inventory>
+//!     let pricing = self.get_pricing();       // StepHandle<Price>
 //!
-//! #[deferred_step(depends_on = ["fetch_user"])]
-//! async fn validate(&self, user: User) -> bool { ... }
+//!     // This step depends on all three above - waits for them
+//!     let validated = self.validate_order(user, inventory, pricing);
 //!
-//! #[deferred_flow]
-//! async fn process(&self) -> Result {
-//!     let user = self.fetch_user();        // Returns StepHandle<User>
-//!     let valid = self.validate(user);     // Returns StepHandle<bool>, auto-deps on user
-//!     valid  // At return, all handles resolve in parallel
+//!     // Final step depends on validation
+//!     self.charge_card(validated)
 //! }
 //! ```
 //!
-//! # Key Insight from Research
+//! # Parallelism
+//!
+//! - `fetch_user`, `check_inventory`, `get_pricing` run in parallel (no dependencies)
+//! - `validate_order` waits for all three to complete
+//! - `charge_card` waits for `validate_order`
+//!
+//! # Comparison with Sequential Execution
+//!
+//! - **Sequential flows** (`#[flow]`): Steps execute one at a time in order
+//! - **DAG flows** (`#[dag_flow]`): Independent steps execute in parallel
 //!
 //! Similar to how [Temporal](https://temporal.io) handles activities - they return
 //! promises that are resolved by the workflow engine, not immediately.
 
-use super::{ExecutionError, Result};
+use super::error::{ExecutionError, Result};
 use crate::core::{deserialize_value, serialize_value};
 use crate::graph::{FlowGraph, StepId};
 use petgraph::dot::{Config, Dot};
