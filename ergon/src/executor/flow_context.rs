@@ -111,10 +111,7 @@ impl<S: ExecutionLog + 'static> FlowContext<S> {
 
         handle.block_on(async {
             EXECUTION_CONTEXT
-                .scope(
-                    erased_ctx,
-                    CALL_TYPE.scope(CallType::Run, async { f() }),
-                )
+                .scope(erased_ctx, CALL_TYPE.scope(CallType::Run, async { f() }))
                 .await
         })
     }
@@ -126,8 +123,12 @@ impl<S: ExecutionLog + 'static> FlowContext<S> {
     fn create_erased_context(&self) -> Arc<ExecutionContext<Box<dyn ExecutionLog>>> {
         // We need to create a new context with the storage wrapped in a Box
         // This allows us to store it in the non-generic task-local
-        let boxed_storage: Box<dyn ExecutionLog> = Box::new(StorageWrapper(Arc::clone(&self.context.storage)));
-        Arc::new(ExecutionContext::new(self.context.id, Arc::new(boxed_storage)))
+        let boxed_storage: Box<dyn ExecutionLog> =
+            Box::new(StorageWrapper(Arc::clone(&self.context.storage)));
+        Arc::new(ExecutionContext::new(
+            self.context.id,
+            Arc::new(boxed_storage),
+        ))
     }
 }
 
@@ -159,7 +160,9 @@ impl<S: ExecutionLog> ExecutionLog for StorageWrapper<S> {
         step: i32,
         return_value: &[u8],
     ) -> crate::storage::Result<crate::core::Invocation> {
-        self.0.log_invocation_completion(id, step, return_value).await
+        self.0
+            .log_invocation_completion(id, step, return_value)
+            .await
     }
 
     async fn get_invocation(

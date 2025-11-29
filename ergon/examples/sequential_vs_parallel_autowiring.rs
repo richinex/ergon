@@ -81,10 +81,7 @@ impl OrderFlowOld {
 
     // VERBOSE: Must specify both depends_on AND inputs
     #[step(depends_on = "fetch_customer", inputs(customer = "fetch_customer"))]
-    async fn validate_credit(
-        self: Arc<Self>,
-        customer: Customer,
-    ) -> Result<bool, String> {
+    async fn validate_credit(self: Arc<Self>, customer: Customer) -> Result<bool, String> {
         println!("[OLD] Validating credit for: {}", customer.name);
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(customer.credit_score > 600)
@@ -191,10 +188,7 @@ impl OrderFlowNew {
 
     // CLEAN: Only inputs needed! Auto-depends on fetch_customer
     #[step(inputs(customer = "fetch_customer"))]
-    async fn validate_credit(
-        self: Arc<Self>,
-        customer: Customer,
-    ) -> Result<bool, String> {
+    async fn validate_credit(self: Arc<Self>, customer: Customer) -> Result<bool, String> {
         println!("[NEW] Validating credit for: {}", customer.name);
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(customer.credit_score > 600)
@@ -259,10 +253,10 @@ impl OrderFlowNew {
     #[flow]
     async fn process_new(self: Arc<Self>) -> Result<OrderResult, String> {
         self.register_fetch_customer();
-        self.register_validate_credit();  // Auto-depends on fetch_customer
-        self.register_fetch_product();    // Parallel with validate_credit
+        self.register_validate_credit(); // Auto-depends on fetch_customer
+        self.register_fetch_product(); // Parallel with validate_credit
         self.register_authorize_payment(); // Auto-depends on both above
-        self.register_finalize_order()    // Auto-depends on all three
+        self.register_finalize_order() // Auto-depends on all three
     }
 }
 

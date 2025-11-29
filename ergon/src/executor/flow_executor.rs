@@ -10,9 +10,7 @@
 //! decisions about how flows are executed, allowing the execution strategy
 //! to change without affecting other modules.
 
-use super::{
-    flow_context::FlowContext, ExecutionError, Result, RESUME_PARAMS, WAIT_NOTIFIERS,
-};
+use super::{flow_context::FlowContext, ExecutionError, Result, RESUME_PARAMS, WAIT_NOTIFIERS};
 use crate::core::{serialize_value, InvocationStatus};
 use crate::storage::ExecutionLog;
 use std::sync::Arc;
@@ -144,13 +142,15 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
         let params_bytes = serialize_value(params)?;
 
         {
-            let mut resume_params = RESUME_PARAMS.lock()
+            let mut resume_params = RESUME_PARAMS
+                .lock()
                 .expect("RESUME_PARAMS Mutex poisoned - unrecoverable state");
             resume_params.insert(self.id, params_bytes);
         }
 
         let notifier = {
-            let mut notifiers = WAIT_NOTIFIERS.lock()
+            let mut notifiers = WAIT_NOTIFIERS
+                .lock()
                 .expect("WAIT_NOTIFIERS Mutex poisoned - unrecoverable state");
             notifiers
                 .entry(self.id)
@@ -234,7 +234,10 @@ mod tests {
         let id = Uuid::new_v4();
         let executor = FlowExecutor::new(&flow, id, storage);
 
-        let result = executor.execute_sync_blocking(|f| f.value + 10).await.unwrap();
+        let result = executor
+            .execute_sync_blocking(|f| f.value + 10)
+            .await
+            .unwrap();
 
         assert_eq!(result, 52);
     }

@@ -81,26 +81,24 @@ pub mod storage;
 
 // Re-export commonly used types for convenience
 pub use core::{
-    hash_params, serialize_value, deserialize_value,
-    CallType, Error as CoreError, Invocation, InvocationStatus,
-    Result as CoreResult, RetryableError,
+    deserialize_value, hash_params, serialize_value, CallType, Error as CoreError, Invocation,
+    InvocationStatus, Result as CoreResult, RetryableError,
 };
 
 // Re-export the kind module for macro use (autoref specialization)
 pub use core::kind;
 
 pub use executor::{
-    await_external_signal, idempotency_key, idempotency_key_parts,
-    ArcStepExt, CALL_TYPE, DeferredRegistry, Ergon, ExecutionContext, EXECUTION_CONTEXT,
-    ExecutionError, FlowContext, FlowExecutor, FlowInstance, Result as ExecutionResult,
-    StepFuture, StepHandle,
+    await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt, DeferredRegistry,
+    Ergon, ExecutionContext, ExecutionError, FlowContext, FlowExecutor, FlowInstance,
+    Result as ExecutionResult, StepFuture, StepHandle, CALL_TYPE, EXECUTION_CONTEXT,
 };
 
 pub use graph::{FlowGraph, GraphError, GraphResult, StepId, StepNode};
 
 pub use storage::{
-    ExecutionLog, InMemoryExecutionLog, PoolConfig, Result as StorageResult,
-    SqliteExecutionLog, StorageError,
+    ExecutionLog, InMemoryExecutionLog, PoolConfig, Result as StorageResult, SqliteExecutionLog,
+    StorageError,
 };
 
 // Re-export proc-macros
@@ -108,9 +106,9 @@ pub use ergon_macros::{flow, step};
 
 // Re-export dependencies used in public API
 // This ensures users don't have version mismatch errors (Effective Rust Item 24)
-pub use uuid;     // Users create Uuid::new_v4() for flow IDs
-pub use serde;    // Users implement Serialize/Deserialize on their types
-pub use tokio;    // Users need tokio runtime and #[tokio::main]
+pub use serde; // Users implement Serialize/Deserialize on their types
+pub use tokio;
+pub use uuid; // Users create Uuid::new_v4() for flow IDs // Users need tokio runtime and #[tokio::main]
 
 /// Prelude module for convenient glob imports
 ///
@@ -121,15 +119,14 @@ pub use tokio;    // Users need tokio runtime and #[tokio::main]
 /// ```
 pub mod prelude {
     pub use crate::core::{
-        CallType, Error as CoreError, Invocation, InvocationStatus,
-        Result as CoreResult, RetryableError,
+        CallType, Error as CoreError, Invocation, InvocationStatus, Result as CoreResult,
+        RetryableError,
     };
 
     pub use crate::executor::{
-        await_external_signal, idempotency_key, idempotency_key_parts,
-        ArcStepExt, DeferredRegistry, ExecutionContext, ExecutionError,
-        FlowContext, FlowExecutor, FlowInstance, Result as ExecutionResult,
-        Ergon, StepFuture, StepHandle,
+        await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt,
+        DeferredRegistry, Ergon, ExecutionContext, ExecutionError, FlowContext, FlowExecutor,
+        FlowInstance, Result as ExecutionResult, StepFuture, StepHandle,
     };
 
     pub use crate::graph::{FlowGraph, GraphError, GraphResult, StepId};
@@ -142,7 +139,7 @@ pub mod prelude {
     pub use ergon_macros::{flow, step};
 
     // Re-export commonly used external types
+    pub use serde::{Deserialize, Serialize};
     pub use std::sync::Arc;
     pub use uuid::Uuid;
-    pub use serde::{Deserialize, Serialize};
 }

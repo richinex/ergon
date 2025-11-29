@@ -37,14 +37,14 @@ impl ThreeModes {
         Ok(1)
     }
 
-    #[step]  // No attributes → auto-chains to mode1_step1
+    #[step] // No attributes → auto-chains to mode1_step1
     async fn mode1_step2(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 1] Step 2: Auto-chains → waits for step 1");
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(2)
     }
 
-    #[step]  // No attributes → auto-chains to mode1_step2
+    #[step] // No attributes → auto-chains to mode1_step2
     async fn mode1_step3(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 1] Step 3: Auto-chains → waits for step 2");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -54,8 +54,8 @@ impl ThreeModes {
     #[flow]
     async fn demo_mode1(self: Arc<Self>) -> Result<i32, String> {
         self.register_mode1_step1();
-        self.register_mode1_step2();  // Auto-chains to step1
-        self.register_mode1_step3()   // Auto-chains to step2
+        self.register_mode1_step2(); // Auto-chains to step1
+        self.register_mode1_step3() // Auto-chains to step2
     }
 
     // =========================================================================
@@ -97,9 +97,9 @@ impl ThreeModes {
     #[flow]
     async fn demo_mode2(self: Arc<Self>) -> Result<i32, String> {
         self.register_mode2_root();
-        self.register_mode2_branch1();  // Depends on root (via inputs)
-        self.register_mode2_branch2();  // Also depends on root → PARALLEL!
-        self.register_mode2_merge()     // Depends on both branches
+        self.register_mode2_branch1(); // Depends on root (via inputs)
+        self.register_mode2_branch2(); // Also depends on root → PARALLEL!
+        self.register_mode2_merge() // Depends on both branches
     }
 
     // =========================================================================
@@ -140,9 +140,9 @@ impl ThreeModes {
     #[flow]
     async fn demo_mode3(self: Arc<Self>) -> Result<i32, String> {
         self.register_mode3_init();
-        self.register_mode3_task1();     // Explicit: depends on init
-        self.register_mode3_task2();     // Explicit: also depends on init → PARALLEL
-        self.register_mode3_finalize()   // Explicit: depends on both tasks
+        self.register_mode3_task1(); // Explicit: depends on init
+        self.register_mode3_task2(); // Explicit: also depends on init → PARALLEL
+        self.register_mode3_finalize() // Explicit: depends on both tasks
     }
 
     // =========================================================================
@@ -156,7 +156,7 @@ impl ThreeModes {
         Ok(100)
     }
 
-    #[step]  // No attributes → auto-chains to step1
+    #[step] // No attributes → auto-chains to step1
     async fn comparison_step2(self: Arc<Self>) -> Result<i32, String> {
         println!("[Comparison] Step 2: Auto-chains to step1");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -176,8 +176,8 @@ impl ThreeModes {
     #[flow]
     async fn demo_comparison(self: Arc<Self>) -> Result<i32, String> {
         self.register_comparison_step1();
-        self.register_comparison_step2();  // Auto-chains to step1
-        self.register_comparison_step3()   // Depends on step1 (NOT step2!) → PARALLEL!
+        self.register_comparison_step2(); // Auto-chains to step1
+        self.register_comparison_step3() // Depends on step1 (NOT step2!) → PARALLEL!
     }
 }
 
@@ -240,7 +240,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     storage.reset().await?;
     let comparison = Arc::new(ThreeModes::new("comparison".to_string()));
-    let instance4 = Ergon::new_flow(Arc::clone(&comparison), Uuid::new_v4(), Arc::clone(&storage));
+    let instance4 = Ergon::new_flow(
+        Arc::clone(&comparison),
+        Uuid::new_v4(),
+        Arc::clone(&storage),
+    );
     let result4 = instance4.execute(|f| f.demo_comparison()).await;
     println!("\nResult: {:?}", result4);
     println!("Execution: step1 → (step2 || step3) [parallel!]\n");

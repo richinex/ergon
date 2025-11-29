@@ -466,9 +466,9 @@ impl DefaultTag {
 
 // Re-export the old names for backwards compatibility (deprecated)
 #[doc(hidden)]
-pub use RetryableKind as RetryableResultKind;
-#[doc(hidden)]
 pub use DefaultKind as DefaultResultKind;
+#[doc(hidden)]
+pub use RetryableKind as RetryableResultKind;
 
 #[cfg(test)]
 mod tests {
@@ -537,8 +537,10 @@ mod tests {
         assert!(!should_cache1); // Transient error should NOT be cached
 
         // Case 2: Error implements RetryableError, is_retryable = false (permanent)
-        let result2: std::result::Result<i32, std::io::Error> =
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        let result2: std::result::Result<i32, std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
         let should_cache2 = match &result2 {
             Ok(_) => true,
             Err(__e) => (&*__e).error_kind().should_cache(&*__e),
@@ -651,5 +653,5 @@ mod tests {
 
 // Re-export kind module for macro use
 pub mod kind {
-    pub use super::{RetryableKind, DefaultKind};
+    pub use super::{DefaultKind, RetryableKind};
 }

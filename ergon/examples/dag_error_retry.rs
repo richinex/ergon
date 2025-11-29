@@ -36,8 +36,8 @@
 //! - On retry: A is skipped, B runs again
 //! - More efficient than re-running everything!
 
-use ergon::RetryableError;
 use ergon::Ergon;
+use ergon::RetryableError;
 use ergon::{flow, step};
 use ergon::{ExecutionLog, InMemoryExecutionLog};
 use serde::{Deserialize, Serialize};
@@ -299,8 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for run in 1..=3 {
         println!("Run {}", run);
-        let instance =
-            Ergon::new_flow(Arc::clone(&processor_oos), flow_id2, Arc::clone(&storage2));
+        let instance = Ergon::new_flow(Arc::clone(&processor_oos), flow_id2, Arc::clone(&storage2));
         let result = instance.execute(|f| f.process_order()).await;
         println!("Result: {:?}\n", result);
     }
@@ -343,8 +342,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for run in 1..=5 {
         println!("Run {}", run);
-        let instance =
-            Ergon::new_flow(Arc::clone(&processor_nsf), flow_id3, Arc::clone(&storage3));
+        let instance = Ergon::new_flow(Arc::clone(&processor_nsf), flow_id3, Arc::clone(&storage3));
         let result = instance.execute(|f| f.process_order()).await;
         println!("Result: {:?}\n", result);
     }

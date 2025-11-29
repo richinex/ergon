@@ -48,11 +48,7 @@ impl TestFlow {
 
     // Has inputs from BOTH → Does this affect extract_a and extract_b?
     #[step(inputs(a = "case1_extract_a", b = "case1_extract_b"))]
-    async fn case1_merge(
-        self: Arc<Self>,
-        a: String,
-        b: String,
-    ) -> Result<String, String> {
+    async fn case1_merge(self: Arc<Self>, a: String, b: String) -> Result<String, String> {
         println!("[CASE 1] Merge starting (has both inputs)");
         tokio::time::sleep(Duration::from_millis(50)).await;
         println!("[CASE 1] Merge finished");
@@ -61,9 +57,9 @@ impl TestFlow {
 
     #[flow]
     async fn run_case1(self: Arc<Self>) -> Result<String, String> {
-        self.register_case1_extract_a();  // 1st registration: no deps
-        self.register_case1_extract_b();  // 2nd registration: auto-chain?
-        self.register_case1_merge()       // 3rd registration: inputs(a, b)
+        self.register_case1_extract_a(); // 1st registration: no deps
+        self.register_case1_extract_b(); // 2nd registration: auto-chain?
+        self.register_case1_merge() // 3rd registration: inputs(a, b)
     }
 
     // =========================================================================
@@ -98,11 +94,7 @@ impl TestFlow {
     }
 
     #[step(inputs(a = "case2_extract_a", b = "case2_extract_b"))]
-    async fn case2_merge(
-        self: Arc<Self>,
-        a: String,
-        b: String,
-    ) -> Result<String, String> {
+    async fn case2_merge(self: Arc<Self>, a: String, b: String) -> Result<String, String> {
         println!("[CASE 2] Merge starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
         println!("[CASE 2] Merge finished");
@@ -112,9 +104,9 @@ impl TestFlow {
     #[flow]
     async fn run_case2(self: Arc<Self>) -> Result<String, String> {
         self.register_case2_root();
-        self.register_case2_extract_a();  // depends_on = "root"
-        self.register_case2_extract_b();  // depends_on = "root"
-        self.register_case2_merge()       // inputs(a, b)
+        self.register_case2_extract_a(); // depends_on = "root"
+        self.register_case2_extract_b(); // depends_on = "root"
+        self.register_case2_merge() // inputs(a, b)
     }
 
     // =========================================================================
@@ -132,10 +124,7 @@ impl TestFlow {
 
     // Uses inputs from root → auto-depends on root
     #[step(inputs(config = "case3_root"))]
-    async fn case3_extract_a(
-        self: Arc<Self>,
-        config: String,
-    ) -> Result<String, String> {
+    async fn case3_extract_a(self: Arc<Self>, config: String) -> Result<String, String> {
         println!("[CASE 3] Extract A starting (config: {})", config);
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("[CASE 3] Extract A finished");
@@ -144,10 +133,7 @@ impl TestFlow {
 
     // ALSO uses inputs from root → also auto-depends on root
     #[step(inputs(config = "case3_root"))]
-    async fn case3_extract_b(
-        self: Arc<Self>,
-        config: String,
-    ) -> Result<String, String> {
+    async fn case3_extract_b(self: Arc<Self>, config: String) -> Result<String, String> {
         println!("[CASE 3] Extract B starting (config: {})", config);
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("[CASE 3] Extract B finished");
@@ -155,11 +141,7 @@ impl TestFlow {
     }
 
     #[step(inputs(a = "case3_extract_a", b = "case3_extract_b"))]
-    async fn case3_merge(
-        self: Arc<Self>,
-        a: String,
-        b: String,
-    ) -> Result<String, String> {
+    async fn case3_merge(self: Arc<Self>, a: String, b: String) -> Result<String, String> {
         println!("[CASE 3] Merge starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
         println!("[CASE 3] Merge finished");
@@ -169,9 +151,9 @@ impl TestFlow {
     #[flow]
     async fn run_case3(self: Arc<Self>) -> Result<String, String> {
         self.register_case3_root();
-        self.register_case3_extract_a();  // inputs(config = "root")
-        self.register_case3_extract_b();  // inputs(config = "root")
-        self.register_case3_merge()       // inputs(a, b)
+        self.register_case3_extract_a(); // inputs(config = "root")
+        self.register_case3_extract_b(); // inputs(config = "root")
+        self.register_case3_merge() // inputs(a, b)
     }
 
     // =========================================================================
@@ -197,11 +179,7 @@ impl TestFlow {
     }
 
     #[step(inputs(a = "case4_extract_a", b = "case4_extract_b"))]
-    async fn case4_merge(
-        self: Arc<Self>,
-        a: String,
-        b: String,
-    ) -> Result<String, String> {
+    async fn case4_merge(self: Arc<Self>, a: String, b: String) -> Result<String, String> {
         println!("[CASE 4] Merge starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
         println!("[CASE 4] Merge finished");
@@ -211,8 +189,8 @@ impl TestFlow {
     #[flow]
     async fn run_case4(self: Arc<Self>) -> Result<String, String> {
         self.register_case4_extract_a();
-        self.register_case4_extract_b();  // depends_on = [] → NO auto-chain!
-        self.register_case4_merge()       // inputs(a, b)
+        self.register_case4_extract_b(); // depends_on = [] → NO auto-chain!
+        self.register_case4_merge() // inputs(a, b)
     }
 }
 

@@ -50,14 +50,14 @@ impl AllPatterns {
         Ok(())
     }
 
-    #[step]  // Auto-chains to seq_step1
+    #[step] // Auto-chains to seq_step1
     async fn seq_step2(self: Arc<Self>) -> Result<(), String> {
         println!("[Sequential] Step 2 (auto-chains to step1)");
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(())
     }
 
-    #[step]  // Auto-chains to seq_step2
+    #[step] // Auto-chains to seq_step2
     async fn seq_step3(self: Arc<Self>) -> Result<(), String> {
         println!("[Sequential] Step 3 (auto-chains to step2)");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -67,8 +67,8 @@ impl AllPatterns {
     #[flow]
     async fn pattern1_sequential(self: Arc<Self>) -> Result<(), String> {
         self.register_seq_step1();
-        self.register_seq_step2();  // Waits for step1
-        self.register_seq_step3()   // Waits for step2
+        self.register_seq_step2(); // Waits for step1
+        self.register_seq_step3() // Waits for step2
     }
 
     // =========================================================================
@@ -89,7 +89,7 @@ impl AllPatterns {
         Ok(())
     }
 
-    #[step(depends_on = "par_explicit_root")]  // Same parent → PARALLEL!
+    #[step(depends_on = "par_explicit_root")] // Same parent → PARALLEL!
     async fn par_explicit_branch2(self: Arc<Self>) -> Result<(), String> {
         println!("[Parallel-Explicit] Branch 2 (depends_on root)");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -106,9 +106,9 @@ impl AllPatterns {
     #[flow]
     async fn pattern2_parallel_explicit(self: Arc<Self>) -> Result<(), String> {
         self.register_par_explicit_root();
-        self.register_par_explicit_branch1();  // Parallel with branch2
-        self.register_par_explicit_branch2();  // Parallel with branch1
-        self.register_par_explicit_merge()     // Waits for both
+        self.register_par_explicit_branch1(); // Parallel with branch2
+        self.register_par_explicit_branch2(); // Parallel with branch1
+        self.register_par_explicit_merge() // Waits for both
     }
 
     // =========================================================================
@@ -125,24 +125,30 @@ impl AllPatterns {
     // inputs from step1 ONLY → depends ONLY on step1
     #[step(inputs(value = "seq_auto_step1"))]
     async fn seq_auto_step2(self: Arc<Self>, value: i32) -> Result<i32, String> {
-        println!("[Sequential-Autowiring] Step 2 (inputs from step1: {})", value);
+        println!(
+            "[Sequential-Autowiring] Step 2 (inputs from step1: {})",
+            value
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(value * 2)  // 200
+        Ok(value * 2) // 200
     }
 
     // inputs from step2 ONLY → depends ONLY on step2 → Still Sequential!
     #[step(inputs(value = "seq_auto_step2"))]
     async fn seq_auto_step3(self: Arc<Self>, value: i32) -> Result<i32, String> {
-        println!("[Sequential-Autowiring] Step 3 (inputs from step2: {})", value);
+        println!(
+            "[Sequential-Autowiring] Step 3 (inputs from step2: {})",
+            value
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(value + 50)  // 250
+        Ok(value + 50) // 250
     }
 
     #[flow]
     async fn pattern3_sequential_autowiring(self: Arc<Self>) -> Result<i32, String> {
         self.register_seq_auto_step1();
-        self.register_seq_auto_step2();  // Depends on step1 (via inputs)
-        self.register_seq_auto_step3()   // Depends on step2 (via inputs) → Sequential!
+        self.register_seq_auto_step2(); // Depends on step1 (via inputs)
+        self.register_seq_auto_step3() // Depends on step2 (via inputs) → Sequential!
     }
 
     // =========================================================================
@@ -159,33 +165,42 @@ impl AllPatterns {
     // inputs from root → depends on root
     #[step(inputs(value = "par_auto_root"))]
     async fn par_auto_branch1(self: Arc<Self>, value: i32) -> Result<i32, String> {
-        println!("[Parallel-Autowiring] Branch 1 (inputs from root: {})", value);
+        println!(
+            "[Parallel-Autowiring] Branch 1 (inputs from root: {})",
+            value
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(value + 1)  // 11
+        Ok(value + 1) // 11
     }
 
     // ALSO inputs from root → ALSO depends on root → PARALLEL with branch1!
     #[step(inputs(value = "par_auto_root"))]
     async fn par_auto_branch2(self: Arc<Self>, value: i32) -> Result<i32, String> {
-        println!("[Parallel-Autowiring] Branch 2 (inputs from root: {})", value);
+        println!(
+            "[Parallel-Autowiring] Branch 2 (inputs from root: {})",
+            value
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(value * 2)  // 20
+        Ok(value * 2) // 20
     }
 
     // inputs from BOTH branches → depends on both
     #[step(inputs(a = "par_auto_branch1", b = "par_auto_branch2"))]
     async fn par_auto_merge(self: Arc<Self>, a: i32, b: i32) -> Result<i32, String> {
-        println!("[Parallel-Autowiring] Merge (inputs from both: a={}, b={})", a, b);
+        println!(
+            "[Parallel-Autowiring] Merge (inputs from both: a={}, b={})",
+            a, b
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(a + b)  // 31
+        Ok(a + b) // 31
     }
 
     #[flow]
     async fn pattern4_parallel_autowiring(self: Arc<Self>) -> Result<i32, String> {
         self.register_par_auto_root();
-        self.register_par_auto_branch1();  // Depends on root (via inputs)
-        self.register_par_auto_branch2();  // ALSO depends on root → PARALLEL!
-        self.register_par_auto_merge()     // Depends on both branches
+        self.register_par_auto_branch1(); // Depends on root (via inputs)
+        self.register_par_auto_branch2(); // ALSO depends on root → PARALLEL!
+        self.register_par_auto_merge() // Depends on both branches
     }
 }
 
@@ -240,7 +255,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
     let p3 = Arc::new(AllPatterns::new("p3".to_string()));
     let instance3 = Ergon::new_flow(Arc::clone(&p3), Uuid::new_v4(), Arc::clone(&storage));
-    let result3 = instance3.execute(|f| f.pattern3_sequential_autowiring()).await;
+    let result3 = instance3
+        .execute(|f| f.pattern3_sequential_autowiring())
+        .await;
 
     println!("\nExecution: step1 → step2(inputs step1) → step3(inputs step2)");
     println!("Data flow: 100 → 200 → 250");
@@ -257,7 +274,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
     let p4 = Arc::new(AllPatterns::new("p4".to_string()));
     let instance4 = Ergon::new_flow(Arc::clone(&p4), Uuid::new_v4(), Arc::clone(&storage));
-    let result4 = instance4.execute(|f| f.pattern4_parallel_autowiring()).await;
+    let result4 = instance4
+        .execute(|f| f.pattern4_parallel_autowiring())
+        .await;
 
     println!("\nExecution: root → (branch1(inputs root) || branch2(inputs root)) → merge");
     println!("Data flow: 10 → (11, 20) → 31");

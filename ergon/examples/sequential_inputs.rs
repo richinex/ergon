@@ -75,10 +75,7 @@ impl DataPipeline {
     // Step 2: Transform the raw data
     // inputs automatically adds fetch_raw_data to dependencies (no need for depends_on!)
     #[step(inputs(raw = "fetch_raw_data"))]
-    async fn transform_data(
-        self: Arc<Self>,
-        raw: RawData,
-    ) -> Result<TransformedData, String> {
+    async fn transform_data(self: Arc<Self>, raw: RawData) -> Result<TransformedData, String> {
         println!("\n[2/4] Transforming data: {}", raw.id);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -119,7 +116,8 @@ impl DataPipeline {
             )
         };
 
-        println!("      Validation: {} - {}",
+        println!(
+            "      Validation: {} - {}",
             if is_valid { "PASS" } else { "FAIL" },
             message
         );
@@ -134,10 +132,7 @@ impl DataPipeline {
     // Step 4: Save the validated result
     // inputs automatically adds validate_data to dependencies
     #[step(inputs(result = "validate_data"))]
-    async fn save_result(
-        self: Arc<Self>,
-        result: ValidationResult,
-    ) -> Result<String, String> {
+    async fn save_result(self: Arc<Self>, result: ValidationResult) -> Result<String, String> {
         println!("\n[4/4] Saving result for: {}", result.data.id);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -148,7 +143,10 @@ impl DataPipeline {
 
         let save_path = format!("/data/{}.json", result.data.id);
         println!("      Saved to: {}", save_path);
-        println!("      Data: normalized_value={}", result.data.normalized_value);
+        println!(
+            "      Data: normalized_value={}",
+            result.data.normalized_value
+        );
 
         Ok(save_path)
     }
@@ -240,7 +238,10 @@ impl EnrichmentPipeline {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         println!("  Profile: {} (age {})", profile.name, profile.age);
-        println!("  Preferences: theme={}, lang={}", prefs.theme, prefs.language);
+        println!(
+            "  Preferences: theme={}, lang={}",
+            prefs.theme, prefs.language
+        );
         println!("  Activity Score: {}", score);
 
         Ok(format!(
@@ -252,9 +253,9 @@ impl EnrichmentPipeline {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<String, String> {
         self.register_fetch_profile();
-        self.register_fetch_preferences();  // Parallel with analytics
-        self.register_fetch_analytics();    // Parallel with preferences
-        self.register_enrich_profile()      // Merges all three
+        self.register_fetch_preferences(); // Parallel with analytics
+        self.register_fetch_analytics(); // Parallel with preferences
+        self.register_enrich_profile() // Merges all three
     }
 }
 

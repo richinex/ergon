@@ -159,7 +159,7 @@ pub fn dag(input: TokenStream) -> TokenStream {
     if parsed.calls.is_empty() {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "dag! macro requires at least one step registration call"
+            "dag! macro requires at least one step registration call",
         )
         .to_compile_error()
         .into();
@@ -189,4 +189,3 @@ pub fn dag(input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
-

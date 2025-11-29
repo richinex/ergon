@@ -55,10 +55,7 @@ impl PrecedenceTest {
         depends_on = "case1_initialize",      // Control dependency
         inputs(config = "case1_fetch_config") // Data dependency
     )]
-    async fn case1_start_server(
-        self: Arc<Self>,
-        config: String,
-    ) -> Result<String, String> {
+    async fn case1_start_server(self: Arc<Self>, config: String) -> Result<String, String> {
         println!("[CASE 1] Start server (config: {})", config);
         tokio::time::sleep(Duration::from_millis(50)).await;
         println!("[CASE 1] Start server finished");
@@ -158,11 +155,7 @@ impl PrecedenceTest {
         depends_on = [],
         inputs(a = "case4_extract_a", b = "case4_extract_b")
     )]
-    async fn case4_merge(
-        self: Arc<Self>,
-        a: String,
-        b: String,
-    ) -> Result<String, String> {
+    async fn case4_merge(self: Arc<Self>, a: String, b: String) -> Result<String, String> {
         println!("[CASE 4] Merge (a: {}, b: {})", a, b);
         tokio::time::sleep(Duration::from_millis(50)).await;
         println!("[CASE 4] Merge finished");
@@ -173,7 +166,7 @@ impl PrecedenceTest {
     async fn run_case4(self: Arc<Self>) -> Result<String, String> {
         self.register_case4_extract_a();
         self.register_case4_extract_b(); // Runs in parallel with A
-        self.register_case4_merge()      // Waits for both A and B (from inputs)
+        self.register_case4_merge() // Waits for both A and B (from inputs)
     }
 
     // =========================================================================

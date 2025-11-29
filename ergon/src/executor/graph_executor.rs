@@ -100,7 +100,9 @@ pub struct DeferredStep {
     pub dependencies: Vec<StepId>,
     /// Factory function: takes serialized inputs, returns serialized output
     pub factory: Box<
-        dyn FnOnce(HashMap<StepId, Vec<u8>>) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>
+        dyn FnOnce(
+                HashMap<StepId, Vec<u8>>,
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>
             + Send,
     >,
     /// Sender for the result
@@ -162,7 +164,9 @@ impl DeferredRegistry {
         let step_id = StepId::new(step_name);
 
         // Check for special marker to disable auto-chaining
-        let disable_auto_chain = dependencies.get(0).map_or(false, |&d| d == "__NO_AUTO_CHAIN__");
+        let disable_auto_chain = dependencies
+            .get(0)
+            .map_or(false, |&d| d == "__NO_AUTO_CHAIN__");
 
         // Auto-chain: If no explicit dependencies and there's a previous step, depend on it
         let deps: Vec<StepId> = if disable_auto_chain {
@@ -183,7 +187,9 @@ impl DeferredRegistry {
 
         // Wrap factory to serialize output
         let factory_boxed: Box<
-            dyn FnOnce(HashMap<StepId, Vec<u8>>) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>
+            dyn FnOnce(
+                    HashMap<StepId, Vec<u8>>,
+                ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>
                 + Send,
         > = Box::new(move |inputs| {
             Box::pin(async move {
@@ -193,12 +199,13 @@ impl DeferredRegistry {
         });
 
         // Wrap sender to deserialize and send
-        let sender_boxed: Box<dyn FnOnce(Result<Vec<u8>>) + Send> = Box::new(move |result: Result<Vec<u8>>| {
-            let typed_result = result.and_then(|bytes: Vec<u8>| {
-                deserialize_value::<T>(&bytes).map_err(ExecutionError::Core)
+        let sender_boxed: Box<dyn FnOnce(Result<Vec<u8>>) + Send> =
+            Box::new(move |result: Result<Vec<u8>>| {
+                let typed_result = result.and_then(|bytes: Vec<u8>| {
+                    deserialize_value::<T>(&bytes).map_err(ExecutionError::Core)
+                });
+                let _ = tx.send(typed_result);
             });
-            let _ = tx.send(typed_result);
-        });
 
         self.steps.push(DeferredStep {
             step_id: step_id.clone(),
@@ -291,12 +298,17 @@ impl DeferredRegistry {
 
         for step in &self.steps {
             for dep in &step.dependencies {
-                dep_map.entry(dep.clone()).or_default().push(step.step_id.clone());
+                dep_map
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(step.step_id.clone());
             }
         }
 
         // Find root nodes (steps with no dependencies)
-        let roots: Vec<StepId> = self.steps.iter()
+        let roots: Vec<StepId> = self
+            .steps
+            .iter()
             .filter(|s| s.dependencies.is_empty())
             .map(|s| s.step_id.clone())
             .collect();
@@ -338,7 +350,9 @@ impl DeferredRegistry {
         let mut changed = true;
 
         // Find roots
-        let roots: Vec<&DeferredStep> = self.steps.iter()
+        let roots: Vec<&DeferredStep> = self
+            .steps
+            .iter()
             .filter(|s| s.dependencies.is_empty())
             .collect();
 
@@ -397,11 +411,7 @@ impl DeferredRegistry {
                 String::new()
             };
 
-            println!("Level {}: [{}]{}",
-                level,
-                steps.join("] ["),
-                parallel_note
-            );
+            println!("Level {}: [{}]{}", level, steps.join("] ["), parallel_note);
 
             if level < max_level {
                 println!("         ↓");
@@ -449,7 +459,9 @@ impl DeferredRegistry {
         let total_steps = self.steps.len();
 
         // Find roots (steps with no dependencies)
-        let roots: Vec<StepId> = self.steps.iter()
+        let roots: Vec<StepId> = self
+            .steps
+            .iter()
             .filter(|s| s.dependencies.is_empty())
             .map(|s| s.step_id.clone())
             .collect();
@@ -462,7 +474,9 @@ impl DeferredRegistry {
             }
         }
 
-        let leaves: Vec<StepId> = self.steps.iter()
+        let leaves: Vec<StepId> = self
+            .steps
+            .iter()
             .filter(|s| !all_deps.contains(&s.step_id))
             .map(|s| s.step_id.clone())
             .collect();
@@ -486,7 +500,9 @@ impl DeferredRegistry {
         let mut changed = true;
 
         // Find roots
-        let roots: Vec<&DeferredStep> = self.steps.iter()
+        let roots: Vec<&DeferredStep> = self
+            .steps
+            .iter()
             .filter(|s| s.dependencies.is_empty())
             .collect();
 
@@ -568,7 +584,9 @@ impl DeferredExecutor {
             for dep in &step.dependencies {
                 flow_graph
                     .add_dependency(step.step_id.clone(), dep.clone())
-                    .map_err(|e| ExecutionError::Failed(format!("Failed to add dependency: {}", e)))?;
+                    .map_err(|e| {
+                        ExecutionError::Failed(format!("Failed to add dependency: {}", e))
+                    })?;
             }
         }
 
@@ -578,10 +596,8 @@ impl DeferredExecutor {
             .map_err(|e| ExecutionError::Failed(format!("Invalid dependency graph: {}", e)))?;
 
         // Build step lookup
-        let mut step_map: HashMap<StepId, DeferredStep> = steps
-            .drain(..)
-            .map(|s| (s.step_id.clone(), s))
-            .collect();
+        let mut step_map: HashMap<StepId, DeferredStep> =
+            steps.drain(..).map(|s| (s.step_id.clone(), s)).collect();
 
         while completed.len() < total {
             // Use FlowGraph to find ready steps (eliminates duplication)
@@ -607,7 +623,9 @@ impl DeferredExecutor {
                         let results_guard = results_clone.lock().await;
                         step.dependencies
                             .iter()
-                            .filter_map(|dep| results_guard.get(dep).map(|v| (dep.clone(), v.clone())))
+                            .filter_map(|dep| {
+                                results_guard.get(dep).map(|v| (dep.clone(), v.clone()))
+                            })
                             .collect::<HashMap<_, _>>()
                     };
 
@@ -623,8 +641,11 @@ impl DeferredExecutor {
 
             // Run all futures concurrently in the same task
             let step_results: Vec<_> = futures::future::join_all(
-                futures.into_iter().map(|(id, fut)| async move { (id, fut.await) })
-            ).await;
+                futures
+                    .into_iter()
+                    .map(|(id, fut)| async move { (id, fut.await) }),
+            )
+            .await;
 
             // Process results
             for (_step_id, (id, output, sender)) in step_results {

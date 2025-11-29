@@ -123,7 +123,11 @@ pub type Result<T> = std::result::Result<T, ExecutionError>;
 fn format_params_preview(bytes: &[u8]) -> String {
     const MAX_BYTES: usize = 48;
     let truncated = bytes.len() > MAX_BYTES;
-    let preview_bytes = if truncated { &bytes[..MAX_BYTES] } else { bytes };
+    let preview_bytes = if truncated {
+        &bytes[..MAX_BYTES]
+    } else {
+        bytes
+    };
 
     // Try to extract any printable strings from the bytes for context
     let printable: String = preview_bytes
@@ -241,15 +245,18 @@ where
     let current_step = ctx.step_counter.load(Ordering::SeqCst);
 
     // Check if this step is already waiting for a signal
-    let existing_inv = ctx.storage.get_invocation(ctx.id, current_step).await.ok().flatten();
+    let existing_inv = ctx
+        .storage
+        .get_invocation(ctx.id, current_step)
+        .await
+        .ok()
+        .flatten();
 
     if let Some(inv) = existing_inv {
         if inv.status() == InvocationStatus::WaitingForSignal {
             // We're resuming - execute the step
             let result = CALL_TYPE
-                .scope(CallType::Resume, async {
-                    step_future.inner.await
-                })
+                .scope(CallType::Resume, async { step_future.inner.await })
                 .await;
             // In Resume mode, step should return Some(value)
             return result.expect("Step returned None in Resume mode");
@@ -325,7 +332,9 @@ impl<S: ExecutionLog> ExecutionContext<S> {
     /// - A cycle would be created
     /// - A dependency doesn't exist
     pub fn register_step(&self, step_name: &str, dependencies: &[&str]) -> GraphResult<()> {
-        let mut graph = self.dependency_graph.write()
+        let mut graph = self
+            .dependency_graph
+            .write()
             .expect("Dependency graph RwLock poisoned - unrecoverable state");
 
         let step_id = StepId::new(step_name);
@@ -353,7 +362,8 @@ impl<S: ExecutionLog> ExecutionContext<S> {
 
     /// Returns a reference to the dependency graph.
     pub fn dependency_graph(&self) -> std::sync::RwLockReadGuard<'_, FlowGraph> {
-        self.dependency_graph.read()
+        self.dependency_graph
+            .read()
             .expect("Dependency graph RwLock poisoned - unrecoverable state")
     }
 
@@ -492,7 +502,8 @@ impl<S: ExecutionLog> ExecutionContext<S> {
 
     pub async fn await_signal<R: for<'de> serde::Deserialize<'de>>(&self) -> Result<R> {
         let notifier = {
-            let mut notifiers = WAIT_NOTIFIERS.lock()
+            let mut notifiers = WAIT_NOTIFIERS
+                .lock()
                 .expect("WAIT_NOTIFIERS Mutex poisoned - unrecoverable state");
             notifiers
                 .entry(self.id)
@@ -503,7 +514,8 @@ impl<S: ExecutionLog> ExecutionContext<S> {
         notifier.notified().await;
 
         let params = {
-            let mut resume_params = RESUME_PARAMS.lock()
+            let mut resume_params = RESUME_PARAMS
+                .lock()
                 .expect("RESUME_PARAMS Mutex poisoned - unrecoverable state");
             resume_params
                 .remove(&self.id)
@@ -673,9 +685,7 @@ impl<T: Clone + Send + Sync> ArcStepExt<T> for Arc<T> {
         F: FnOnce(Arc<T>) -> Fut + Send,
         Fut: std::future::Future<Output = R> + Send,
     {
-        async move {
-            method(Arc::clone(self)).await
-        }
+        async move { method(Arc::clone(self)).await }
     }
 }
 
@@ -811,7 +821,7 @@ pub fn idempotency_key_parts() -> (Uuid, i32) {
         })
         .expect(
             "idempotency_key_parts() called outside of flow execution context. \
-             This function must be called from within a #[step] or #[flow] function."
+             This function must be called from within a #[step] or #[flow] function.",
         )
 }
 
@@ -830,7 +840,11 @@ impl Ergon {
     /// let instance = Ergon::new_flow(my_flow, uuid, storage);
     /// let result = instance.executor().execute(|f| Box::pin(f.run())).await?;
     /// ```
-    pub fn new_flow<T, S: ExecutionLog + 'static>(flow: T, id: Uuid, storage: Arc<S>) -> FlowInstance<T, S> {
+    pub fn new_flow<T, S: ExecutionLog + 'static>(
+        flow: T,
+        id: Uuid,
+        storage: Arc<S>,
+    ) -> FlowInstance<T, S> {
         FlowInstance::new(id, flow, storage)
     }
 
@@ -898,7 +912,14 @@ mod tests {
 
         let params = vec!["hello".to_string(), "world".to_string()];
         context
-            .log_step_start(0, "TestClass", "testMethod", None, InvocationStatus::Pending, &params)
+            .log_step_start(
+                0,
+                "TestClass",
+                "testMethod",
+                None,
+                InvocationStatus::Pending,
+                &params,
+            )
             .await
             .unwrap();
 
@@ -906,7 +927,10 @@ mod tests {
         context.log_step_completion(0, &return_value).await.unwrap();
 
         // Pass the same params to get_cached_result for hash comparison
-        let cached: Option<i32> = context.get_cached_result(0, "TestClass", "testMethod", &params).await.unwrap();
+        let cached: Option<i32> = context
+            .get_cached_result(0, "TestClass", "testMethod", &params)
+            .await
+            .unwrap();
         assert_eq!(cached, Some(42));
     }
 
@@ -919,13 +943,22 @@ mod tests {
         // Log a step with one method name
         let params = vec!["test".to_string()];
         context
-            .log_step_start(0, "TestClass", "step_a", None, InvocationStatus::Pending, &params)
+            .log_step_start(
+                0,
+                "TestClass",
+                "step_a",
+                None,
+                InvocationStatus::Pending,
+                &params,
+            )
             .await
             .unwrap();
         context.log_step_completion(0, &"result_a").await.unwrap();
 
         // Try to retrieve with a different method name - should detect non-determinism
-        let result: Result<Option<String>> = context.get_cached_result(0, "TestClass", "step_b", &params).await;
+        let result: Result<Option<String>> = context
+            .get_cached_result(0, "TestClass", "step_b", &params)
+            .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -945,14 +978,28 @@ mod tests {
         // Log a step with Some discount code
         let params_with_discount: (f64, Option<String>) = (100.0, Some("SAVE20".to_string()));
         context
-            .log_step_start(0, "PaymentProcessor", "apply_payment", None, InvocationStatus::Pending, &params_with_discount)
+            .log_step_start(
+                0,
+                "PaymentProcessor",
+                "apply_payment",
+                None,
+                InvocationStatus::Pending,
+                &params_with_discount,
+            )
             .await
             .unwrap();
         context.log_step_completion(0, &80.0f64).await.unwrap();
 
         // Try to retrieve with None discount - should detect non-determinism
         let params_without_discount: (f64, Option<String>) = (100.0, None);
-        let result: Result<Option<f64>> = context.get_cached_result(0, "PaymentProcessor", "apply_payment", &params_without_discount).await;
+        let result: Result<Option<f64>> = context
+            .get_cached_result(
+                0,
+                "PaymentProcessor",
+                "apply_payment",
+                &params_without_discount,
+            )
+            .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();

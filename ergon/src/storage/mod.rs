@@ -1,6 +1,6 @@
+use crate::core::{hash_params, Error as CoreError, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
-use crate::core::{hash_params, Error as CoreError, Invocation, InvocationStatus};
 use std::str::FromStr;
 use thiserror::Error;
 use tracing::{debug, info};
@@ -295,17 +295,13 @@ impl SqliteExecutionLog {
     fn row_to_invocation(row: &rusqlite::Row) -> rusqlite::Result<Invocation> {
         let id_str: String = row.get(0)?;
         let id = Uuid::parse_str(&id_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?;
 
         let step: i32 = row.get(1)?;
         let timestamp_millis: i64 = row.get(2)?;
-        let timestamp = chrono::DateTime::from_timestamp_millis(timestamp_millis)
-            .unwrap_or_else(|| Utc::now());
+        let timestamp =
+            chrono::DateTime::from_timestamp_millis(timestamp_millis).unwrap_or_else(|| Utc::now());
         let class_name: String = row.get(3)?;
         let method_name: String = row.get(4)?;
         let status_str: String = row.get(5)?;
@@ -336,7 +332,6 @@ impl SqliteExecutionLog {
             delay,
         ))
     }
-
 }
 
 #[async_trait]
@@ -534,7 +529,12 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?
     }
 
     async fn close(&self) -> Result<()> {
@@ -567,7 +567,9 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         step: i32,
         return_value: &[u8],
     ) -> Result<Invocation> {
-        (**self).log_invocation_completion(id, step, return_value).await
+        (**self)
+            .log_invocation_completion(id, step, return_value)
+            .await
     }
 
     async fn get_invocation(&self, id: Uuid, step: i32) -> Result<Option<Invocation>> {
@@ -691,7 +693,10 @@ impl ExecutionLog for InMemoryExecutionLog {
 
     async fn get_invocation(&self, id: Uuid, step: i32) -> Result<Option<Invocation>> {
         let key = (id, step);
-        Ok(self.invocations.get(&key).map(|entry| entry.value().clone()))
+        Ok(self
+            .invocations
+            .get(&key)
+            .map(|entry| entry.value().clone()))
     }
 
     async fn get_latest_invocation(&self, id: Uuid) -> Result<Option<Invocation>> {
@@ -787,7 +792,10 @@ mod tests {
         .unwrap();
 
         let return_val = serialize_value(&42i32).unwrap();
-        let invocation = log.log_invocation_completion(id, 0, &return_val).await.unwrap();
+        let invocation = log
+            .log_invocation_completion(id, 0, &return_val)
+            .await
+            .unwrap();
 
         assert_eq!(invocation.status(), InvocationStatus::Complete);
         assert!(invocation.return_value().is_some());

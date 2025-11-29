@@ -101,9 +101,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{
-    parse_macro_input, Block, Expr, FnArg, ItemFn, Pat, PatType, ReturnType, Stmt, Type,
-};
+use syn::{parse_macro_input, Block, Expr, FnArg, ItemFn, Pat, PatType, ReturnType, Stmt, Type};
 
 use crate::{build_method_signature, is_result_type};
 
@@ -189,7 +187,9 @@ fn try_wrap_dag_registrations(block: &Block, _return_type: &TokenStream2) -> Tok
         return quote! { #block };
     }
 
-    let last_call = transformed_calls.last().expect("transformed_calls not empty after check");
+    let last_call = transformed_calls
+        .last()
+        .expect("transformed_calls not empty after check");
     let intermediate_calls = &transformed_calls[..transformed_calls.len() - 1];
 
     quote! {
@@ -271,7 +271,9 @@ impl DagStepArgs {
         } else if meta.path.is_ident("inputs") {
             // Parse inputs(param = "step", param2 = "step2")
             meta.parse_nested_meta(|nested| {
-                let param_name = nested.path.get_ident()
+                let param_name = nested
+                    .path
+                    .get_ident()
                     .ok_or_else(|| nested.error("expected parameter name"))?
                     .to_string();
                 let step_name: syn::LitStr = nested.value()?.parse()?;
@@ -383,12 +385,9 @@ pub fn dag_step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Check if function is async
     if sig.asyncness.is_none() {
-        return syn::Error::new_spanned(
-            sig,
-            "#[dag_step] can only be applied to async functions",
-        )
-        .to_compile_error()
-        .into();
+        return syn::Error::new_spanned(sig, "#[dag_step] can only be applied to async functions")
+            .to_compile_error()
+            .into();
     }
 
     // Check receiver type and determine if we have Arc<Self>
@@ -541,7 +540,7 @@ pub fn dag_step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Separate parameters into two groups:
     // 1. params_from_inputs: Will be deserialized from dependency outputs
     // 2. params_from_register: Will be passed to the register function
-    let mut params_from_inputs = Vec::new();  // (name, type, step_name)
+    let mut params_from_inputs = Vec::new(); // (name, type, step_name)
     let mut params_from_register = Vec::new(); // (PatType)
 
     for (param, name) in params.iter().zip(param_names.iter()) {
@@ -996,12 +995,9 @@ pub fn dag_flow_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Check if function is async
     if sig.asyncness.is_none() {
-        return syn::Error::new_spanned(
-            sig,
-            "#[dag_flow] can only be applied to async functions",
-        )
-        .to_compile_error()
-        .into();
+        return syn::Error::new_spanned(sig, "#[dag_flow] can only be applied to async functions")
+            .to_compile_error()
+            .into();
     }
 
     // Extract return type

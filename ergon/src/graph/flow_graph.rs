@@ -595,11 +595,7 @@ mod tests {
         let order = graph.topological_sort().unwrap();
         assert_eq!(
             order,
-            vec![
-                StepId::new("a"),
-                StepId::new("b"),
-                StepId::new("c")
-            ]
+            vec![StepId::new("a"), StepId::new("b"), StepId::new("c")]
         );
     }
 

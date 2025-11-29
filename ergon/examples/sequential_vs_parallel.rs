@@ -34,7 +34,7 @@ impl Workflow {
         Ok("step1".to_string())
     }
 
-    #[step]  // Auto-depends on seq_step1
+    #[step] // Auto-depends on seq_step1
     async fn seq_step2(self: Arc<Self>) -> Result<String, String> {
         println!("[Sequential] Step 2 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -42,7 +42,7 @@ impl Workflow {
         Ok("step2".to_string())
     }
 
-    #[step]  // Auto-depends on seq_step2
+    #[step] // Auto-depends on seq_step2
     async fn seq_step3(self: Arc<Self>) -> Result<String, String> {
         println!("[Sequential] Step 3 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -53,8 +53,8 @@ impl Workflow {
     #[flow]
     async fn run_sequential(self: Arc<Self>) -> Result<String, String> {
         self.register_seq_step1();
-        self.register_seq_step2();  // Waits for step1
-        self.register_seq_step3()   // Waits for step2
+        self.register_seq_step2(); // Waits for step1
+        self.register_seq_step3() // Waits for step2
     }
 
     // =========================================================================
@@ -69,7 +69,7 @@ impl Workflow {
         Ok("root".to_string())
     }
 
-    #[step(depends_on = "par_root")]  // Explicit: depends on root
+    #[step(depends_on = "par_root")] // Explicit: depends on root
     async fn par_branch1(self: Arc<Self>) -> Result<String, String> {
         println!("[Parallel] Branch 1 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -77,7 +77,7 @@ impl Workflow {
         Ok("branch1".to_string())
     }
 
-    #[step(depends_on = "par_root")]  // Explicit: ALSO depends on root (parallel!)
+    #[step(depends_on = "par_root")] // Explicit: ALSO depends on root (parallel!)
     async fn par_branch2(self: Arc<Self>) -> Result<String, String> {
         println!("[Parallel] Branch 2 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -85,7 +85,7 @@ impl Workflow {
         Ok("branch2".to_string())
     }
 
-    #[step(depends_on = ["par_branch1", "par_branch2"])]  // Waits for both
+    #[step(depends_on = ["par_branch1", "par_branch2"])] // Waits for both
     async fn par_merge(self: Arc<Self>) -> Result<String, String> {
         println!("[Parallel] Merge starting (after both branches)");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -96,9 +96,9 @@ impl Workflow {
     #[flow]
     async fn run_parallel(self: Arc<Self>) -> Result<String, String> {
         self.register_par_root();
-        self.register_par_branch1();  // Parallel with branch2
-        self.register_par_branch2();  // Parallel with branch1
-        self.register_par_merge()     // Waits for both branches
+        self.register_par_branch1(); // Parallel with branch2
+        self.register_par_branch2(); // Parallel with branch1
+        self.register_par_merge() // Waits for both branches
     }
 
     // =========================================================================
@@ -157,7 +157,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed1 = start1.elapsed();
 
     println!("\nResult: {:?}", result1);
-    println!("Time: {:?} (expect ~150ms for 3 sequential steps)", elapsed1);
+    println!(
+        "Time: {:?} (expect ~150ms for 3 sequential steps)",
+        elapsed1
+    );
 
     // =========================================================================
     // Test 2: Parallel Execution
