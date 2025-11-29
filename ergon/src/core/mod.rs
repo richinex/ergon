@@ -173,11 +173,11 @@ impl Invocation {
 pub enum Error {
     /// Serialization failed when encoding a value to bytes.
     #[error("serialization failed")]
-    Serialization(#[source] bincode::Error),
+    Serialization(#[source] bincode::error::EncodeError),
 
     /// Deserialization failed when decoding bytes to a value.
     #[error("deserialization failed")]
-    Deserialization(#[source] bincode::Error),
+    Deserialization(#[source] bincode::error::DecodeError),
 
     /// The flow structure has changed incompatibly between executions.
     #[error("incompatible flow structure: expected {expected_class}.{expected_method}, got {actual_class}.{actual_method}")]
@@ -208,7 +208,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// # Errors
 /// Returns `Error::Serialization` if the value cannot be serialized.
 pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    bincode::serialize(value).map_err(Error::Serialization)
+    bincode::serde::encode_to_vec(value, bincode::config::standard()).map_err(Error::Serialization)
 }
 
 /// Deserializes bytes to a value using bincode.
@@ -216,7 +216,9 @@ pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 /// # Errors
 /// Returns `Error::Deserialization` if the bytes cannot be deserialized.
 pub fn deserialize_value<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T> {
-    bincode::deserialize(bytes).map_err(Error::Deserialization)
+    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        .map(|(value, _len)| value)
+        .map_err(Error::Deserialization)
 }
 
 // =============================================================================

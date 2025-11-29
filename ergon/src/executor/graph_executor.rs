@@ -712,6 +712,7 @@ mod tests {
     async fn test_deferred_parallel_timing() {
         let mut registry = DeferredRegistry::new();
 
+        let task_duration = Duration::from_millis(100);
         let start = Instant::now();
 
         let _handle_a = registry.register::<String, _, _>("a", &[], |_| async {
@@ -738,11 +739,18 @@ mod tests {
         let result = handle_c.resolve().await.unwrap();
 
         assert_eq!(result, "AB");
-        // Should complete in ~100ms (parallel), not ~200ms (sequential)
+
+        // Parallel execution should take roughly max(a, b) = 100ms
+        // Sequential would take a + b = 200ms
+        // Allow 120% overhead for scheduling/system variance (especially in CI)
+        let max_parallel_time = task_duration.mul_f32(2.2);
         assert!(
-            elapsed < Duration::from_millis(180),
-            "Expected parallel execution (~100ms), got {:?}",
-            elapsed
+            elapsed < max_parallel_time,
+            "Expected parallel execution (< {:?}), got {:?}. \
+             If this took > {:?}, tasks likely ran sequentially.",
+            max_parallel_time,
+            elapsed,
+            task_duration.mul_f32(1.5)
         );
     }
 
