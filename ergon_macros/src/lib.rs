@@ -1,65 +1,39 @@
+//! Procedural macros for the Ergon durable execution framework.
+//!
+//! This crate provides #[step] and #[flow] macros with:
+//! - Sequential-by-default execution with opt-in parallelism
+//! - Execution context integration
+//! - Dependency graph management
+//! - Input wiring for data flow
+//! - Cache checking with non-determinism detection
+//! - Invocation logging
+//! - Delay support
+//! - Autoref specialization for RetryableError
+//!
+//! # Module Organization (Following Parnas's Information Hiding)
+//!
+//! Each submodule hides a design decision:
+//!
+//! - [`parsing`]: How macro attributes are parsed and signature analysis
+//! - [`step`]: How #[step] macro works and generates code
+//! - [`flow`]: How #[flow] macro works and generates code
+//!
+//! This module (lib.rs) contains:
+//! - Public macro entry points (#[step], #[flow], dag!)
+//! - Re-exports from submodules
+
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse_macro_input, FnArg, ReturnType, Signature, Type};
 
-mod ergon_macros;
+mod flow;
+mod parsing;
+mod step;
 
-/// Check if a return type is a Result type (Result<T, E>).
+/// Marks an async method as a durable execution step.
 ///
-/// This is used to determine whether to generate code that conditionally
-/// caches errors. By default, Result::Err values are NOT cached to allow
-/// retry of transient failures.
-fn is_result_type(return_type: &ReturnType) -> bool {
-    match return_type {
-        ReturnType::Default => false,
-        ReturnType::Type(_, ty) => is_result_type_inner(ty),
-    }
-}
-
-fn is_result_type_inner(ty: &Type) -> bool {
-    match ty {
-        Type::Path(type_path) => {
-            // Check if the last segment is "Result"
-            if let Some(segment) = type_path.path.segments.last() {
-                let ident = segment.ident.to_string();
-                // Match both "Result" and full path like "std::result::Result"
-                ident == "Result"
-            } else {
-                false
-            }
-        }
-        // Handle parenthesized types like (Result<T, E>)
-        Type::Paren(paren) => is_result_type_inner(&paren.elem),
-        // Handle grouped types
-        Type::Group(group) => is_result_type_inner(&group.elem),
-        _ => false,
-    }
-}
-
-/// Extract parameter types from a function signature and build a method signature string.
-/// Format: "method_name(Type1, Type2, ...)" for better non-determinism detection.
-/// This ensures that methods with the same name but different signatures are distinguishable.
-fn build_method_signature(sig: &Signature) -> String {
-    let fn_name = sig.ident.to_string();
-
-    let param_types: Vec<String> = sig
-        .inputs
-        .iter()
-        .filter_map(|arg| match arg {
-            FnArg::Receiver(_) => None, // Skip self
-            FnArg::Typed(pat_type) => {
-                // Convert the type to a string representation
-                let ty = &pat_type.ty;
-                Some(quote!(#ty).to_string().replace(" ", ""))
-            }
-        })
-        .collect();
-
-    format!("{}({})", fn_name, param_types.join(","))
-}
+/// See [`step`](step::step_impl) module for details.
 #[proc_macro_attribute]
 pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
-    ergon_macros::dag_step_impl(attr, item)
+    step::step_impl(attr, item)
 }
 
 /// Marks an async method as a flow orchestrator.
@@ -87,7 +61,7 @@ pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn flow(attr: TokenStream, item: TokenStream) -> TokenStream {
-    ergon_macros::dag_flow_impl(attr, item)
+    flow::flow_impl(attr, item)
 }
 
 /// Helper macro for ergonomic DAG execution.
@@ -100,7 +74,7 @@ pub fn flow(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Usage
 ///
 /// ```ignore
-/// #[dag_flow]
+/// #[flow]
 /// async fn process(self: Arc<Self>) -> OrderResult {
 ///     dag! {
 ///         self.register_get_customer();
@@ -130,7 +104,7 @@ pub fn dag(input: TokenStream) -> TokenStream {
     use proc_macro2::TokenStream as TokenStream2;
     use quote::quote;
     use syn::parse::{Parse, ParseStream};
-    use syn::{Expr, Token};
+    use syn::{parse_macro_input, Expr, Token};
 
     struct DagCalls {
         calls: Vec<Expr>,
