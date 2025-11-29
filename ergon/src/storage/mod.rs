@@ -543,11 +543,7 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok(())
         })
         .await
-        .map_err(|e| {
-            StorageError::Io(std::io::Error::other(
-                e.to_string(),
-            ))
-        })?
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
     async fn close(&self) -> Result<()> {

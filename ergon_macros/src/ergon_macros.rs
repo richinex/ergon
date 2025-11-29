@@ -222,7 +222,6 @@ pub(crate) struct DagStepArgs {
     pub has_explicit_empty_depends_on: bool,
 }
 
-
 impl DagStepArgs {
     /// Parse a single attribute using ParseNestedMeta
     pub fn parse_meta(&mut self, meta: syn::meta::ParseNestedMeta) -> syn::Result<()> {

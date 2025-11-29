@@ -165,7 +165,8 @@ impl DeferredRegistry {
         let step_id = StepId::new(step_name);
 
         // Check for special marker to disable auto-chaining
-        let disable_auto_chain = dependencies.first()
+        let disable_auto_chain = dependencies
+            .first()
             .is_some_and(|&d| d == "__NO_AUTO_CHAIN__");
 
         // Auto-chain: If no explicit dependencies and there's a previous step, depend on it

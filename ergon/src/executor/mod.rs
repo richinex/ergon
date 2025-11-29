@@ -255,9 +255,7 @@ where
     if let Some(inv) = existing_inv {
         if inv.status() == InvocationStatus::WaitingForSignal {
             // We're resuming - execute the step
-            let result = CALL_TYPE
-                .scope(CallType::Resume, step_future.inner)
-                .await;
+            let result = CALL_TYPE.scope(CallType::Resume, step_future.inner).await;
             // In Resume mode, step should return Some(value)
             return result.expect("Step returned None in Resume mode");
         }
@@ -684,7 +682,9 @@ impl<T: Clone + Send + Sync> ArcStepExt<T> for Arc<T> {
     where
         F: FnOnce(Arc<T>) -> Fut + Send,
         Fut: std::future::Future<Output = R> + Send,
-    { method(Arc::clone(self)).await }
+    {
+        method(Arc::clone(self)).await
+    }
 }
 
 // =============================================================================
