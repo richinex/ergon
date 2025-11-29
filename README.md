@@ -1,5 +1,9 @@
 # Ergon
 
+[![CI](https://github.com/richinex/ergon/workflows/CI/badge.svg)](https://github.com/richinex/ergon/actions)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B%20%7C%20edition%202021-orange.svg)](https://www.rust-lang.org)
+
 **Ergon** (ἔργον, Greek for "work" or "deed") is a durable execution framework for Rust, inspired by [Temporal](https://temporal.io/).
 
 ## Features
@@ -142,7 +146,11 @@ Non-breaking changes include:
 
 ### Minimum Supported Rust Version (MSRV)
 
-Ergon supports Rust 1.75.0 and later.
+Ergon requires Rust **1.85.0** or later (edition 2021).
+
+This is enforced by the `rust-version` field in `Cargo.toml` and is determined by our dependencies:
+- **bincode 2.0.1**: requires Rust 1.85.0 (our highest dependency requirement)
+- tokio 1.42: requires Rust 1.70
 
 MSRV increases are considered breaking changes and will only occur with minor version bumps (0.x.0) before 1.0.0, and major version bumps (x.0.0) after 1.0.0.
 
