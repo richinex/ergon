@@ -313,10 +313,10 @@ pub fn deserialize_value<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T
 pub trait RetryableError {
     /// Returns true if this error is transient and the operation should be retried.
     ///
-    /// - `true`: Error is transient (network timeout, service unavailable)
-    ///           The step will NOT be cached, allowing retry on next execution.
-    /// - `false`: Error is permanent (invalid input, not found, business rule violation)
-    ///           The step WILL be cached, preventing retry.
+    /// - `true`: Error is transient (network timeout, service unavailable).
+    ///   The step will NOT be cached, allowing retry on next execution.
+    /// - `false`: Error is permanent (invalid input, not found, business rule violation).
+    ///   The step WILL be cached, preventing retry.
     fn is_retryable(&self) -> bool;
 }
 
@@ -498,16 +498,16 @@ mod tests {
         // io::Error implements RetryableError
         // TimedOut is retryable -> should NOT cache (allow retry)
         let timeout_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
-        assert!(!(&timeout_err).error_kind().should_cache(&timeout_err));
+        assert!(!timeout_err.error_kind().should_cache(&timeout_err));
 
         // NotFound is NOT retryable -> should cache (permanent error)
         let not_found_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
-        assert!((&not_found_err).error_kind().should_cache(&not_found_err));
+        assert!(not_found_err.error_kind().should_cache(&not_found_err));
 
         // String implements RetryableError (always returns true = retryable)
         // String.is_retryable() returns true -> should NOT cache (transient error)
         let string_err = "error".to_string();
-        assert!(!(&string_err).error_kind().should_cache(&string_err));
+        assert!(!string_err.error_kind().should_cache(&string_err));
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod tests {
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"));
         let should_cache1 = match &result1 {
             Ok(_) => true,
-            Err(__e) => (&*__e).error_kind().should_cache(&*__e),
+            Err(__e) => (*__e).error_kind().should_cache(__e),
         };
         assert!(!should_cache1); // Transient error should NOT be cached
 
@@ -545,7 +545,7 @@ mod tests {
         ));
         let should_cache2 = match &result2 {
             Ok(_) => true,
-            Err(__e) => (&*__e).error_kind().should_cache(&*__e),
+            Err(__e) => (*__e).error_kind().should_cache(__e),
         };
         assert!(should_cache2); // Permanent error should be cached
 
@@ -555,7 +555,7 @@ mod tests {
         let result3: std::result::Result<i32, CustomError> = Err(CustomError);
         let should_cache3 = match &result3 {
             Ok(_) => true,
-            Err(__e) => (&*__e).error_kind().should_cache(&*__e),
+            Err(__e) => __e.error_kind().should_cache(__e),
         };
         assert!(!should_cache3); // Default: don't cache errors
 
@@ -563,7 +563,7 @@ mod tests {
         let result4: std::result::Result<i32, CustomError> = Ok(42);
         let should_cache4 = match &result4 {
             Ok(_) => true,
-            Err(__e) => (&*__e).error_kind().should_cache(&*__e),
+            Err(__e) => __e.error_kind().should_cache(__e),
         };
         assert!(should_cache4); // Ok always cached
     }

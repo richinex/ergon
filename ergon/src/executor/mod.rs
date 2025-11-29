@@ -256,7 +256,7 @@ where
         if inv.status() == InvocationStatus::WaitingForSignal {
             // We're resuming - execute the step
             let result = CALL_TYPE
-                .scope(CallType::Resume, async { step_future.inner.await })
+                .scope(CallType::Resume, step_future.inner)
                 .await;
             // In Resume mode, step should return Some(value)
             return result.expect("Step returned None in Resume mode");
@@ -396,15 +396,15 @@ impl<S: ExecutionLog> ExecutionContext<S> {
     ) -> Result<()> {
         let params_bytes = serialize_value(params)?;
         self.storage
-            .log_invocation_start(
-                self.id,
+            .log_invocation_start(crate::storage::InvocationStartParams {
+                id: self.id,
                 step,
                 class_name,
                 method_name,
                 delay,
                 status,
-                &params_bytes,
-            )
+                parameters: &params_bytes,
+            })
             .await
             .map_err(ExecutionError::Storage)?;
         Ok(())
@@ -680,13 +680,11 @@ pub trait ArcStepExt<T> {
 }
 
 impl<T: Clone + Send + Sync> ArcStepExt<T> for Arc<T> {
-    fn call<F, Fut, R>(&self, method: F) -> impl std::future::Future<Output = R> + Send
+    async fn call<F, Fut, R>(&self, method: F) -> R
     where
         F: FnOnce(Arc<T>) -> Fut + Send,
         Fut: std::future::Future<Output = R> + Send,
-    {
-        async move { method(Arc::clone(self)).await }
-    }
+    { method(Arc::clone(self)).await }
 }
 
 // =============================================================================

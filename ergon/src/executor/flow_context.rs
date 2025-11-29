@@ -141,17 +141,9 @@ struct StorageWrapper<S: ExecutionLog>(Arc<S>);
 impl<S: ExecutionLog> ExecutionLog for StorageWrapper<S> {
     async fn log_invocation_start(
         &self,
-        id: uuid::Uuid,
-        step: i32,
-        class_name: &str,
-        method_name: &str,
-        delay: Option<std::time::Duration>,
-        status: crate::core::InvocationStatus,
-        parameters: &[u8],
+        params: crate::storage::InvocationStartParams<'_>,
     ) -> crate::storage::Result<()> {
-        self.0
-            .log_invocation_start(id, step, class_name, method_name, delay, status, parameters)
-            .await
+        self.0.log_invocation_start(params).await
     }
 
     async fn log_invocation_completion(

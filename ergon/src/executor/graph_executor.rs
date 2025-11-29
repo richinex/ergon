@@ -44,6 +44,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
+// Type aliases for complex step factory types
+type StepInputs = HashMap<StepId, Vec<u8>>;
+type StepOutput = Result<Vec<u8>>;
+type StepFuture = Pin<Box<dyn Future<Output = StepOutput> + Send>>;
+type StepFactory = Box<dyn FnOnce(StepInputs) -> StepFuture + Send>;
+
 /// A handle representing a deferred step execution.
 ///
 /// The step is not executed immediately - it's registered with the executor
@@ -99,12 +105,7 @@ pub struct DeferredStep {
     /// Dependencies
     pub dependencies: Vec<StepId>,
     /// Factory function: takes serialized inputs, returns serialized output
-    pub factory: Box<
-        dyn FnOnce(
-                HashMap<StepId, Vec<u8>>,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>
-            + Send,
-    >,
+    pub factory: StepFactory,
     /// Sender for the result
     pub result_sender: Box<dyn FnOnce(Result<Vec<u8>>) + Send>,
 }
@@ -164,9 +165,8 @@ impl DeferredRegistry {
         let step_id = StepId::new(step_name);
 
         // Check for special marker to disable auto-chaining
-        let disable_auto_chain = dependencies
-            .get(0)
-            .map_or(false, |&d| d == "__NO_AUTO_CHAIN__");
+        let disable_auto_chain = dependencies.first()
+            .is_some_and(|&d| d == "__NO_AUTO_CHAIN__");
 
         // Auto-chain: If no explicit dependencies and there's a previous step, depend on it
         let deps: Vec<StepId> = if disable_auto_chain {
@@ -186,12 +186,7 @@ impl DeferredRegistry {
         let (tx, rx) = oneshot::channel::<Result<T>>();
 
         // Wrap factory to serialize output
-        let factory_boxed: Box<
-            dyn FnOnce(
-                    HashMap<StepId, Vec<u8>>,
-                ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>
-                + Send,
-        > = Box::new(move |inputs| {
+        let factory_boxed: StepFactory = Box::new(move |inputs| {
             Box::pin(async move {
                 let result = factory(inputs).await?;
                 serialize_value(&result).map_err(ExecutionError::Core)
@@ -322,7 +317,7 @@ impl DeferredRegistry {
         let mut visited = std::collections::HashSet::new();
         for (i, root) in roots.iter().enumerate() {
             let is_last = i == roots.len() - 1;
-            self.print_node(root, &dep_map, "", is_last, &mut visited);
+            Self::print_node(root, &dep_map, "", is_last, &mut visited);
         }
     }
 
@@ -424,7 +419,6 @@ impl DeferredRegistry {
 
     /// Helper function to recursively print nodes in tree format
     fn print_node(
-        &self,
         node: &StepId,
         dep_map: &HashMap<StepId, Vec<StepId>>,
         prefix: &str,
@@ -443,7 +437,7 @@ impl DeferredRegistry {
             let child_prefix = format!("{}{}  ", prefix, if is_last { "  " } else { "│ " });
             for (i, child) in children.iter().enumerate() {
                 let is_last_child = i == children.len() - 1;
-                self.print_node(child, dep_map, &child_prefix, is_last_child, visited);
+                Self::print_node(child, dep_map, &child_prefix, is_last_child, visited);
             }
         }
     }

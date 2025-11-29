@@ -205,6 +205,7 @@ fn try_wrap_dag_registrations(block: &Block, _return_type: &TokenStream2) -> Tok
 
 /// Arguments for the #[dag_step] attribute macro
 /// Supports all the same attributes as #[step] plus depends_on and inputs
+#[derive(Default)]
 pub(crate) struct DagStepArgs {
     /// Delay value (in units specified by `unit`)
     pub delay: Option<i64>,
@@ -221,18 +222,6 @@ pub(crate) struct DagStepArgs {
     pub has_explicit_empty_depends_on: bool,
 }
 
-impl Default for DagStepArgs {
-    fn default() -> Self {
-        Self {
-            delay: None,
-            unit: None,
-            cache_errors: false,
-            depends_on: Vec::new(),
-            inputs: std::collections::HashMap::new(),
-            has_explicit_empty_depends_on: false,
-        }
-    }
-}
 
 impl DagStepArgs {
     /// Parse a single attribute using ParseNestedMeta

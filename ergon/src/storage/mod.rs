@@ -55,6 +55,27 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
+/// Parameters for logging the start of a step invocation.
+///
+/// This struct groups all the parameters needed to log an invocation start,
+/// making the API cleaner and more maintainable.
+pub struct InvocationStartParams<'a> {
+    /// Flow execution ID
+    pub id: Uuid,
+    /// Step number in the flow
+    pub step: i32,
+    /// Class name (for compatibility tracking)
+    pub class_name: &'a str,
+    /// Method name (for compatibility tracking)
+    pub method_name: &'a str,
+    /// Optional delay before execution
+    pub delay: Option<Duration>,
+    /// Current invocation status
+    pub status: InvocationStatus,
+    /// Serialized parameters
+    pub parameters: &'a [u8],
+}
+
 /// Trait for execution log storage backends.
 ///
 /// This trait defines the async interface for persisting and retrieving
@@ -66,16 +87,7 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 pub trait ExecutionLog: Send + Sync {
     /// Log the start of a step invocation.
     /// The params_hash is computed internally from the parameters bytes.
-    async fn log_invocation_start(
-        &self,
-        id: Uuid,
-        step: i32,
-        class_name: &str,
-        method_name: &str,
-        delay: Option<Duration>,
-        status: InvocationStatus,
-        parameters: &[u8],
-    ) -> Result<()>;
+    async fn log_invocation_start(&self, params: InvocationStartParams<'_>) -> Result<()>;
 
     /// Log the completion of a step invocation.
     async fn log_invocation_completion(
@@ -301,7 +313,7 @@ impl SqliteExecutionLog {
         let step: i32 = row.get(1)?;
         let timestamp_millis: i64 = row.get(2)?;
         let timestamp =
-            chrono::DateTime::from_timestamp_millis(timestamp_millis).unwrap_or_else(|| Utc::now());
+            chrono::DateTime::from_timestamp_millis(timestamp_millis).unwrap_or_else(Utc::now);
         let class_name: String = row.get(3)?;
         let method_name: String = row.get(4)?;
         let status_str: String = row.get(5)?;
@@ -336,16 +348,18 @@ impl SqliteExecutionLog {
 
 #[async_trait]
 impl ExecutionLog for SqliteExecutionLog {
-    async fn log_invocation_start(
-        &self,
-        id: Uuid,
-        step: i32,
-        class_name: &str,
-        method_name: &str,
-        delay: Option<Duration>,
-        status: InvocationStatus,
-        parameters: &[u8],
-    ) -> Result<()> {
+    async fn log_invocation_start(&self, params: InvocationStartParams<'_>) -> Result<()> {
+        // Destructure params
+        let InvocationStartParams {
+            id,
+            step,
+            class_name,
+            method_name,
+            delay,
+            status,
+            parameters,
+        } = params;
+
         // Clone data for move into spawn_blocking
         let class_name = class_name.to_string();
         let method_name = method_name.to_string();
@@ -387,7 +401,7 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok::<(), StorageError>(())
         })
         .await
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))??;
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))??;
 
         Ok(result)
     }
@@ -430,7 +444,7 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok(invocation)
         })
         .await
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
     async fn get_invocation(&self, id: Uuid, step: i32) -> Result<Option<Invocation>> {
@@ -450,7 +464,7 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok(invocation)
         })
         .await
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
     async fn get_latest_invocation(&self, id: Uuid) -> Result<Option<Invocation>> {
@@ -472,7 +486,7 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok(invocation)
         })
         .await
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
     async fn get_invocations_for_flow(&self, id: Uuid) -> Result<Vec<Invocation>> {
@@ -493,7 +507,7 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok(invocations)
         })
         .await
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
     async fn get_incomplete_flows(&self) -> Result<Vec<Invocation>> {
@@ -517,7 +531,7 @@ impl ExecutionLog for SqliteExecutionLog {
             Ok(invocations)
         })
         .await
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
     async fn reset(&self) -> Result<()> {
@@ -530,8 +544,7 @@ impl ExecutionLog for SqliteExecutionLog {
         })
         .await
         .map_err(|e| {
-            StorageError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            StorageError::Io(std::io::Error::other(
                 e.to_string(),
             ))
         })?
@@ -546,19 +559,8 @@ impl ExecutionLog for SqliteExecutionLog {
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage
 #[async_trait]
 impl ExecutionLog for Box<dyn ExecutionLog> {
-    async fn log_invocation_start(
-        &self,
-        id: Uuid,
-        step: i32,
-        class_name: &str,
-        method_name: &str,
-        delay: Option<Duration>,
-        status: InvocationStatus,
-        parameters: &[u8],
-    ) -> Result<()> {
-        (**self)
-            .log_invocation_start(id, step, class_name, method_name, delay, status, parameters)
-            .await
+    async fn log_invocation_start(&self, params: InvocationStartParams<'_>) -> Result<()> {
+        (**self).log_invocation_start(params).await
     }
 
     async fn log_invocation_completion(
@@ -629,16 +631,18 @@ impl Default for InMemoryExecutionLog {
 
 #[async_trait]
 impl ExecutionLog for InMemoryExecutionLog {
-    async fn log_invocation_start(
-        &self,
-        id: Uuid,
-        step: i32,
-        class_name: &str,
-        method_name: &str,
-        delay: Option<Duration>,
-        status: InvocationStatus,
-        parameters: &[u8],
-    ) -> Result<()> {
+    async fn log_invocation_start(&self, params: InvocationStartParams<'_>) -> Result<()> {
+        // Destructure params
+        let InvocationStartParams {
+            id,
+            step,
+            class_name,
+            method_name,
+            delay,
+            status,
+            parameters,
+        } = params;
+
         let params_hash = hash_params(parameters);
         let delay_ms = delay.map(|d| d.as_millis() as i64);
 
@@ -750,15 +754,15 @@ mod tests {
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
         let expected_hash = hash_params(&params);
 
-        log.log_invocation_start(
+        log.log_invocation_start(InvocationStartParams {
             id,
-            0,
-            "TestClass",
-            "testMethod",
-            None,
-            InvocationStatus::Pending,
-            &params,
-        )
+            step: 0,
+            class_name: "TestClass",
+            method_name: "testMethod",
+            delay: None,
+            status: InvocationStatus::Pending,
+            parameters: &params,
+        })
         .await
         .unwrap();
 
@@ -779,15 +783,15 @@ mod tests {
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
-        log.log_invocation_start(
+        log.log_invocation_start(InvocationStartParams {
             id,
-            0,
-            "TestClass",
-            "testMethod",
-            None,
-            InvocationStatus::Pending,
-            &params,
-        )
+            step: 0,
+            class_name: "TestClass",
+            method_name: "testMethod",
+            delay: None,
+            status: InvocationStatus::Pending,
+            parameters: &params,
+        })
         .await
         .unwrap();
 
@@ -811,39 +815,39 @@ mod tests {
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
 
-        log.log_invocation_start(
-            id1,
-            0,
-            "Flow1",
-            "run",
-            None,
-            InvocationStatus::Pending,
-            &params,
-        )
+        log.log_invocation_start(InvocationStartParams {
+            id: id1,
+            step: 0,
+            class_name: "Flow1",
+            method_name: "run",
+            delay: None,
+            status: InvocationStatus::Pending,
+            parameters: &params,
+        })
         .await
         .unwrap();
 
-        log.log_invocation_start(
-            id2,
-            0,
-            "Flow2",
-            "run",
-            None,
-            InvocationStatus::WaitingForSignal,
-            &params,
-        )
+        log.log_invocation_start(InvocationStartParams {
+            id: id2,
+            step: 0,
+            class_name: "Flow2",
+            method_name: "run",
+            delay: None,
+            status: InvocationStatus::WaitingForSignal,
+            parameters: &params,
+        })
         .await
         .unwrap();
 
-        log.log_invocation_start(
-            id3,
-            0,
-            "Flow3",
-            "run",
-            None,
-            InvocationStatus::Complete,
-            &params,
-        )
+        log.log_invocation_start(InvocationStartParams {
+            id: id3,
+            step: 0,
+            class_name: "Flow3",
+            method_name: "run",
+            delay: None,
+            status: InvocationStatus::Complete,
+            parameters: &params,
+        })
         .await
         .unwrap();
 
@@ -861,30 +865,30 @@ mod tests {
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
 
-        log.log_invocation_start(
+        log.log_invocation_start(InvocationStartParams {
             id,
-            0,
-            "TestClass",
-            "testMethod",
-            None,
-            InvocationStatus::Pending,
-            &params,
-        )
+            step: 0,
+            class_name: "TestClass",
+            method_name: "testMethod",
+            delay: None,
+            status: InvocationStatus::Pending,
+            parameters: &params,
+        })
         .await
         .unwrap();
 
         let inv1 = log.get_invocation(id, 0).await.unwrap().unwrap();
         assert_eq!(inv1.attempts(), 1);
 
-        log.log_invocation_start(
+        log.log_invocation_start(InvocationStartParams {
             id,
-            0,
-            "TestClass",
-            "testMethod",
-            None,
-            InvocationStatus::Pending,
-            &params,
-        )
+            step: 0,
+            class_name: "TestClass",
+            method_name: "testMethod",
+            delay: None,
+            status: InvocationStatus::Pending,
+            parameters: &params,
+        })
         .await
         .unwrap();
 
@@ -900,15 +904,15 @@ mod tests {
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
 
         for step in 0..5 {
-            log.log_invocation_start(
+            log.log_invocation_start(InvocationStartParams {
                 id,
                 step,
-                "TestClass",
-                "testMethod",
-                None,
-                InvocationStatus::Complete,
-                &params,
-            )
+                class_name: "TestClass",
+                method_name: "testMethod",
+                delay: None,
+                status: InvocationStatus::Complete,
+                parameters: &params,
+            })
             .await
             .unwrap();
         }
