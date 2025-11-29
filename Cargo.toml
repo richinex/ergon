@@ -16,7 +16,7 @@ repository = "https://github.com/yourusername/ergon"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-bincode = "1.3"
+bincode = "2.0"
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
@@ -46,7 +46,7 @@ r2d2_sqlite = "0.25"
 async-trait = "0.1"
 
 # Graph
-petgraph = "0.6"
+petgraph = "0.8"
 
 # Concurrency
 dashmap = "6.1"
