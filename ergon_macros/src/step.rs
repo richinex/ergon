@@ -79,7 +79,7 @@ use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
 /// - `register_foo(&self, registry, x) -> StepHandle<T>` - Register with DAG
 /// - `foo(self: Arc<Self>, x) -> T` - Original method for direct execution (with full instrumentation)
 pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse dag_step arguments
+    // Parse step arguments
     let mut args = DagStepArgs::default();
 
     if !attr.is_empty() {
@@ -100,7 +100,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Check if function is async
     if sig.asyncness.is_none() {
-        return syn::Error::new_spanned(sig, "#[dag_step] can only be applied to async functions")
+        return syn::Error::new_spanned(sig, "#[step] can only be applied to async functions")
             .to_compile_error()
             .into();
     }
@@ -139,7 +139,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     if has_invalid_self {
         return syn::Error::new_spanned(
             sig,
-            "#[dag_step] requires `self: Arc<Self>` instead of `&self` or `&mut self`. \
+            "#[step] requires `self: Arc<Self>` instead of `&self` or `&mut self`. \
              Due to Rust's ownership rules, the closure needs to be 'static. \
              Use `self: Arc<Self>` as the receiver type to enable method-style calls. \
              Example: `async fn step(self: Arc<Self>) -> T`",

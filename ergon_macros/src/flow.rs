@@ -116,7 +116,7 @@ pub(crate) fn try_wrap_dag_registrations(
     }
 }
 
-/// The `#[dag_flow]` macro marks an async method as a DAG flow orchestrator.
+/// The `#[flow]` macro marks an async method as a DAG flow orchestrator.
 ///
 /// This macro provides ALL the features of `#[flow]` - execution context,
 /// caching, logging, etc. The flow body should create a `DeferredRegistry`,
@@ -124,14 +124,14 @@ pub(crate) fn try_wrap_dag_registrations(
 ///
 /// # Usage with Arc<Self>
 ///
-/// When using `#[dag_step]` methods with `self: Arc<Self>`, the flow method
+/// When using `#[step]` methods with `self: Arc<Self>`, the flow method
 /// should also use `self: Arc<Self>` for consistency. This enables clean,
 /// method-style registration calls.
 ///
 /// # Example
 ///
 /// ```ignore
-/// #[dag_flow]
+/// #[flow]
 /// async fn process(self: Arc<Self>) -> OrderResult {
 ///     let mut registry = DeferredRegistry::new();
 ///
@@ -156,7 +156,7 @@ pub fn flow_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Check if function is async
     if sig.asyncness.is_none() {
-        return syn::Error::new_spanned(sig, "#[dag_flow] can only be applied to async functions")
+        return syn::Error::new_spanned(sig, "#[flow] can only be applied to async functions")
             .to_compile_error()
             .into();
     }

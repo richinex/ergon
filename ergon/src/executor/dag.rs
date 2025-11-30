@@ -23,7 +23,7 @@
 //! # Example
 //!
 //! ```ignore
-//! #[dag_flow]
+//! #[flow]
 //! async fn process_order(self: Arc<Self>) -> OrderResult {
 //!     // These three steps are independent - execute in parallel
 //!     let user = self.fetch_user();           // StepHandle<User>
@@ -47,7 +47,7 @@
 //! # Comparison with Sequential Execution
 //!
 //! - **Sequential flows** (`#[flow]`): Steps execute one at a time in order
-//! - **DAG flows** (`#[dag_flow]`): Independent steps execute in parallel
+//! - **DAG flows** (`#[flow]`): Independent steps execute in parallel
 //!
 //! Similar to how [Temporal](https://temporal.io) handles activities - they return
 //! promises that are resolved by the workflow engine, not immediately.

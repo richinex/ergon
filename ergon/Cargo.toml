@@ -43,3 +43,4 @@ ergon_macros = { path = "../ergon_macros" }
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["full"] }
+serde_json = "1.0"
