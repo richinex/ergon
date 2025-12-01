@@ -51,12 +51,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check examples compile
-        run: |
-          for example in ergon/examples/*.rs; do
-            example_name=$(basename "$example" .rs)
-            echo "Checking example: $example_name"
-            cargo check --example "$example_name"
-          done
+        run: cargo check --workspace --examples --all-features
 
   clippy:
     name: Clippy
