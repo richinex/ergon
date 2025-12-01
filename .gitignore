@@ -101,3 +101,4 @@ cobertura.xml
 docs_to_ignore/
 images/
 *.json
+ergon/output

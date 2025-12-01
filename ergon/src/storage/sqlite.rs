@@ -183,6 +183,27 @@ impl SqliteExecutionLog {
             [],
         )?;
 
+        // Create flow queue table for distributed execution
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS flow_queue (
+                task_id TEXT PRIMARY KEY,
+                flow_id TEXT NOT NULL,
+                flow_type TEXT NOT NULL,
+                flow_data BLOB NOT NULL,
+                status TEXT CHECK( status IN ('PENDING','RUNNING','COMPLETE','FAILED') ) NOT NULL,
+                locked_by TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Create index for efficient pending flow lookups
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_flow_queue_status ON flow_queue(status, created_at)",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -199,6 +220,47 @@ impl SqliteExecutionLog {
     /// Returns the database path.
     pub fn db_path(&self) -> &str {
         &self.db_path
+    }
+
+    fn row_to_scheduled_flow(row: &rusqlite::Row) -> rusqlite::Result<super::ScheduledFlow> {
+        let task_id_str: String = row.get(0)?;
+        let task_id = Uuid::parse_str(&task_id_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        let flow_id_str: String = row.get(1)?;
+        let flow_id = Uuid::parse_str(&flow_id_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        let flow_type: String = row.get(2)?;
+        let flow_data: Vec<u8> = row.get(3)?;
+        let status_str: String = row.get(4)?;
+        let status = status_str.parse().map_err(|e: String| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            )
+        })?;
+        let locked_by: Option<String> = row.get(5)?;
+        let created_at_millis: i64 = row.get(6)?;
+        let created_at =
+            chrono::DateTime::from_timestamp_millis(created_at_millis).unwrap_or_else(Utc::now);
+        let updated_at_millis: i64 = row.get(7)?;
+        let updated_at =
+            chrono::DateTime::from_timestamp_millis(updated_at_millis).unwrap_or_else(Utc::now);
+
+        Ok(super::ScheduledFlow {
+            task_id,
+            flow_id,
+            flow_type,
+            flow_data,
+            status,
+            locked_by,
+            created_at,
+            updated_at,
+        })
     }
 
     fn row_to_invocation(row: &rusqlite::Row) -> rusqlite::Result<Invocation> {
@@ -446,6 +508,135 @@ impl ExecutionLog for SqliteExecutionLog {
     async fn close(&self) -> Result<()> {
         info!("Closing execution log database");
         Ok(())
+    }
+
+    async fn enqueue_flow(&self, flow: super::ScheduledFlow) -> Result<Uuid> {
+        let conn = self.get_connection()?;
+        let task_id = flow.task_id;
+
+        tokio::task::spawn_blocking(move || {
+            conn.execute(
+                "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    task_id.to_string(),
+                    flow.flow_id.to_string(),
+                    flow.flow_type,
+                    flow.flow_data,
+                    flow.status.as_str(),
+                    flow.locked_by,
+                    flow.created_at.timestamp_millis(),
+                    flow.updated_at.timestamp_millis(),
+                ],
+            )?;
+
+            debug!("Enqueued flow: task_id={}, flow_type={}", task_id, flow.flow_type);
+            Ok(task_id)
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
+        let conn = self.get_connection()?;
+        let worker_id = worker_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            // Use a transaction to atomically find and lock a pending flow
+            let tx = conn.unchecked_transaction()?;
+
+            // Find the oldest pending flow
+            let flow_opt = tx
+                .query_row(
+                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at
+                     FROM flow_queue
+                     WHERE status = 'PENDING'
+                     ORDER BY created_at ASC
+                     LIMIT 1",
+                    [],
+                    SqliteExecutionLog::row_to_scheduled_flow,
+                )
+                .optional()?;
+
+            if let Some(flow) = flow_opt {
+                // Lock it by updating status and locked_by
+                tx.execute(
+                    "UPDATE flow_queue
+                     SET status = 'RUNNING', locked_by = ?, updated_at = ?
+                     WHERE task_id = ?",
+                    params![
+                        &worker_id,
+                        Utc::now().timestamp_millis(),
+                        flow.task_id.to_string(),
+                    ],
+                )?;
+
+                tx.commit()?;
+
+                debug!(
+                    "Dequeued flow: task_id={}, flow_type={}, worker={}",
+                    flow.task_id, flow.flow_type, worker_id
+                );
+
+                // Return the flow with updated status
+                Ok(Some(super::ScheduledFlow {
+                    status: super::TaskStatus::Running,
+                    locked_by: Some(worker_id),
+                    updated_at: Utc::now(),
+                    ..flow
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
+        let conn = self.get_connection()?;
+
+        tokio::task::spawn_blocking(move || {
+            let updated = conn.execute(
+                "UPDATE flow_queue
+                 SET status = ?, updated_at = ?
+                 WHERE task_id = ?",
+                params![
+                    status.as_str(),
+                    Utc::now().timestamp_millis(),
+                    task_id.to_string(),
+                ],
+            )?;
+
+            if updated == 0 {
+                return Err(StorageError::ScheduledFlowNotFound(task_id));
+            }
+
+            debug!("Completed flow: task_id={}, status={}", task_id, status);
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<super::ScheduledFlow>> {
+        let conn = self.get_connection()?;
+
+        tokio::task::spawn_blocking(move || {
+            let flow = conn
+                .query_row(
+                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at
+                     FROM flow_queue
+                     WHERE task_id = ?",
+                    params![task_id.to_string()],
+                    SqliteExecutionLog::row_to_scheduled_flow,
+                )
+                .optional()?;
+
+            Ok(flow)
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 }
 

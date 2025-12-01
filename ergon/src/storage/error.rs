@@ -28,6 +28,22 @@ pub enum StorageError {
     /// The requested invocation was not found in storage.
     #[error("invocation not found: id={id}, step={step}")]
     InvocationNotFound { id: Uuid, step: i32 },
+
+    /// The operation is not supported by this storage backend.
+    #[error("operation not supported: {0}")]
+    Unsupported(String),
+
+    /// The scheduled flow was not found in storage.
+    #[error("scheduled flow not found: id={0}")]
+    ScheduledFlowNotFound(Uuid),
+
+    /// A connection error occurred (e.g., Redis connection failure).
+    #[error("connection error: {0}")]
+    Connection(String),
+
+    /// A serialization/deserialization error occurred.
+    #[error("serialization error")]
+    Serialization,
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;

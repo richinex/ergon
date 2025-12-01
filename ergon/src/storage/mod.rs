@@ -5,6 +5,7 @@
 //!
 //! - [`SqliteExecutionLog`]: Persistent SQLite-based storage with connection pooling
 //! - [`InMemoryExecutionLog`]: Fast in-memory storage for testing and development
+//! - [`RedisExecutionLog`]: Redis-based storage for true distributed execution
 //!
 //! # Example
 //!
@@ -23,9 +24,13 @@ use uuid::Uuid;
 
 mod error;
 mod params;
+mod queue;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+
+#[cfg(feature = "redis")]
+pub mod redis;
 
 pub mod memory;
 
@@ -33,9 +38,13 @@ pub mod memory;
 pub use error::{Result, StorageError};
 pub use memory::InMemoryExecutionLog;
 pub use params::InvocationStartParams;
+pub use queue::{ScheduledFlow, TaskStatus};
 
 #[cfg(feature = "sqlite")]
 pub use sqlite::{PoolConfig, SqliteExecutionLog};
+
+#[cfg(feature = "redis")]
+pub use redis::RedisExecutionLog;
 
 use crate::core::Invocation;
 
@@ -77,6 +86,83 @@ pub trait ExecutionLog: Send + Sync {
 
     /// Close the execution log.
     async fn close(&self) -> Result<()>;
+
+    // ===== Distributed Queue Operations =====
+    // These methods are optional and only implemented by storage backends
+    // that support distributed execution via task queues.
+
+    /// Enqueue a flow for distributed execution.
+    ///
+    /// This method schedules a flow to be executed by a worker. The flow is
+    /// serialized and stored in the queue with pending status.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default. Storage backends that
+    /// support distributed execution should override this method.
+    async fn enqueue_flow(&self, flow: ScheduledFlow) -> Result<Uuid> {
+        let _ = flow;
+        Err(StorageError::Unsupported(
+            "flow queue not implemented for this storage backend".to_string(),
+        ))
+    }
+
+    /// Dequeue a flow for execution by a worker.
+    ///
+    /// This method atomically finds a pending flow and locks it for execution
+    /// by the specified worker. Uses pessimistic locking to prevent multiple
+    /// workers from executing the same flow.
+    ///
+    /// # Arguments
+    ///
+    /// * `worker_id` - Unique identifier for the worker requesting work
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(ScheduledFlow)` if a flow was successfully locked, or
+    /// `None` if no pending flows are available.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<ScheduledFlow>> {
+        let _ = worker_id;
+        Err(StorageError::Unsupported(
+            "flow queue not implemented for this storage backend".to_string(),
+        ))
+    }
+
+    /// Mark a scheduled flow as complete.
+    ///
+    /// This method updates the status of a scheduled flow after execution
+    /// completes, either successfully or with failure.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The unique identifier of the scheduled task
+    /// * `status` - Final status (Complete or Failed)
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn complete_flow(&self, task_id: Uuid, status: TaskStatus) -> Result<()> {
+        let _ = (task_id, status);
+        Err(StorageError::Unsupported(
+            "flow queue not implemented for this storage backend".to_string(),
+        ))
+    }
+
+    /// Get the current status of a scheduled flow.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<ScheduledFlow>> {
+        let _ = task_id;
+        Err(StorageError::Unsupported(
+            "flow queue not implemented for this storage backend".to_string(),
+        ))
+    }
 }
 
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage
@@ -119,5 +205,21 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
 
     async fn close(&self) -> Result<()> {
         (**self).close().await
+    }
+
+    async fn enqueue_flow(&self, flow: ScheduledFlow) -> Result<Uuid> {
+        (**self).enqueue_flow(flow).await
+    }
+
+    async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<ScheduledFlow>> {
+        (**self).dequeue_flow(worker_id).await
+    }
+
+    async fn complete_flow(&self, task_id: Uuid, status: TaskStatus) -> Result<()> {
+        (**self).complete_flow(task_id, status).await
+    }
+
+    async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<ScheduledFlow>> {
+        (**self).get_scheduled_flow(task_id).await
     }
 }

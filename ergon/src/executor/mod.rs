@@ -33,14 +33,18 @@ mod context;
 pub mod dag;
 mod error;
 mod instance;
+mod scheduler;
 mod signal;
+mod worker;
 
 // Re-export public types
 pub use context::{ExecutionContext, FlowContext, CALL_TYPE, EXECUTION_CONTEXT};
 pub use dag::{DagSummary, DeferredRegistry, StepHandle};
 pub use error::{ExecutionError, Result};
 pub use instance::{FlowExecutor, FlowInstance};
+pub use scheduler::FlowScheduler;
 pub use signal::{await_external_signal, StepFuture};
+pub use worker::{FlowRegistry, FlowWorker, WorkerHandle};
 
 // Re-export from other modules for convenience
 use crate::storage::ExecutionLog;
