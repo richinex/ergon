@@ -10,12 +10,12 @@
 //!
 //! Run: cargo run --example race_condition_demo
 
-use ergon::prelude::*;
 use ergon::core::InvocationStatus;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use ergon::prelude::*;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 // Global counters to track execution attempts per flow
 static EXECUTION_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
@@ -31,8 +31,10 @@ impl CriticalTask {
     async fn execute(self: Arc<Self>) -> Result<TaskResult, String> {
         let attempt = EXECUTION_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
 
-        println!("  [EXECUTION] Task {} starting (global attempt #{})",
-            self.task_id, attempt);
+        println!(
+            "  [EXECUTION] Task {} starting (global attempt #{})",
+            self.task_id, attempt
+        );
 
         // Step 1: Perform critical operation
         let result = self.clone().perform_critical_operation().await?;
@@ -47,7 +49,10 @@ impl CriticalTask {
 
     #[step]
     async fn perform_critical_operation(self: Arc<Self>) -> Result<OperationResult, String> {
-        println!("    [Step 1] Performing critical operation: {}", self.operation);
+        println!(
+            "    [Step 1] Performing critical operation: {}",
+            self.operation
+        );
 
         // Simulate work
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -65,7 +70,10 @@ impl CriticalTask {
         self: Arc<Self>,
         result: OperationResult,
     ) -> Result<TaskResult, String> {
-        println!("    [Step 2] Verifying and committing result for task {}", result.task_id);
+        println!(
+            "    [Step 2] Verifying and committing result for task {}",
+            result.task_id
+        );
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -157,20 +165,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let worker_name_final = worker_name.clone();
 
             // Custom registration with assignment tracking
-            worker.register(move |flow: Arc<CriticalTask>| {
-                let assignments = assignments.clone();
-                let worker_name = worker_name.clone();
-                async move {
-                    // Track which worker got this task
-                    {
-                        let mut map = assignments.lock().await;
-                        map.insert(flow.task_id.clone(), worker_name.clone());
-                    }
+            worker
+                .register(move |flow: Arc<CriticalTask>| {
+                    let assignments = assignments.clone();
+                    let worker_name = worker_name.clone();
+                    async move {
+                        // Track which worker got this task
+                        {
+                            let mut map = assignments.lock().await;
+                            map.insert(flow.task_id.clone(), worker_name.clone());
+                        }
 
-                    println!("🎯 {} claimed {}", worker_name, flow.task_id);
-                    flow.execute().await
-                }
-            }).await;
+                        println!("🎯 {} claimed {}", worker_name, flow.task_id);
+                        flow.execute().await
+                    }
+                })
+                .await;
 
             let handle = worker.start().await;
 
@@ -232,15 +242,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let invocations = storage.get_invocations_for_flow(*flow_id).await?;
         let steps: Vec<_> = invocations.iter().filter(|i| i.step() > 0).collect();
         let step_count = steps.len();
-        let completed_count = steps.iter()
+        let completed_count = steps
+            .iter()
             .filter(|s| s.status() == InvocationStatus::Complete)
             .count();
 
         if step_count == 2 && completed_count == 2 {
             println!("  ✓ Flow {} - 2/2 steps completed", flow_id);
         } else {
-            println!("  ✗ Flow {} - {}/{} steps completed (UNEXPECTED)",
-                flow_id, completed_count, step_count);
+            println!(
+                "  ✗ Flow {} - {}/{} steps completed (UNEXPECTED)",
+                flow_id, completed_count, step_count
+            );
             all_good = false;
         }
     }
@@ -256,7 +269,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if total_attempts == tasks.len() as u32 && tasks_processed == tasks.len() && all_good {
         println!("✅ SUCCESS: Exactly-once execution verified!");
         println!("\n   • {} tasks scheduled", tasks.len());
-        println!("   • {} execution attempts (no duplicates!)", total_attempts);
+        println!(
+            "   • {} execution attempts (no duplicates!)",
+            total_attempts
+        );
         println!("   • 5 workers racing for work");
         println!("   • Each task processed exactly once");
         println!("\n🔒 Pessimistic Locking Protected Against:");
@@ -271,10 +287,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n💡 With Regular Queues:");
     println!("   ✗ Multiple workers could pop same task (visibility timeout race)");
-    println!("   ✗ $10,000 transferred {} times to Account B",
-        if total_attempts > 1 { total_attempts } else { 2 });
-    println!("   ✗ Inventory deducted {} times (oversold!)",
-        if total_attempts > 1 { total_attempts } else { 2 });
+    println!(
+        "   ✗ $10,000 transferred {} times to Account B",
+        if total_attempts > 1 {
+            total_attempts
+        } else {
+            2
+        }
+    );
+    println!(
+        "   ✗ Inventory deducted {} times (oversold!)",
+        if total_attempts > 1 {
+            total_attempts
+        } else {
+            2
+        }
+    );
     println!("   ✗ Need Redis-based distributed locks manually");
 
     println!("\n💡 With Ergon:");

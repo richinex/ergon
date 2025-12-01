@@ -74,6 +74,7 @@ impl ExecutionLog for InMemoryExecutionLog {
             None,
             delay_ms,
             retry_policy,
+            None, // is_retryable (None = not an error yet)
         );
 
         let key = (id, step);
@@ -104,6 +105,7 @@ impl ExecutionLog for InMemoryExecutionLog {
                 Some(return_value.to_vec()),
                 delay_ms,
                 entry.retry_policy(), // Preserve retry policy
+                entry.is_retryable(), // Preserve is_retryable
             );
             *entry = invocation.clone();
             Ok(invocation)
@@ -146,6 +148,27 @@ impl ExecutionLog for InMemoryExecutionLog {
             .collect();
 
         Ok(invocations)
+    }
+
+    async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
+        // Check if any step in the flow has is_retryable = Some(false)
+        let has_non_retryable = self
+            .invocations
+            .iter()
+            .filter(|entry| entry.key().0 == flow_id)
+            .any(|entry| entry.value().is_retryable() == Some(false));
+
+        Ok(has_non_retryable)
+    }
+
+    async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()> {
+        let key = (id, step);
+        if let Some(mut entry) = self.invocations.get_mut(&key) {
+            entry.set_is_retryable(Some(is_retryable));
+            Ok(())
+        } else {
+            Err(StorageError::InvocationNotFound { id, step })
+        }
     }
 
     async fn reset(&self) -> Result<()> {
@@ -227,7 +250,12 @@ impl ExecutionLog for InMemoryExecutionLog {
         Ok(self.flow_queue.get(&task_id).map(|entry| entry.clone()))
     }
 
-    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: std::time::Duration) -> Result<()> {
+    async fn retry_flow(
+        &self,
+        task_id: Uuid,
+        error_message: String,
+        delay: std::time::Duration,
+    ) -> Result<()> {
         if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
             // Increment retry count
             entry.retry_count += 1;
@@ -257,11 +285,7 @@ mod tests {
     async fn test_enqueue_and_get_flow() {
         let log = InMemoryExecutionLog::new();
         let flow_id = Uuid::new_v4();
-        let flow = super::super::ScheduledFlow::new(
-            flow_id,
-            "TestFlow".to_string(),
-            vec![1, 2, 3],
-        );
+        let flow = super::super::ScheduledFlow::new(flow_id, "TestFlow".to_string(), vec![1, 2, 3]);
         let task_id = flow.task_id;
 
         // Enqueue
@@ -281,11 +305,7 @@ mod tests {
     async fn test_dequeue_locks_flow() {
         let log = InMemoryExecutionLog::new();
         let flow_id = Uuid::new_v4();
-        let flow = super::super::ScheduledFlow::new(
-            flow_id,
-            "TestFlow".to_string(),
-            vec![1, 2, 3],
-        );
+        let flow = super::super::ScheduledFlow::new(flow_id, "TestFlow".to_string(), vec![1, 2, 3]);
         let task_id = flow.task_id;
 
         log.enqueue_flow(flow).await.unwrap();
@@ -308,30 +328,18 @@ mod tests {
         let log = InMemoryExecutionLog::new();
 
         // Enqueue 3 flows
-        let flow1 = super::super::ScheduledFlow::new(
-            Uuid::new_v4(),
-            "Flow1".to_string(),
-            vec![1],
-        );
+        let flow1 = super::super::ScheduledFlow::new(Uuid::new_v4(), "Flow1".to_string(), vec![1]);
         let task1 = flow1.task_id;
         log.enqueue_flow(flow1).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let flow2 = super::super::ScheduledFlow::new(
-            Uuid::new_v4(),
-            "Flow2".to_string(),
-            vec![2],
-        );
+        let flow2 = super::super::ScheduledFlow::new(Uuid::new_v4(), "Flow2".to_string(), vec![2]);
         log.enqueue_flow(flow2).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let flow3 = super::super::ScheduledFlow::new(
-            Uuid::new_v4(),
-            "Flow3".to_string(),
-            vec![3],
-        );
+        let flow3 = super::super::ScheduledFlow::new(Uuid::new_v4(), "Flow3".to_string(), vec![3]);
         log.enqueue_flow(flow3).await.unwrap();
 
         // Dequeue should return oldest first
@@ -342,11 +350,8 @@ mod tests {
     #[tokio::test]
     async fn test_complete_flow() {
         let log = InMemoryExecutionLog::new();
-        let flow = super::super::ScheduledFlow::new(
-            Uuid::new_v4(),
-            "TestFlow".to_string(),
-            vec![1, 2, 3],
-        );
+        let flow =
+            super::super::ScheduledFlow::new(Uuid::new_v4(), "TestFlow".to_string(), vec![1, 2, 3]);
         let task_id = flow.task_id;
 
         log.enqueue_flow(flow).await.unwrap();
@@ -420,4 +425,3 @@ mod tests {
         assert_eq!(total, 10);
     }
 }
-

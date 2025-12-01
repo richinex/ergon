@@ -173,8 +173,14 @@ impl SqliteExecutionLog {
 
         // Add retry_policy column if it doesn't exist (migration for existing databases)
         // Store as JSON TEXT for flexibility
+        let _ = conn.execute("ALTER TABLE execution_log ADD COLUMN retry_policy TEXT", []);
+
+        // Add is_retryable column if it doesn't exist (migration for existing databases)
+        // NULL = not an error (Ok result)
+        // 0 = non-retryable error (permanent failure)
+        // 1 = retryable error (transient failure)
         let _ = conn.execute(
-            "ALTER TABLE execution_log ADD COLUMN retry_policy TEXT",
+            "ALTER TABLE execution_log ADD COLUMN is_retryable INTEGER",
             [],
         );
 
@@ -265,8 +271,7 @@ impl SqliteExecutionLog {
         let retry_count: u32 = row.get(8).unwrap_or(0);
         let error_message: Option<String> = row.get(9).ok();
         let scheduled_for_millis: Option<i64> = row.get(10).ok();
-        let scheduled_for = scheduled_for_millis
-            .and_then(chrono::DateTime::from_timestamp_millis);
+        let scheduled_for = scheduled_for_millis.and_then(chrono::DateTime::from_timestamp_millis);
 
         Ok(super::ScheduledFlow {
             task_id,
@@ -311,8 +316,11 @@ impl SqliteExecutionLog {
 
         // Parse retry_policy from JSON if present
         let retry_policy_json: Option<String> = row.get(11)?;
-        let retry_policy = retry_policy_json
-            .and_then(|json| serde_json::from_str(&json).ok());
+        let retry_policy = retry_policy_json.and_then(|json| serde_json::from_str(&json).ok());
+
+        // Parse is_retryable (NULL, 0, or 1)
+        let is_retryable_int: Option<i32> = row.get(12).ok().flatten();
+        let is_retryable = is_retryable_int.map(|v| v != 0);
 
         Ok(Invocation::new(
             id,
@@ -327,6 +335,7 @@ impl SqliteExecutionLog {
             return_value,
             delay,
             retry_policy,
+            is_retryable,
         ))
     }
 }
@@ -354,8 +363,7 @@ impl ExecutionLog for SqliteExecutionLog {
         let params_hash = hash_params(&parameters);
 
         // Serialize retry_policy to JSON if present
-        let retry_policy_json = retry_policy
-            .and_then(|p| serde_json::to_string(&p).ok());
+        let retry_policy_json = retry_policy.and_then(|p| serde_json::to_string(&p).ok());
 
         // Get a connection from the pool (this is fast)
         let conn = self.get_connection()?;
@@ -416,7 +424,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -444,7 +452,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -464,7 +472,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
                      FROM execution_log
                      WHERE id = ?
                      ORDER BY step DESC
@@ -485,7 +493,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
                  FROM execution_log
                  WHERE id = ?
                  ORDER BY step ASC",
@@ -506,7 +514,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
                  FROM execution_log
                  WHERE step = 0
                    AND status <> 'COMPLETE'
@@ -523,6 +531,55 @@ impl ExecutionLog for SqliteExecutionLog {
         })
         .await
         .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
+        let conn = self.get_connection()?;
+
+        tokio::task::spawn_blocking(move || {
+            // Check if any step in the flow has is_retryable = 0 (non-retryable error)
+            let has_non_retryable: bool = conn.query_row(
+                "SELECT EXISTS(
+                         SELECT 1 FROM execution_log
+                         WHERE id = ? AND is_retryable = 0
+                     )",
+                params![flow_id.to_string()],
+                |row| row.get(0),
+            )?;
+
+            debug!(
+                "Flow {} has non-retryable error: {}",
+                flow_id, has_non_retryable
+            );
+
+            Ok(has_non_retryable)
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()> {
+        let conn = self.get_connection()?;
+
+        tokio::task::spawn_blocking(move || {
+            conn.execute(
+                "UPDATE execution_log
+                 SET is_retryable = ?
+                 WHERE id = ? AND step = ?",
+                params![if is_retryable { 1 } else { 0 }, id.to_string(), step],
+            )?;
+
+            debug!(
+                "Updated is_retryable for flow {} step {}: {}",
+                id, step, is_retryable
+            );
+
+            Ok::<(), StorageError>(())
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))??;
+
+        Ok(())
     }
 
     async fn reset(&self) -> Result<()> {
@@ -657,7 +714,12 @@ impl ExecutionLog for SqliteExecutionLog {
         .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
-    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: std::time::Duration) -> Result<()> {
+    async fn retry_flow(
+        &self,
+        task_id: Uuid,
+        error_message: String,
+        delay: std::time::Duration,
+    ) -> Result<()> {
         let conn = self.get_connection()?;
 
         tokio::task::spawn_blocking(move || {

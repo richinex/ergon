@@ -12,10 +12,10 @@
 //!
 //! Run: cargo run --example retry_recovery_demo
 
-use ergon::prelude::*;
 use ergon::core::{RetryPolicy, RetryableError};
-use std::sync::Arc;
+use ergon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 // Global counters to track execution
@@ -120,18 +120,26 @@ impl OrderProcessor {
         self: Arc<Self>,
         validation: ValidationResult,
     ) -> Result<PaymentResult, String> {
-        println!("  [Step 2/4] Charging payment for order {}", validation.order_id);
+        println!(
+            "  [Step 2/4] Charging payment for order {}",
+            validation.order_id
+        );
 
         // THIS IS THE CRITICAL STEP - We track how many times it runs
         let count = PAYMENT_CHARGE_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
 
-        println!("    💳 CHARGING ${:.2} to customer {} (charge attempt #{})",
-            self.amount, self.customer_id, count);
+        println!(
+            "    💳 CHARGING ${:.2} to customer {} (charge attempt #{})",
+            self.amount, self.customer_id, count
+        );
 
         // Simulate payment processing
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-        println!("    ✓ Payment successful! Transaction ID: TXN-{}", self.order_id);
+        println!(
+            "    ✓ Payment successful! Transaction ID: TXN-{}",
+            self.order_id
+        );
 
         Ok(PaymentResult {
             transaction_id: format!("TXN-{}", self.order_id),
@@ -151,9 +159,14 @@ impl OrderProcessor {
     ) -> Result<InventoryResult, String> {
         let count = INVENTORY_ATTEMPT_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
 
-        println!("  [Step 3/4] Reserving inventory for transaction {}", payment.transaction_id);
-        println!("    Payment data loaded from storage: ${:.2} charged at timestamp {}",
-            payment.amount_charged, payment.charged_at);
+        println!(
+            "  [Step 3/4] Reserving inventory for transaction {}",
+            payment.transaction_id
+        );
+        println!(
+            "    Payment data loaded from storage: ${:.2} charged at timestamp {}",
+            payment.amount_charged, payment.charged_at
+        );
         println!("    🔄 Inventory reservation attempt {}", count);
 
         // Simulate transient failures on first 2 attempts
@@ -178,8 +191,10 @@ impl OrderProcessor {
         self: Arc<Self>,
         inventory: InventoryResult,
     ) -> Result<OrderResult, String> {
-        println!("  [Step 4/4] Sending confirmation email for reservation {}",
-            inventory.reservation_id);
+        println!(
+            "  [Step 4/4] Sending confirmation email for reservation {}",
+            inventory.reservation_id
+        );
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -253,7 +268,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let worker = FlowWorker::new(storage_clone.clone(), "worker-auto-retry")
             .with_poll_interval(Duration::from_millis(50));
 
-        worker.register(|flow: Arc<OrderProcessor>| flow.process_order()).await;
+        worker
+            .register(|flow: Arc<OrderProcessor>| flow.process_order())
+            .await;
         let handle = worker.start().await;
 
         // Wait for workflow to complete (including retries)
@@ -296,8 +313,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if inv.step() > 0 {
             println!("  ✓ {} (status: {:?})", inv.method_name(), inv.status());
             if let Some(policy) = inv.retry_policy() {
-                println!("    Retry Policy: max_attempts={}, backoff={}x",
-                    policy.max_attempts, policy.backoff_multiplier);
+                println!(
+                    "    Retry Policy: max_attempts={}, backoff={}x",
+                    policy.max_attempts, policy.backoff_multiplier
+                );
             }
         }
     }
@@ -318,11 +337,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if inventory_attempts == 3 {
-        println!("  ✓ Inventory step retried {} times with exponential backoff", inventory_attempts);
+        println!(
+            "  ✓ Inventory step retried {} times with exponential backoff",
+            inventory_attempts
+        );
         println!("  ✓ RetryableError trait identified transient failures");
         println!("  ✓ Succeeded on attempt 3 after automatic retries");
     } else {
-        println!("  ⚠️  Inventory attempts: {} (expected 3)", inventory_attempts);
+        println!(
+            "  ⚠️  Inventory attempts: {} (expected 3)",
+            inventory_attempts
+        );
     }
 
     println!("\n💡 Retry Policy Benefits:");

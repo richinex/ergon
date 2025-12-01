@@ -39,53 +39,119 @@ impl DataAnalysis {
         }
 
         tokio::time::sleep(Duration::from_millis(5)).await;
-        Ok(Dataset { values, source_id: self.id })
+        Ok(Dataset {
+            values,
+            source_id: self.id,
+        })
     }
 
     #[step(inputs(dataset = "generate_dataset"))]
     async fn compute_statistics(self: Arc<Self>, dataset: Dataset) -> Result<Statistics, String> {
         let sum: f64 = dataset.values.iter().sum();
         let mean = sum / dataset.values.len() as f64;
-        let variance = dataset.values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / dataset.values.len() as f64;
+        let variance = dataset
+            .values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>()
+            / dataset.values.len() as f64;
         let std_dev = variance.sqrt();
         let min = dataset.values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = dataset.values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let max = dataset
+            .values
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
         tokio::time::sleep(Duration::from_millis(10)).await;
-        Ok(Statistics { mean, std_dev, min, max, count: dataset.values.len(), source_id: dataset.source_id })
+        Ok(Statistics {
+            mean,
+            std_dev,
+            min,
+            max,
+            count: dataset.values.len(),
+            source_id: dataset.source_id,
+        })
     }
 
     #[step(inputs(stats = "compute_statistics"))]
     async fn transform_data(self: Arc<Self>, stats: Statistics) -> Result<TransformedData, String> {
-        let cv = if stats.mean != 0.0 { (stats.std_dev / stats.mean) * 100.0 } else { 0.0 };
+        let cv = if stats.mean != 0.0 {
+            (stats.std_dev / stats.mean) * 100.0
+        } else {
+            0.0
+        };
         let range = stats.max - stats.min;
-        let range_ratio = if stats.std_dev != 0.0 { range / stats.std_dev } else { 0.0 };
+        let range_ratio = if stats.std_dev != 0.0 {
+            range / stats.std_dev
+        } else {
+            0.0
+        };
         let iqr = 1.349 * stats.std_dev;
 
         tokio::time::sleep(Duration::from_millis(8)).await;
-        Ok(TransformedData { cv, range, range_ratio, iqr, norm_mean: stats.mean / stats.max, source_id: stats.source_id })
+        Ok(TransformedData {
+            cv,
+            range,
+            range_ratio,
+            iqr,
+            norm_mean: stats.mean / stats.max,
+            source_id: stats.source_id,
+        })
     }
 
     #[step(inputs(transformed = "transform_data"))]
-    async fn aggregate_results(self: Arc<Self>, transformed: TransformedData) -> Result<AnalysisResult, String> {
-        let score = (transformed.cv * 0.3) + (transformed.range_ratio * 0.2) + (transformed.iqr * 0.2) + (transformed.norm_mean * 100.0 * 0.3);
+    async fn aggregate_results(
+        self: Arc<Self>,
+        transformed: TransformedData,
+    ) -> Result<AnalysisResult, String> {
+        let score = (transformed.cv * 0.3)
+            + (transformed.range_ratio * 0.2)
+            + (transformed.iqr * 0.2)
+            + (transformed.norm_mean * 100.0 * 0.3);
 
         tokio::time::sleep(Duration::from_millis(7)).await;
-        Ok(AnalysisResult { pipeline_id: self.id, final_score: score, cv: transformed.cv, range: transformed.range })
+        Ok(AnalysisResult {
+            pipeline_id: self.id,
+            final_score: score,
+            cv: transformed.cv,
+            range: transformed.range,
+        })
     }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct Dataset { values: Vec<f64>, source_id: u64 }
+struct Dataset {
+    values: Vec<f64>,
+    source_id: u64,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
-struct Statistics { mean: f64, std_dev: f64, min: f64, max: f64, count: usize, source_id: u64 }
+struct Statistics {
+    mean: f64,
+    std_dev: f64,
+    min: f64,
+    max: f64,
+    count: usize,
+    source_id: u64,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
-struct TransformedData { cv: f64, range: f64, range_ratio: f64, iqr: f64, norm_mean: f64, source_id: u64 }
+struct TransformedData {
+    cv: f64,
+    range: f64,
+    range_ratio: f64,
+    iqr: f64,
+    norm_mean: f64,
+    source_id: u64,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-struct AnalysisResult { pipeline_id: u64, final_score: f64, cv: f64, range: f64 }
+struct AnalysisResult {
+    pipeline_id: u64,
+    final_score: f64,
+    cv: f64,
+    range: f64,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,7 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let scheduler = FlowScheduler::new(storage.clone());
     for i in 0..NUM_FLOWS {
-        let pipeline = DataAnalysis { id: i as u64, size: 1000 };
+        let pipeline = DataAnalysis {
+            id: i as u64,
+            size: 1000,
+        };
         scheduler.schedule(pipeline, Uuid::new_v4()).await?;
     }
 
@@ -111,14 +180,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = format!("worker-{}", worker_id);
 
         let handle = tokio::spawn(async move {
-            let worker = FlowWorker::new(storage_clone.clone(), &id).with_poll_interval(Duration::from_millis(50));
-            worker.register(|flow: Arc<DataAnalysis>| flow.analyze()).await;
+            let worker = FlowWorker::new(storage_clone.clone(), &id)
+                .with_poll_interval(Duration::from_millis(50));
+            worker
+                .register(|flow: Arc<DataAnalysis>| flow.analyze())
+                .await;
             let worker_handle = worker.start().await;
 
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 if let Ok(incomplete) = storage_clone.get_incomplete_flows().await {
-                    if incomplete.is_empty() { break; }
+                    if incomplete.is_empty() {
+                        break;
+                    }
                 }
             }
 
@@ -138,7 +212,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Flows:       {}", NUM_FLOWS);
     println!("  Workers:     4");
     println!("  Duration:    {:?}", duration);
-    println!("  Throughput:  {:.2} flows/sec\n", NUM_FLOWS as f64 / duration.as_secs_f64());
+    println!(
+        "  Throughput:  {:.2} flows/sec\n",
+        NUM_FLOWS as f64 / duration.as_secs_f64()
+    );
 
     Ok(())
 }

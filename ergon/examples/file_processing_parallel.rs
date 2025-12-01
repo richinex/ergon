@@ -37,7 +37,10 @@ impl FileProcessor {
         // Step 4: Write results to file (uses input from compute_statistics)
         let report = self.clone().write_results(stats).await?;
 
-        println!("[Flow] Completed: {} -> {}", self.input_file, self.output_file);
+        println!(
+            "[Flow] Completed: {} -> {}",
+            self.input_file, self.output_file
+        );
         Ok(report)
     }
 
@@ -74,7 +77,11 @@ impl FileProcessor {
             records.push(record);
         }
 
-        println!("  [Step 1] Read {} records from {}", records.len(), self.input_file);
+        println!(
+            "  [Step 1] Read {} records from {}",
+            records.len(),
+            self.input_file
+        );
 
         // Simulate some processing time to make concurrency visible
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -87,7 +94,11 @@ impl FileProcessor {
         self: Arc<Self>,
         records: Vec<Record>,
     ) -> Result<Vec<Record>, String> {
-        println!("  [Step 2] Validating {} records from {}", records.len(), self.input_file);
+        println!(
+            "  [Step 2] Validating {} records from {}",
+            records.len(),
+            self.input_file
+        );
 
         let mut cleaned = Vec::new();
         let mut invalid_count = 0;
@@ -130,11 +141,7 @@ impl FileProcessor {
 
         let total = records.len();
         let sum: f64 = records.iter().map(|r| r.value).sum();
-        let mean = if total > 0 {
-            sum / total as f64
-        } else {
-            0.0
-        };
+        let mean = if total > 0 { sum / total as f64 } else { 0.0 };
 
         let min = records
             .iter()

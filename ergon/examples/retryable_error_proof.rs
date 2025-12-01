@@ -180,8 +180,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_a = storage.clone();
     let worker_a = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_a, "Worker-A")
-            .with_poll_interval(Duration::from_millis(50));
+        let worker =
+            FlowWorker::new(storage_a, "Worker-A").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderA>| flow.process_order())
@@ -219,8 +219,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_b = storage.clone();
     let worker_b = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_b, "Worker-B")
-            .with_poll_interval(Duration::from_millis(50));
+        let worker =
+            FlowWorker::new(storage_b, "Worker-B").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderB>| flow.process_order())
@@ -254,7 +254,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nResult:");
     if step_a_count > step_b_count && step_b_count == 1 {
         println!("  PROOF CONFIRMED - RetryableError working correctly");
-        println!("  Retryable: {} attempts | Non-retryable: {} attempt", step_a_count, step_b_count);
+        println!(
+            "  Retryable: {} attempts | Non-retryable: {} attempt",
+            step_a_count, step_b_count
+        );
         println!("\nNote: Flow B may start multiple times (flow-level retry for worker crashes)");
         println!("      but step only executes once (cached non-retryable error)");
     } else {

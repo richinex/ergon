@@ -39,7 +39,9 @@ mod signal;
 mod worker;
 
 // Re-export public types
-pub use context::{ExecutionContext, FlowContext, LogStepStartParams, CALL_TYPE, EXECUTION_CONTEXT};
+pub use context::{
+    ExecutionContext, FlowContext, LogStepStartParams, CALL_TYPE, EXECUTION_CONTEXT,
+};
 pub use dag::{DagSummary, DeferredRegistry, StepHandle};
 pub use error::{ExecutionError, Result};
 pub use instance::{FlowExecutor, FlowInstance};

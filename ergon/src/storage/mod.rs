@@ -82,6 +82,28 @@ pub trait ExecutionLog: Send + Sync {
     /// Get all incomplete flows (flows that haven't completed).
     async fn get_incomplete_flows(&self) -> Result<Vec<Invocation>>;
 
+    /// Check if a flow has any non-retryable errors.
+    ///
+    /// This method scans all invocations for the given flow and returns true if
+    /// any step has cached an error marked as non-retryable (is_retryable = Some(false)).
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if any step has a permanent error, `false` otherwise.
+    async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool>;
+
+    /// Update the is_retryable flag for a specific invocation.
+    ///
+    /// This method is called after an error is cached to mark whether the error
+    /// is retryable or permanent.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The flow ID
+    /// * `step` - The step number
+    /// * `is_retryable` - Whether the cached error is retryable (true = retryable, false = permanent)
+    async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()>;
+
     /// Reset the execution log (delete all entries).
     async fn reset(&self) -> Result<()>;
 
@@ -179,7 +201,12 @@ pub trait ExecutionLog: Send + Sync {
     /// # Default Implementation
     ///
     /// Returns `StorageError::Unsupported` by default.
-    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: Duration) -> Result<()> {
+    async fn retry_flow(
+        &self,
+        task_id: Uuid,
+        error_message: String,
+        delay: Duration,
+    ) -> Result<()> {
         let _ = (task_id, error_message, delay);
         Err(StorageError::Unsupported(
             "flow queue not implemented for this storage backend".to_string(),
@@ -221,6 +248,14 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self).get_incomplete_flows().await
     }
 
+    async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
+        (**self).has_non_retryable_error(flow_id).await
+    }
+
+    async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()> {
+        (**self).update_is_retryable(id, step, is_retryable).await
+    }
+
     async fn reset(&self) -> Result<()> {
         (**self).reset().await
     }
@@ -245,7 +280,12 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self).get_scheduled_flow(task_id).await
     }
 
-    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: Duration) -> Result<()> {
+    async fn retry_flow(
+        &self,
+        task_id: Uuid,
+        error_message: String,
+        delay: Duration,
+    ) -> Result<()> {
         (**self).retry_flow(task_id, error_message, delay).await
     }
 }

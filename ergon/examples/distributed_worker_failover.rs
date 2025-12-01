@@ -75,11 +75,20 @@ impl std::fmt::Display for InventoryError {
         match self {
             InventoryError::WorkerCrashed => write!(f, "Worker crashed during processing"),
             InventoryError::ApiTimeout => write!(f, "External inventory API timeout"),
-            InventoryError::ServiceUnavailable => write!(f, "Inventory service temporarily unavailable"),
+            InventoryError::ServiceUnavailable => {
+                write!(f, "Inventory service temporarily unavailable")
+            }
             InventoryError::RateLimited => write!(f, "Rate limit exceeded"),
             InventoryError::ItemNotFound(item) => write!(f, "Item '{}' not found in catalog", item),
-            InventoryError::InsufficientStock { requested, available } => {
-                write!(f, "Insufficient stock: requested {}, only {} available", requested, available)
+            InventoryError::InsufficientStock {
+                requested,
+                available,
+            } => {
+                write!(
+                    f,
+                    "Insufficient stock: requested {}, only {} available",
+                    requested, available
+                )
             }
             InventoryError::InvalidSku(sku) => write!(f, "Invalid SKU format: '{}'", sku),
         }
@@ -314,8 +323,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_a = storage.clone();
     let worker_a = tokio::spawn(async move {
         println!("[Worker-A] Starting up...");
-        let worker = FlowWorker::new(storage_a, "Worker-A")
-            .with_poll_interval(Duration::from_millis(50));
+        let worker =
+            FlowWorker::new(storage_a, "Worker-A").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderProcessor>| flow.process_order())
@@ -333,8 +342,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_b = storage.clone();
     let worker_b = tokio::spawn(async move {
         println!("[Worker-B] Starting up...");
-        let worker = FlowWorker::new(storage_b, "Worker-B")
-            .with_poll_interval(Duration::from_millis(50));
+        let worker =
+            FlowWorker::new(storage_b, "Worker-B").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderProcessor>| flow.process_order())
@@ -351,8 +360,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_c = storage.clone();
     let worker_c = tokio::spawn(async move {
         println!("[Worker-C] Starting up (standby mode)...");
-        let worker = FlowWorker::new(storage_c, "Worker-C")
-            .with_poll_interval(Duration::from_millis(50));
+        let worker =
+            FlowWorker::new(storage_c, "Worker-C").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderProcessor>| flow.process_order())
@@ -383,8 +392,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(flow) = flow_invocation {
         println!("Flow Status: {:?}", flow.status());
         if let Some(retry_policy) = flow.retry_policy() {
-            println!("Retry Policy: max_attempts={}, initial_delay={}ms",
-                retry_policy.max_attempts, retry_policy.initial_delay.as_millis());
+            println!(
+                "Retry Policy: max_attempts={}, initial_delay={}ms",
+                retry_policy.max_attempts,
+                retry_policy.initial_delay.as_millis()
+            );
         }
     }
 
@@ -402,12 +414,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📊 Execution Statistics:");
     println!("  Payment charged:           {} time(s)", payment_count);
     println!("  Inventory reserve attempts: {} time(s)", inventory_count);
-    println!("  Worker-A crashed:          {}", if worker_crashed { "Yes" } else { "No" });
+    println!(
+        "  Worker-A crashed:          {}",
+        if worker_crashed { "Yes" } else { "No" }
+    );
 
     println!("\n🎯 What Happened:");
     println!("  1️⃣  Worker-A picked up the flow from queue");
     println!("  2️⃣  Worker-A completed Step 1 (validate_order) ✓");
-    println!("  3️⃣  Worker-A completed Step 2 (charge_payment) - ${:.2} charged ✓", order.amount);
+    println!(
+        "  3️⃣  Worker-A completed Step 2 (charge_payment) - ${:.2} charged ✓",
+        order.amount
+    );
     println!("  4️⃣  Worker-A attempted Step 3 (reserve_inventory)");
     println!("  5️⃣  💥 Worker-A CRASHED during Step 3");
     println!("  6️⃣  Flow auto-retried, re-queued with exponential backoff");
@@ -426,7 +444,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("     - {} inventory execution attempts", inventory_count);
         println!("     - Worker handoff (A → B)");
     } else {
-        println!("  ❌ Payment ran {} times - THIS SHOULD NOT HAPPEN!", payment_count);
+        println!(
+            "  ❌ Payment ran {} times - THIS SHOULD NOT HAPPEN!",
+            payment_count
+        );
     }
 
     println!("\n  ✅ RetryableError Trait (KEY FEATURE):");
@@ -453,7 +474,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n💡 Without Ergon (Traditional Queue):");
     println!("  ❌ Worker crash = entire task lost OR manual requeue");
-    println!("  ❌ Retry from Step 1 = customer charged {} times", inventory_count);
+    println!(
+        "  ❌ Retry from Step 1 = customer charged {} times",
+        inventory_count
+    );
     println!("  ❌ Need manual idempotency checks (50+ lines of code)");
     println!("  ❌ Need manual worker coordination");
     println!("  ❌ Need manual retry logic with exponential backoff");

@@ -60,6 +60,9 @@ pub struct Invocation {
     /// Retry policy for this invocation (None means no retries)
     #[serde(default)]
     retry_policy: Option<RetryPolicy>,
+    /// Whether the cached error is retryable (None = not an error, true = retryable, false = permanent)
+    #[serde(default)]
+    is_retryable: Option<bool>,
 }
 
 impl Invocation {
@@ -77,6 +80,7 @@ impl Invocation {
         return_value: Option<Vec<u8>>,
         delay: Option<i64>,
         retry_policy: Option<RetryPolicy>,
+        is_retryable: Option<bool>,
     ) -> Self {
         Self {
             id,
@@ -91,6 +95,7 @@ impl Invocation {
             return_value,
             delay,
             retry_policy,
+            is_retryable,
         }
     }
 
@@ -146,12 +151,20 @@ impl Invocation {
         self.step == 0
     }
 
+    pub fn is_retryable(&self) -> Option<bool> {
+        self.is_retryable
+    }
+
     pub fn set_status(&mut self, status: InvocationStatus) {
         self.status = status;
     }
 
     pub fn set_return_value(&mut self, return_value: Vec<u8>) {
         self.return_value = Some(return_value);
+    }
+
+    pub fn set_is_retryable(&mut self, is_retryable: Option<bool>) {
+        self.is_retryable = is_retryable;
     }
 
     pub fn increment_attempts(&mut self) {
@@ -212,6 +225,7 @@ mod tests {
             None,
             None,
             None, // retry_policy
+            None, // is_retryable
         );
         assert!(inv.is_flow());
 
@@ -228,6 +242,7 @@ mod tests {
             None,
             None,
             None, // retry_policy
+            None, // is_retryable
         );
         assert!(!inv2.is_flow());
     }
@@ -250,6 +265,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(inv1.retry_policy(), None);
 
@@ -267,6 +283,7 @@ mod tests {
             None,
             None,
             Some(RetryPolicy::STANDARD),
+            None,
         );
         assert_eq!(inv2.retry_policy(), Some(RetryPolicy::STANDARD));
 
@@ -284,11 +301,69 @@ mod tests {
             None,
             None,
             Some(RetryPolicy::with_max_attempts(3)),
+            None,
         );
         assert_eq!(inv3.attempts(), 1);
         inv3.increment_attempts();
         assert_eq!(inv3.attempts(), 2);
         inv3.increment_attempts();
         assert_eq!(inv3.attempts(), 3);
+    }
+
+    #[test]
+    fn test_invocation_is_retryable() {
+        // Test with retryable error
+        let inv1 = Invocation::new(
+            Uuid::new_v4(),
+            1,
+            Utc::now(),
+            "TestClass".to_string(),
+            "testMethod".to_string(),
+            InvocationStatus::Complete,
+            1,
+            vec![],
+            0,
+            None,
+            None,
+            None,
+            Some(true), // retryable error
+        );
+        assert_eq!(inv1.is_retryable(), Some(true));
+
+        // Test with non-retryable error
+        let inv2 = Invocation::new(
+            Uuid::new_v4(),
+            1,
+            Utc::now(),
+            "TestClass".to_string(),
+            "testMethod".to_string(),
+            InvocationStatus::Complete,
+            1,
+            vec![],
+            0,
+            None,
+            None,
+            None,
+            Some(false), // non-retryable error
+        );
+        assert_eq!(inv2.is_retryable(), Some(false));
+
+        // Test with no error (Ok result)
+        let inv3 = Invocation::new(
+            Uuid::new_v4(),
+            1,
+            Utc::now(),
+            "TestClass".to_string(),
+            "testMethod".to_string(),
+            InvocationStatus::Complete,
+            1,
+            vec![],
+            0,
+            None,
+            None,
+            None,
+            None, // not an error
+        );
+        assert_eq!(inv3.is_retryable(), None);
     }
 }

@@ -41,7 +41,10 @@ impl DataPipeline {
         // Step 3: Aggregate results (uses input from validate_and_transform)
         let result = self.clone().aggregate(validated).await?;
 
-        println!("[Pipeline {}] Completed with {} records", self.pipeline_id, result.total_records);
+        println!(
+            "[Pipeline {}] Completed with {} records",
+            self.pipeline_id, result.total_records
+        );
         Ok(result)
     }
 
@@ -56,7 +59,10 @@ impl DataPipeline {
     }
 
     #[step(inputs(batch = "load_data"))]
-    async fn validate_and_transform(self: Arc<Self>, batch: DataBatch) -> Result<ValidatedBatch, String> {
+    async fn validate_and_transform(
+        self: Arc<Self>,
+        batch: DataBatch,
+    ) -> Result<ValidatedBatch, String> {
         println!(
             "  [Transform] Validating and transforming {} records from {}",
             batch.records, batch.source
@@ -69,7 +75,10 @@ impl DataPipeline {
     }
 
     #[step(inputs(validated = "validate_and_transform"))]
-    async fn aggregate(self: Arc<Self>, validated: ValidatedBatch) -> Result<ProcessingResult, String> {
+    async fn aggregate(
+        self: Arc<Self>,
+        validated: ValidatedBatch,
+    ) -> Result<ProcessingResult, String> {
         println!(
             "  [Aggregate] Aggregating {} valid records (transformed at: {})",
             validated.valid_records, validated.transformed_at
@@ -109,7 +118,10 @@ struct NotificationTask {
 impl NotificationTask {
     #[flow]
     async fn send(self: Arc<Self>) -> Result<NotificationResult, String> {
-        println!("[Notification {}] Preparing to send to {} recipients", self.task_id, self.recipient_count);
+        println!(
+            "[Notification {}] Preparing to send to {} recipients",
+            self.task_id, self.recipient_count
+        );
 
         // Step 1: Prepare recipients
         let recipients = self.clone().prepare_recipients().await?;
@@ -117,13 +129,19 @@ impl NotificationTask {
         // Step 2: Send notifications (uses input from prepare_recipients)
         let result = self.clone().dispatch(recipients).await?;
 
-        println!("[Notification {}] Sent successfully (ID: {})", self.task_id, result.batch_id);
+        println!(
+            "[Notification {}] Sent successfully (ID: {})",
+            self.task_id, result.batch_id
+        );
         Ok(result)
     }
 
     #[step]
     async fn prepare_recipients(self: Arc<Self>) -> Result<RecipientList, String> {
-        println!("  [Prepare] Building recipient list for {} users", self.recipient_count);
+        println!(
+            "  [Prepare] Building recipient list for {} users",
+            self.recipient_count
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(RecipientList {
             count: self.recipient_count,
@@ -132,7 +150,10 @@ impl NotificationTask {
     }
 
     #[step(inputs(recipients = "prepare_recipients"))]
-    async fn dispatch(self: Arc<Self>, recipients: RecipientList) -> Result<NotificationResult, String> {
+    async fn dispatch(
+        self: Arc<Self>,
+        recipients: RecipientList,
+    ) -> Result<NotificationResult, String> {
         println!(
             "  [Dispatch] Sending to {} recipients (list: {})",
             recipients.count, recipients.list_id
@@ -236,7 +257,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             worker
                 .register(|flow: Arc<DataPipeline>| flow.process())
                 .await;
-            worker.register(|flow: Arc<NotificationTask>| flow.send()).await;
+            worker
+                .register(|flow: Arc<NotificationTask>| flow.send())
+                .await;
 
             let worker_handle = worker.start().await;
 

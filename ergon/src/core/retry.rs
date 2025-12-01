@@ -454,6 +454,13 @@ impl RetryableTag {
     pub fn should_cache<E: RetryableError>(self, error: &E) -> bool {
         !error.is_retryable() // Permanent errors cached, transient errors retry
     }
+
+    /// Returns true if the error is retryable (transient error).
+    /// Uses RetryableError::is_retryable() for fine-grained control.
+    #[inline]
+    pub fn is_retryable<E: RetryableError>(self, error: &E) -> bool {
+        error.is_retryable() // Delegate to the trait implementation
+    }
 }
 
 impl DefaultTag {
@@ -462,6 +469,13 @@ impl DefaultTag {
     #[inline]
     pub fn should_cache<E>(self, _error: &E) -> bool {
         false // Default: don't cache errors, allow retry
+    }
+
+    /// Returns true if the error is retryable.
+    /// Default behavior: all errors are retryable (transient).
+    #[inline]
+    pub fn is_retryable<E>(self, _error: &E) -> bool {
+        true // Default: all errors are retryable
     }
 }
 

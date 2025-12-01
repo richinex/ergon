@@ -213,6 +213,14 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let log_completion_code = if cache_errors || !returns_result {
         quote! {
             let _ = __ctx.log_step_completion(__step, &__result).await;
+
+            // If it's an error, also update the is_retryable flag
+            if let Err(ref __e) = __result {
+                #[allow(unused_imports)]
+                use ::ergon::kind::*;
+                let __is_retryable = (__e).error_kind().is_retryable(__e);
+                let _ = __ctx.update_step_retryability(__step, __is_retryable).await;
+            }
         }
     } else {
         quote! {
@@ -220,15 +228,22 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #[allow(unused_imports)]
                 use ::ergon::kind::*;
 
-                let __should_cache = match __result.as_ref().err() {
+                // Compute is_retryable and should_cache once
+                let (__should_cache, __is_retryable_opt) = match __result.as_ref().err() {
                     Some(__e) => {
-                        (__e).error_kind().should_cache(__e)
+                        let __is_retryable = (__e).error_kind().is_retryable(__e);
+                        (!__is_retryable, Some(__is_retryable)) // should_cache = !is_retryable
                     }
-                    None => true,
+                    None => (true, None), // Ok result: cache it, no retryability
                 };
 
                 if __should_cache {
                     let _ = __ctx.log_step_completion(__step, &__result).await;
+
+                    // If it's an error, update the is_retryable flag using the pre-computed value
+                    if let Some(__is_retryable) = __is_retryable_opt {
+                        let _ = __ctx.update_step_retryability(__step, __is_retryable).await;
+                    }
                 }
             }
         }

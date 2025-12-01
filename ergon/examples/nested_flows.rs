@@ -72,7 +72,10 @@ impl OrderProcessor {
         self: Arc<Self>,
         validation: ValidationResult,
     ) -> Result<PaymentInfo, String> {
-        println!("  [Step] Processing payment for order {}", validation.order_id);
+        println!(
+            "  [Step] Processing payment for order {}",
+            validation.order_id
+        );
 
         // Here we would schedule a CHILD FLOW for payment processing
         // In a real scenario, you'd use the scheduler to create a new flow
@@ -94,7 +97,10 @@ impl OrderProcessor {
         self: Arc<Self>,
         payment: PaymentInfo,
     ) -> Result<InventoryReservation, String> {
-        println!("  [Step] Reserving inventory (payment: {})", payment.transaction_id);
+        println!(
+            "  [Step] Reserving inventory (payment: {})",
+            payment.transaction_id
+        );
 
         // Schedule another CHILD FLOW for inventory management
         println!("    [Child Flow] Inventory flow would be scheduled here");
@@ -113,7 +119,10 @@ impl OrderProcessor {
         self: Arc<Self>,
         inventory: InventoryReservation,
     ) -> Result<OrderResult, String> {
-        println!("  [Step] Finalizing order (reservation: {})", inventory.reservation_id);
+        println!(
+            "  [Step] Finalizing order (reservation: {})",
+            inventory.reservation_id
+        );
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -153,19 +162,28 @@ struct PaymentFlow {
 impl PaymentFlow {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<PaymentResult, String> {
-        println!("\n  [CHILD FLOW - Payment] Processing: {}", self.transaction_id);
+        println!(
+            "\n  [CHILD FLOW - Payment] Processing: {}",
+            self.transaction_id
+        );
 
         let auth = self.clone().authorize_payment().await?;
         let capture = self.clone().capture_payment(auth).await?;
         let result = self.clone().confirm_payment(capture).await?;
 
-        println!("  [CHILD FLOW - Payment] Completed: {}", self.transaction_id);
+        println!(
+            "  [CHILD FLOW - Payment] Completed: {}",
+            self.transaction_id
+        );
         Ok(result)
     }
 
     #[step]
     async fn authorize_payment(self: Arc<Self>) -> Result<AuthResult, String> {
-        println!("    [Step] Authorizing ${:.2} via {}", self.amount, self.payment_method);
+        println!(
+            "    [Step] Authorizing ${:.2} via {}",
+            self.amount, self.payment_method
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         Ok(AuthResult {
@@ -186,8 +204,14 @@ impl PaymentFlow {
     }
 
     #[step(inputs(capture = "capture_payment"))]
-    async fn confirm_payment(self: Arc<Self>, capture: CaptureResult) -> Result<PaymentResult, String> {
-        println!("    [Step] Confirming payment (capture: {})", capture.capture_id);
+    async fn confirm_payment(
+        self: Arc<Self>,
+        capture: CaptureResult,
+    ) -> Result<PaymentResult, String> {
+        println!(
+            "    [Step] Confirming payment (capture: {})",
+            capture.capture_id
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         Ok(PaymentResult {
@@ -210,13 +234,19 @@ struct InventoryFlow {
 impl InventoryFlow {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<InventoryResult, String> {
-        println!("\n  [CHILD FLOW - Inventory] Processing: {}", self.reservation_id);
+        println!(
+            "\n  [CHILD FLOW - Inventory] Processing: {}",
+            self.reservation_id
+        );
 
         let check = self.clone().check_stock().await?;
         let reserve = self.clone().reserve_items(check).await?;
         let result = self.clone().confirm_reservation(reserve).await?;
 
-        println!("  [CHILD FLOW - Inventory] Completed: {}", self.reservation_id);
+        println!(
+            "  [CHILD FLOW - Inventory] Completed: {}",
+            self.reservation_id
+        );
         Ok(result)
     }
 
@@ -250,8 +280,14 @@ impl InventoryFlow {
     }
 
     #[step(inputs(reservation = "reserve_items"))]
-    async fn confirm_reservation(self: Arc<Self>, reservation: ReservationData) -> Result<InventoryResult, String> {
-        println!("    [Step] Confirming reservation: {}", reservation.reservation_id);
+    async fn confirm_reservation(
+        self: Arc<Self>,
+        reservation: ReservationData,
+    ) -> Result<InventoryResult, String> {
+        println!(
+            "    [Step] Confirming reservation: {}",
+            reservation.reservation_id
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         Ok(InventoryResult {
@@ -349,7 +385,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Schedule PARENT flow (order processing)
     let order = OrderProcessor {
         order_id: "ORD-12345".to_string(),
-        items: vec!["ITEM-A".to_string(), "ITEM-B".to_string(), "ITEM-C".to_string()],
+        items: vec![
+            "ITEM-A".to_string(),
+            "ITEM-B".to_string(),
+            "ITEM-C".to_string(),
+        ],
         total_amount: 299.99,
         customer_id: "CUST-001".to_string(),
     };

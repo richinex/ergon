@@ -87,10 +87,7 @@ impl DataProcessor {
 
     #[step]
     async fn transform(self: Arc<Self>) -> Result<String, String> {
-        println!(
-            "  [Transform] Processing {} MB of data",
-            self.data_size_mb
-        );
+        println!("  [Transform] Processing {} MB of data", self.data_size_mb);
         tokio::time::sleep(Duration::from_millis(200)).await;
         Ok(format!("transformed_{}", self.job_id))
     }
@@ -124,7 +121,10 @@ impl EmailTask {
 
     #[step]
     async fn render_template(self: Arc<Self>) -> Result<String, String> {
-        println!("  [Render] Generating email from template: {}", self.template);
+        println!(
+            "  [Render] Generating email from template: {}",
+            self.template
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(format!("<html>Hello {}</html>", self.recipient))
     }
@@ -191,10 +191,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-async fn run_worker(
-    redis_url: &str,
-    worker_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_worker(redis_url: &str, worker_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Ergon Redis Distributed Worker ===\n");
     println!("Worker ID: {}", worker_id);
     println!("Redis URL: {}\n", redis_url);
@@ -205,8 +202,8 @@ async fn run_worker(
     println!("1. Starting worker...");
 
     // Create worker with faster polling for demo
-    let worker = FlowWorker::new(storage.clone(), worker_id)
-        .with_poll_interval(Duration::from_millis(100));
+    let worker =
+        FlowWorker::new(storage.clone(), worker_id).with_poll_interval(Duration::from_millis(100));
 
     // Register flow types this worker can handle
     worker
@@ -296,7 +293,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "scheduler" => run_scheduler(redis_url).await?,
         "worker" => run_worker(redis_url, worker_id).await?,
         _ => {
-            eprintln!("Error: Invalid mode '{}'. Use 'scheduler' or 'worker'", mode);
+            eprintln!(
+                "Error: Invalid mode '{}'. Use 'scheduler' or 'worker'",
+                mode
+            );
             eprintln!("\nUsage:");
             eprintln!("  Scheduler: cargo run --example distributed_redis --features redis -- --mode scheduler");
             eprintln!("  Worker:    cargo run --example distributed_redis --features redis -- --mode worker --id worker-1");

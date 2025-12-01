@@ -76,8 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n3. Starting workers...\n");
 
     // Start worker 1
-    let worker1 = FlowWorker::new(storage.clone(), "worker-1")
-        .with_poll_interval(Duration::from_millis(50));
+    let worker1 =
+        FlowWorker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(50));
     worker1
         .register(|flow: Arc<ComputeTask>| flow.compute())
         .await;
@@ -85,8 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Started worker-1");
 
     // Start worker 2
-    let worker2 = FlowWorker::new(storage.clone(), "worker-2")
-        .with_poll_interval(Duration::from_millis(50));
+    let worker2 =
+        FlowWorker::new(storage.clone(), "worker-2").with_poll_interval(Duration::from_millis(50));
     worker2
         .register(|flow: Arc<ComputeTask>| flow.compute())
         .await;
@@ -116,9 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== Example Complete ===");
-    println!(
-        "\nNote: All data was stored in-memory. No files were created!"
-    );
+    println!("\nNote: All data was stored in-memory. No files were created!");
 
     Ok(())
 }

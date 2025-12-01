@@ -67,8 +67,8 @@ impl RedisExecutionLog {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn new(redis_url: &str) -> Result<Self> {
-        let client = redis::Client::open(redis_url)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        let client =
+            redis::Client::open(redis_url).map_err(|e| StorageError::Connection(e.to_string()))?;
 
         let pool = r2d2::Pool::builder()
             .max_size(16)
@@ -80,8 +80,8 @@ impl RedisExecutionLog {
 
     /// Creates a connection pool with custom configuration.
     pub fn with_pool_config(redis_url: &str, max_connections: u32) -> Result<Self> {
-        let client = redis::Client::open(redis_url)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        let client =
+            redis::Client::open(redis_url).map_err(|e| StorageError::Connection(e.to_string()))?;
 
         let pool = r2d2::Pool::builder()
             .max_size(max_connections)
@@ -154,6 +154,7 @@ impl ExecutionLog for RedisExecutionLog {
             .hset(&inv_key, "params_hash", params_hash)
             .hset(&inv_key, "delay_ms", delay_ms.unwrap_or(0))
             .hset(&inv_key, "retry_policy", retry_policy_json)
+            .hset(&inv_key, "is_retryable", "") // Empty string = None (not an error yet)
             .lpush(Self::invocations_key(id), &inv_key)
             .query(&mut *conn)
             .map_err(|e| StorageError::Connection(e.to_string()))?;
@@ -264,6 +265,51 @@ impl ExecutionLog for RedisExecutionLog {
         Ok(incomplete)
     }
 
+    async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
+        let mut conn = self.get_connection()?;
+        let inv_list_key = Self::invocations_key(flow_id);
+
+        // Get all invocation keys for this flow
+        let inv_keys: Vec<String> = conn
+            .lrange(&inv_list_key, 0, -1)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        // Check if any invocation has is_retryable = "0"
+        for key in inv_keys {
+            let is_retryable: String = conn
+                .hget(&key, "is_retryable")
+                .unwrap_or_else(|_| String::new());
+
+            if is_retryable == "0" {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        let inv_key = Self::invocation_key(id, step);
+
+        // Check if invocation exists
+        let exists: bool = conn
+            .exists(&inv_key)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if !exists {
+            return Err(StorageError::InvocationNotFound { id, step });
+        }
+
+        // Update is_retryable field
+        let value = if is_retryable { "1" } else { "0" };
+        let _: () = conn
+            .hset(&inv_key, "is_retryable", value)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(())
+    }
+
     async fn reset(&self) -> Result<()> {
         let mut conn = self.get_connection()?;
 
@@ -328,9 +374,7 @@ impl ExecutionLog for RedisExecutionLog {
             let now = Utc::now().timestamp();
 
             // Check if flow is ready to execute (scheduled_for has passed)
-            let scheduled_for: Option<i64> = conn
-                .hget(&flow_key, "scheduled_for")
-                .ok();
+            let scheduled_for: Option<i64> = conn.hget(&flow_key, "scheduled_for").ok();
 
             if let Some(scheduled_ts) = scheduled_for {
                 if scheduled_ts > now {
@@ -396,7 +440,12 @@ impl ExecutionLog for RedisExecutionLog {
         Ok(())
     }
 
-    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: std::time::Duration) -> Result<()> {
+    async fn retry_flow(
+        &self,
+        task_id: Uuid,
+        error_message: String,
+        delay: std::time::Duration,
+    ) -> Result<()> {
         let mut conn = self.get_connection()?;
         let flow_key = Self::flow_key(task_id);
 
@@ -410,9 +459,7 @@ impl ExecutionLog for RedisExecutionLog {
         }
 
         // Get current retry_count
-        let retry_count: u32 = conn
-            .hget(&flow_key, "retry_count")
-            .unwrap_or(0);
+        let retry_count: u32 = conn.hget(&flow_key, "retry_count").unwrap_or(0);
 
         // Calculate scheduled_for timestamp (current time + delay)
         let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
@@ -464,9 +511,7 @@ impl RedisExecutionLog {
 
     /// Helper function to get binary data
     fn get_bytes(data: &HashMap<String, Vec<u8>>, key: &str) -> Result<Vec<u8>> {
-        data.get(key)
-            .cloned()
-            .ok_or(StorageError::Serialization)
+        data.get(key).cloned().ok_or(StorageError::Serialization)
     }
 
     fn parse_invocation(&self, data: HashMap<String, Vec<u8>>) -> Result<Invocation> {
@@ -521,6 +566,12 @@ impl RedisExecutionLog {
             .filter(|s| !s.is_empty())
             .and_then(|json| serde_json::from_str(&json).ok());
 
+        // Parse is_retryable (empty string = None, "0" = false, "1" = true)
+        let is_retryable = Self::get_string(&data, "is_retryable")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| s == "1");
+
         Ok(Invocation::new(
             id,
             step,
@@ -534,6 +585,7 @@ impl RedisExecutionLog {
             return_value,
             delay_ms,
             retry_policy,
+            is_retryable,
         ))
     }
 
@@ -569,22 +621,26 @@ impl RedisExecutionLog {
         let updated_at = chrono::DateTime::from_timestamp(updated_at_secs, 0)
             .ok_or(StorageError::Serialization)?;
 
-        let locked_by = data.get("locked_by")
+        let locked_by = data
+            .get("locked_by")
             .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
 
         // flow_data is stored as binary
         let flow_data = Self::get_bytes(&data, "flow_data")?;
 
         // Parse retry fields (optional, default to 0/None if not present)
-        let retry_count: u32 = data.get("retry_count")
+        let retry_count: u32 = data
+            .get("retry_count")
             .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
-        let error_message = data.get("error_message")
+        let error_message = data
+            .get("error_message")
             .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
 
-        let scheduled_for = data.get("scheduled_for")
+        let scheduled_for = data
+            .get("scheduled_for")
             .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
             .and_then(|s| s.parse::<i64>().ok())
             .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));

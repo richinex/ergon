@@ -9,7 +9,9 @@
 //! decisions about how execution context is managed and propagated.
 
 use super::error::{format_params_preview, ExecutionError, Result};
-use crate::core::{deserialize_value, hash_params, serialize_value, CallType, InvocationStatus, RetryPolicy};
+use crate::core::{
+    deserialize_value, hash_params, serialize_value, CallType, InvocationStatus, RetryPolicy,
+};
 use crate::graph::{FlowGraph, GraphResult, StepId};
 use crate::storage::{ExecutionLog, InvocationStartParams};
 use std::future::Future;
@@ -171,6 +173,23 @@ impl<S: ExecutionLog> ExecutionContext<S> {
         let return_bytes = serialize_value(return_value)?;
         self.storage
             .log_invocation_completion(self.id, step, &return_bytes)
+            .await
+            .map_err(ExecutionError::Storage)?;
+        Ok(())
+    }
+
+    /// Update the is_retryable flag for a step after caching an error.
+    ///
+    /// This method is called by the step macro after an error is cached to mark
+    /// whether the error is retryable or permanent.
+    ///
+    /// # Arguments
+    ///
+    /// * `step` - The step number
+    /// * `is_retryable` - Whether the cached error is retryable (true = retryable, false = permanent)
+    pub async fn update_step_retryability(&self, step: i32, is_retryable: bool) -> Result<()> {
+        self.storage
+            .update_is_retryable(self.id, step, is_retryable)
             .await
             .map_err(ExecutionError::Storage)?;
         Ok(())
@@ -416,6 +435,19 @@ impl<S: ExecutionLog> ExecutionLog for StorageWrapper<S> {
 
     async fn get_incomplete_flows(&self) -> crate::storage::Result<Vec<crate::core::Invocation>> {
         self.0.get_incomplete_flows().await
+    }
+
+    async fn has_non_retryable_error(&self, flow_id: Uuid) -> crate::storage::Result<bool> {
+        self.0.has_non_retryable_error(flow_id).await
+    }
+
+    async fn update_is_retryable(
+        &self,
+        id: Uuid,
+        step: i32,
+        is_retryable: bool,
+    ) -> crate::storage::Result<()> {
+        self.0.update_is_retryable(id, step, is_retryable).await
     }
 
     async fn reset(&self) -> crate::storage::Result<()> {

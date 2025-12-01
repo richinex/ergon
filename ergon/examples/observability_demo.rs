@@ -11,8 +11,8 @@
 //!
 //! Run: cargo run --example observability_demo
 
-use ergon::prelude::*;
 use ergon::core::InvocationStatus;
+use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,7 +52,10 @@ impl PaymentProcessor {
         self: Arc<Self>,
         validation: ValidationResult,
     ) -> Result<AuthResult, String> {
-        println!("    [Step 2/4] Authorizing card for ${:.2}", validation.amount);
+        println!(
+            "    [Step 2/4] Authorizing card for ${:.2}",
+            validation.amount
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Some orders fail at authorization (stuck here)
@@ -68,10 +71,7 @@ impl PaymentProcessor {
     }
 
     #[step(inputs(auth = "authorize_card"))]
-    async fn capture_payment(
-        self: Arc<Self>,
-        auth: AuthResult,
-    ) -> Result<CaptureResult, String> {
+    async fn capture_payment(self: Arc<Self>, auth: AuthResult) -> Result<CaptureResult, String> {
         println!("    [Step 3/4] Capturing payment {}", auth.auth_code);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -86,7 +86,10 @@ impl PaymentProcessor {
         self: Arc<Self>,
         capture: CaptureResult,
     ) -> Result<PaymentResult, String> {
-        println!("    [Step 4/4] Sending confirmation for {}", capture.transaction_id);
+        println!(
+            "    [Step 4/4] Sending confirmation for {}",
+            capture.transaction_id
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         Ok(PaymentResult {
@@ -133,11 +136,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Schedule mix of orders: some will complete, some will fail at authorization
     let orders = vec![
-        ("ORD-001", 99.99, false),   // Will complete
-        ("ORD-002", 149.99, true),   // Will fail at step 2
-        ("ORD-003", 249.99, false),  // Will complete
-        ("ORD-004", 399.99, true),   // Will fail at step 2
-        ("ORD-005", 79.99, false),   // Will complete
+        ("ORD-001", 99.99, false),  // Will complete
+        ("ORD-002", 149.99, true),  // Will fail at step 2
+        ("ORD-003", 249.99, false), // Will complete
+        ("ORD-004", 399.99, true),  // Will fail at step 2
+        ("ORD-005", 79.99, false),  // Will complete
     ];
 
     println!("📋 Scheduling {} payment orders:\n", orders.len());
@@ -153,7 +156,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scheduler.schedule(processor, flow_id).await?;
         flow_ids.push((flow_id, order_id.to_string(), *should_fail));
 
-        let status = if *should_fail { "(will fail)" } else { "(will succeed)" };
+        let status = if *should_fail {
+            "(will fail)"
+        } else {
+            "(will succeed)"
+        };
         println!("  • {} - ${:.2} {}", order_id, amount, status);
     }
 
@@ -170,7 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let worker = FlowWorker::new(storage_clone.clone(), "payment-worker")
             .with_poll_interval(Duration::from_millis(50));
 
-        worker.register(|flow: Arc<PaymentProcessor>| flow.process_payment()).await;
+        worker
+            .register(|flow: Arc<PaymentProcessor>| flow.process_payment())
+            .await;
         let handle = worker.start().await;
 
         // Let it run for a bit
@@ -209,23 +218,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Get flow status
         let flow_inv = invocations.iter().find(|i| i.step() == 0);
-        let flow_status = flow_inv.map(|i| i.status()).unwrap_or(InvocationStatus::Pending);
+        let flow_status = flow_inv
+            .map(|i| i.status())
+            .unwrap_or(InvocationStatus::Pending);
 
         // Get step details
         let steps: Vec<_> = invocations.iter().filter(|i| i.step() > 0).collect();
-        let completed_steps = steps.iter()
+        let completed_steps = steps
+            .iter()
             .filter(|s| s.status() == InvocationStatus::Complete)
             .count();
 
-        println!("  📦 Order: {} (${:.2})", order_id,
-            flow_ids.iter()
+        println!(
+            "  📦 Order: {} (${:.2})",
+            order_id,
+            flow_ids
+                .iter()
                 .find(|(id, _, _)| id == flow_id)
                 .map(|(_, _, fail)| if *fail { 149.99 } else { 99.99 })
                 .unwrap_or(0.0)
         );
         println!("     Flow ID: {}", flow_id);
         println!("     Status:  {:?}", flow_status);
-        println!("     Steps:   {}/{} completed", completed_steps, steps.len());
+        println!(
+            "     Steps:   {}/{} completed",
+            completed_steps,
+            steps.len()
+        );
 
         // Show step-by-step progress
         if !steps.is_empty() {
@@ -236,20 +255,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InvocationStatus::Pending => "⏸",
                     InvocationStatus::WaitingForSignal => "⏳",
                 };
-                println!("       {} {} (step {})",
-                    status_icon, step.method_name(), step.step());
+                println!(
+                    "       {} {} (step {})",
+                    status_icon,
+                    step.method_name(),
+                    step.step()
+                );
             }
         }
 
         // Show where it's stuck
         if flow_status != InvocationStatus::Complete {
-            let last_completed = steps.iter()
+            let last_completed = steps
+                .iter()
                 .filter(|s| s.status() == InvocationStatus::Complete)
                 .max_by_key(|s| s.step());
 
             if let Some(step) = last_completed {
-                println!("     🔴 STUCK after: {} (step {})",
-                    step.method_name(), step.step());
+                println!(
+                    "     🔴 STUCK after: {} (step {})",
+                    step.method_name(),
+                    step.step()
+                );
             } else {
                 println!("     🔴 STUCK at: First step");
             }
@@ -299,18 +326,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   → Returns: {} flows", incomplete.len());
 
     println!("\n✅ Query 2: \"Which step did ORD-002 fail at?\"");
-    let ord002_flow = flow_ids.iter().find(|(_, id, _)| id == "ORD-002").map(|(id, _, _)| id);
+    let ord002_flow = flow_ids
+        .iter()
+        .find(|(_, id, _)| id == "ORD-002")
+        .map(|(id, _, _)| id);
     if let Some(flow_id) = ord002_flow {
         let invocations = storage.get_invocations_for_flow(*flow_id).await?;
-        let failed_step = invocations.iter()
+        let failed_step = invocations
+            .iter()
             .filter(|i| i.step() > 0)
             .filter(|i| i.status() != InvocationStatus::Complete)
             .min_by_key(|i| i.step());
 
         if let Some(step) = failed_step {
             println!("   let invocations = storage.get_invocations_for_flow(flow_id).await?;");
-            println!("   → Answer: Failed at '{}' (step {})",
-                step.method_name(), step.step());
+            println!(
+                "   → Answer: Failed at '{}' (step {})",
+                step.method_name(),
+                step.step()
+            );
         }
     }
 
@@ -321,14 +355,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let steps: Vec<_> = invocations.iter().filter(|i| i.step() > 0).collect();
 
         // Check if stuck at step 2 (authorize_card)
-        if !steps.is_empty() &&
-           steps.iter().any(|s| s.step() == 1 && s.status() == InvocationStatus::Complete) &&
-           !steps.iter().any(|s| s.step() == 2 && s.status() == InvocationStatus::Complete) {
+        if !steps.is_empty()
+            && steps
+                .iter()
+                .any(|s| s.step() == 1 && s.status() == InvocationStatus::Complete)
+            && !steps
+                .iter()
+                .any(|s| s.step() == 2 && s.status() == InvocationStatus::Complete)
+        {
             stuck_at_auth += 1;
         }
     }
     println!("   // Query each flow's step history (5 lines of code)");
-    println!("   → Answer: {} orders stuck at authorization step", stuck_at_auth);
+    println!(
+        "   → Answer: {} orders stuck at authorization step",
+        stuck_at_auth
+    );
 
     // ========================================================================
     // Summary
