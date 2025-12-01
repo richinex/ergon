@@ -188,12 +188,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║       Crash Recovery & Step Resumability Demo           ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    // let storage = Arc::new(InMemoryExecutionLog::new());
-    let redis_url = "redis://127.0.0.1:6379";
+    let db_path = "/tmp/ergon_benchmark_sqlite.db";
+    let _ = std::fs::remove_file(db_path);
 
-    // Create Redis storage
-    println!("Connecting to Redis at {}...", redis_url);
-    let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+    let storage = Arc::new(SqliteExecutionLog::new(db_path)?);
     let scheduler = FlowScheduler::new(storage.clone());
 
     // Schedule an order

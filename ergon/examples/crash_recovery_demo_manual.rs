@@ -1,18 +1,20 @@
 //! Crash Recovery and Step-Level Resumability Demo
 //!
 //! This example demonstrates:
-//! - Worker-level automatic retry with crash recovery
-//! - Step-level resumability: Flow resumes from failed step after crash
-//! - Payment runs exactly once despite multiple retry attempts
-//! - No manual idempotency checks or re-scheduling required
+//! - Step-level resumability: Worker crashes after payment, another resumes at next step
+//! - Payment runs exactly once despite worker crash
+//! - No manual idempotency checks required
+//! - Manual re-scheduling to demonstrate crash recovery
 //!
 //! Flow: validate → charge_payment → reserve_inventory → send_confirmation
-//! Scenario: Worker crashes during reserve_inventory
-//! Expected: Worker automatically retries, resumes at reserve_inventory, payment NOT re-run
+//! Scenario: Worker crashes after charge_payment completes
+//! Expected: New worker resumes at reserve_inventory, payment NOT re-run
+//!
+//! For automatic retry with exponential backoff, see: retry_recovery_demo.rs
 //!
 //! Run: cargo run --example crash_recovery_demo
 
-use ergon::core::RetryPolicy;
+use ergon::core::InvocationStatus;
 use ergon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -21,6 +23,7 @@ use std::time::Duration;
 // Global counters to track execution
 static PAYMENT_CHARGE_COUNT: AtomicU32 = AtomicU32::new(0);
 static INVENTORY_RESERVE_COUNT: AtomicU32 = AtomicU32::new(0);
+static INVENTORY_SHOULD_FAIL_ONCE: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Serialize, Deserialize, Clone)]
 struct OrderProcessor {
@@ -30,13 +33,7 @@ struct OrderProcessor {
 }
 
 impl OrderProcessor {
-    /// Process order with automatic retry on failure.
-    ///
-    /// The retry policy ensures that if reserve_inventory fails,
-    /// the worker will automatically retry the flow with exponential backoff.
-    /// Due to step caching, the flow resumes from the failed step - payment
-    /// is NOT re-executed, ensuring exactly-once semantics.
-    #[flow(retry = RetryPolicy::STANDARD)]
+    #[flow]
     async fn process_order(self: Arc<Self>) -> Result<OrderResult, String> {
         println!("[FLOW] Processing order {}", self.order_id);
 
@@ -46,7 +43,7 @@ impl OrderProcessor {
         // Step 2: Charge payment (CRITICAL - must run exactly once!)
         let payment = self.clone().charge_payment(validation).await?;
 
-        // Step 3: Reserve inventory (will fail first 2 times, worker auto-retries)
+        // Step 3: Reserve inventory (worker will "crash" before this in first run)
         let inventory = self.clone().reserve_inventory(payment).await?;
 
         // Step 4: Send confirmation
@@ -117,17 +114,20 @@ impl OrderProcessor {
             payment.amount_charged, payment.charged_at
         );
 
-        // Simulate transient failures on first 2 attempts
-        // The worker will automatically retry the flow when this returns an error
-        if count < 3 {
-            println!("    ⚠️  Service temporarily unavailable (simulating transient error)");
+        // Simulate a crash/failure on first attempt (e.g., network timeout, service unavailable)
+        let should_fail = INVENTORY_SHOULD_FAIL_ONCE.fetch_sub(
+            1.min(INVENTORY_SHOULD_FAIL_ONCE.load(Ordering::SeqCst)),
+            Ordering::SeqCst,
+        );
+        if should_fail > 0 {
+            println!("    ✗ CRASH: Worker died during inventory reservation!");
             tokio::time::sleep(Duration::from_millis(50)).await;
-            return Err("Service temporarily unavailable".to_string());
+            return Err("Worker crashed during inventory reservation".to_string());
         }
 
-        // Success on 3rd attempt
         tokio::time::sleep(Duration::from_millis(150)).await;
-        println!("    ✓ Inventory reserved successfully on attempt {}", count);
+
+        println!("    ✓ Inventory reserved successfully");
 
         Ok(InventoryResult {
             reservation_id: format!("RES-{}", self.order_id),
@@ -188,12 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║       Crash Recovery & Step Resumability Demo           ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    // let storage = Arc::new(InMemoryExecutionLog::new());
-    let redis_url = "redis://127.0.0.1:6379";
-
-    // Create Redis storage
-    println!("Connecting to Redis at {}...", redis_url);
-    let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+    let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = FlowScheduler::new(storage.clone());
 
     // Schedule an order
@@ -206,20 +201,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     scheduler.schedule(order.clone(), flow_id).await?;
 
     println!("📋 Scheduled order: {}", order.order_id);
-    println!("💰 Amount to charge: ${:.2}", order.amount);
-    println!("🔄 Retry Policy: STANDARD (3 attempts, exponential backoff)\n");
+    println!("💰 Amount to charge: ${:.2}\n", order.amount);
 
     // ========================================================================
-    // Worker with Automatic Retry
+    // PHASE 1: First worker processes until crash
     // ========================================================================
 
     println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  Processing Order with Automatic Retry & Crash Recovery  ║");
+    println!("║  PHASE 1: Worker-1 starts processing (will crash)         ║");
     println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let storage_clone = storage.clone();
-    let worker = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_clone.clone(), "worker-auto-retry")
+    let worker1 = tokio::spawn(async move {
+        let worker = FlowWorker::new(storage_clone.clone(), "worker-1")
             .with_poll_interval(Duration::from_millis(50));
 
         worker
@@ -227,13 +221,87 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         let handle = worker.start().await;
 
-        // Wait for workflow to complete (including retries)
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        // Let worker process for a bit - it will hit the crash at step 3
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // Worker will have encountered the error and stopped processing
+        println!("Worker-1 stopped after encountering error\n");
+        handle.shutdown().await;
+    });
+
+    worker1.await?;
+
+    // Check what happened
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║  STATUS CHECK: What happened after crash?                 ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    let invocations = storage.get_invocations_for_flow(flow_id).await?;
+
+    println!("Flow Invocations:");
+    println!("Completed Steps:");
+    for inv in &invocations {
+        if inv.step() > 0 {
+            // Skip flow itself (step 0)
+            match inv.status() {
+                InvocationStatus::Complete => {
+                    println!("  ✓ {} (completed)", inv.method_name());
+                }
+                InvocationStatus::Pending => {
+                    println!("  ⏸ {} (pending)", inv.method_name());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
+    println!("\n💳 Payment charged: {} time(s)", payment_count);
+
+    if payment_count == 1 {
+        println!("   ✓ Good! Customer charged exactly once");
+    } else {
+        println!("   ✗ ERROR! Duplicate charge detected!");
+    }
+
+    // ========================================================================
+    // PHASE 2: Demonstrate manual retry/recovery (in production: automatic)
+    // ========================================================================
+
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║  PHASE 2: Recovery - Retry the failed flow                ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    println!("Note: For automatic retry with exponential backoff, see retry_recovery_demo.rs");
+    println!("This demo shows manual re-scheduling to demonstrate crash recovery\n");
+
+    // Re-schedule the same order to demonstrate crash recovery and resumability
+    let order_retry = OrderProcessor {
+        order_id: "ORD-12345".to_string(),
+        amount: 299.99,
+        customer_id: "CUST-001".to_string(),
+    };
+    scheduler.schedule(order_retry, flow_id).await?;
+
+    let storage_clone = storage.clone();
+    let worker2 = tokio::spawn(async move {
+        let worker = FlowWorker::new(storage_clone.clone(), "worker-2")
+            .with_poll_interval(Duration::from_millis(50));
+
+        worker
+            .register(|flow: Arc<OrderProcessor>| flow.process_order())
+            .await;
+        let handle = worker.start().await;
+
+        // Wait for completion
+        tokio::time::sleep(Duration::from_millis(800)).await;
 
         handle.shutdown().await;
     });
 
-    worker.await?;
+    worker2.await?;
 
     // ========================================================================
     // FINAL RESULTS
@@ -267,12 +335,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🎯 Key Takeaways:");
 
     if payment_count == 1 {
-        println!(
-            "  ✓ Payment step ran exactly ONCE despite {} retry attempts",
-            inventory_count
-        );
-        println!("  ✓ Worker automatically retried flow with exponential backoff");
-        println!("  ✓ Flow resumed at 'reserve_inventory' step on each retry");
+        println!("  ✓ Payment step ran exactly ONCE despite worker crash");
+        println!("  ✓ Worker-2 resumed at 'reserve_inventory' step");
         println!("  ✓ Payment data automatically loaded from storage");
         println!("  ✓ No duplicate charges - customer billed correctly");
     } else {
@@ -282,27 +346,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    if inventory_count == 3 {
-        println!(
-            "  ✓ Inventory step retried {} times (as expected)",
-            inventory_count
-        );
-        println!("  ✓ Succeeded on attempt 3 after automatic retries");
-    } else {
-        println!("  ⚠️  Inventory attempts: {} (expected 3)", inventory_count);
-    }
-
     println!("\n💡 With Regular Queues:");
     println!("  ✗ Entire task would retry from step 1");
-    println!("  ✗ Customer would be charged {} times", inventory_count);
+    println!(
+        "  ✗ Customer would be charged {} times",
+        if payment_count == 1 { 2 } else { payment_count }
+    );
     println!("  ✗ Need 50+ lines of manual idempotency checks");
 
     println!("\n💡 With Ergon:");
-    println!("  ✓ Automatic worker-level retry with exponential backoff");
-    println!("  ✓ Step-level resumability - flow resumes from failed step");
+    println!("  ✓ Automatic step-level resumability");
     println!("  ✓ Zero boilerplate idempotency code");
-    println!("  ✓ Exactly-once execution guaranteed for idempotent steps");
-    println!("  ✓ Durable retry - survives worker crashes\n");
+    println!("  ✓ Exactly-once execution guaranteed");
+    println!("  ✓ For automatic retry with backoff, see: retry_recovery_demo.rs\n");
 
     Ok(())
 }

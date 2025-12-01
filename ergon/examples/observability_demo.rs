@@ -321,7 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let steps: Vec<_> = invocations.iter().filter(|i| i.step() > 0).collect();
 
         // Check if stuck at step 2 (authorize_card)
-        if steps.len() >= 1 &&
+        if !steps.is_empty() &&
            steps.iter().any(|s| s.step() == 1 && s.status() == InvocationStatus::Complete) &&
            !steps.iter().any(|s| s.step() == 2 && s.status() == InvocationStatus::Complete) {
             stuck_at_auth += 1;

@@ -15,6 +15,26 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_macro_input, Block, Expr, FnArg, ItemFn, Pat, PatType, ReturnType, Stmt};
 
+/// Arguments for the #[flow] macro
+#[derive(Default)]
+struct FlowArgs {
+    /// Retry policy expression (e.g., RetryPolicy::STANDARD)
+    retry: Option<proc_macro2::TokenStream>,
+}
+
+impl FlowArgs {
+    fn parse_meta(&mut self, meta: syn::meta::ParseNestedMeta) -> syn::Result<()> {
+        if meta.path.is_ident("retry") {
+            // Parse: retry = RetryPolicy::STANDARD
+            let value = meta.value()?;
+            self.retry = Some(value.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported flow attribute"))
+        }
+    }
+}
+
 /// Try to auto-wrap DAG registration calls.
 ///
 /// If the block contains only `self.register_*()` method calls,
@@ -146,8 +166,26 @@ pub(crate) fn try_wrap_dag_registrations(
 ///     final_handle.resolve().await.expect("Failed to get result")
 /// }
 /// ```
-pub fn flow_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse flow arguments
+    let mut args = FlowArgs::default();
+
+    if !attr.is_empty() {
+        let attr_parser = syn::meta::parser(|meta| args.parse_meta(meta));
+
+        if let Err(err) = syn::parse::Parser::parse(attr_parser, attr) {
+            return err.to_compile_error().into();
+        }
+    }
+
     let input = parse_macro_input!(item as ItemFn);
+
+    // Build retry policy expression
+    let retry_policy = if let Some(ref retry_expr) = args.retry {
+        quote! { Some(#retry_expr) }
+    } else {
+        quote! { None }
+    };
 
     let vis = &input.vis;
     let sig = &input.sig;
@@ -249,12 +287,15 @@ pub fn flow_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     // Log invocation start
                     let _ = __ctx.log_step_start(
-                        __step,
-                        __class_name,
-                        #method_name_str,
-                        None,
-                        ergon::InvocationStatus::Pending,
-                        &__params
+                        ergon::executor::LogStepStartParams {
+                            step: __step,
+                            class_name: __class_name,
+                            method_name: #method_name_str,
+                            delay: None,
+                            status: ergon::InvocationStatus::Pending,
+                            params: &__params,
+                            retry_policy: #retry_policy,
+                        }
                     ).await;
 
                     // Execute the user's DAG setup and execution block

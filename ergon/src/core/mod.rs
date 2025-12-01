@@ -17,6 +17,7 @@
 //! - [`Result<T>`]: Type alias for Results using core Error
 //!
 //! # Retry Behavior
+//! - [`RetryPolicy`]: Configuration for retry attempts and backoff strategy
 //! - [`RetryableError`]: Trait for fine-grained control over which errors trigger retries
 //! - Automatic detection via autoref specialization (no manual configuration needed)
 //! - See [`retry`] module for detailed documentation on the retry system
@@ -57,7 +58,7 @@ mod serialization;
 // Re-export public types from submodules
 pub use error::{Error, Result};
 pub use invocation::{CallType, Invocation, InvocationStatus};
-pub use retry::{DefaultKind, RetryableError, RetryableKind};
+pub use retry::{DefaultKind, RetryPolicy, RetryableError, RetryableKind};
 pub use serialization::{deserialize_value, hash_params, serialize_value};
 
 // Re-export kind module for macro use

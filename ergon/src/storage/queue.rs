@@ -75,6 +75,13 @@ pub struct ScheduledFlow {
     pub created_at: DateTime<Utc>,
     /// When this task was last updated.
     pub updated_at: DateTime<Utc>,
+    /// Number of retry attempts for this flow.
+    pub retry_count: u32,
+    /// Error message from last execution (if failed).
+    pub error_message: Option<String>,
+    /// When this task should be executed (for delayed retry).
+    /// If None, execute immediately.
+    pub scheduled_for: Option<DateTime<Utc>>,
 }
 
 impl ScheduledFlow {
@@ -90,6 +97,9 @@ impl ScheduledFlow {
             locked_by: None,
             created_at: now,
             updated_at: now,
+            retry_count: 0,
+            error_message: None,
+            scheduled_for: None,
         }
     }
 

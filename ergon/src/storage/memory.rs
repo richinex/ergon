@@ -55,6 +55,7 @@ impl ExecutionLog for InMemoryExecutionLog {
             delay,
             status,
             parameters,
+            retry_policy,
         } = params;
 
         let params_hash = hash_params(parameters);
@@ -72,6 +73,7 @@ impl ExecutionLog for InMemoryExecutionLog {
             params_hash,
             None,
             delay_ms,
+            retry_policy,
         );
 
         let key = (id, step);
@@ -101,6 +103,7 @@ impl ExecutionLog for InMemoryExecutionLog {
                 entry.params_hash(),
                 Some(return_value.to_vec()),
                 delay_ms,
+                entry.retry_policy(), // Preserve retry policy
             );
             *entry = invocation.clone();
             Ok(invocation)
@@ -163,19 +166,26 @@ impl ExecutionLog for InMemoryExecutionLog {
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        // Find the oldest pending flow
+        // Find the oldest pending flow that is ready to execute
         // Note: DashMap doesn't have built-in ordering, so we need to scan
         let mut oldest: Option<(Uuid, super::ScheduledFlow)> = None;
+        let now = Utc::now();
 
         for entry in self.flow_queue.iter() {
             let flow = entry.value();
+            // Only consider pending flows that are ready to execute
             if flow.status == super::TaskStatus::Pending {
-                if let Some((_, ref current_oldest)) = oldest {
-                    if flow.created_at < current_oldest.created_at {
+                // Check if scheduled_for time has passed (or is None)
+                let is_ready = flow.scheduled_for.is_none_or(|scheduled| scheduled <= now);
+
+                if is_ready {
+                    if let Some((_, ref current_oldest)) = oldest {
+                        if flow.created_at < current_oldest.created_at {
+                            oldest = Some((*entry.key(), flow.clone()));
+                        }
+                    } else {
                         oldest = Some((*entry.key(), flow.clone()));
                     }
-                } else {
-                    oldest = Some((*entry.key(), flow.clone()));
                 }
             }
         }
@@ -215,6 +225,26 @@ impl ExecutionLog for InMemoryExecutionLog {
 
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<super::ScheduledFlow>> {
         Ok(self.flow_queue.get(&task_id).map(|entry| entry.clone()))
+    }
+
+    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: std::time::Duration) -> Result<()> {
+        if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
+            // Increment retry count
+            entry.retry_count += 1;
+            // Set error message
+            entry.error_message = Some(error_message);
+            // Set status back to pending
+            entry.status = super::TaskStatus::Pending;
+            // Clear the lock
+            entry.locked_by = None;
+            // Set scheduled_for timestamp (current time + delay)
+            entry.scheduled_for = Some(Utc::now() + chrono::Duration::from_std(delay).unwrap());
+            // Update timestamp
+            entry.updated_at = Utc::now();
+            Ok(())
+        } else {
+            Err(StorageError::ScheduledFlowNotFound(task_id))
+        }
     }
 }
 

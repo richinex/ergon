@@ -1,4 +1,5 @@
 use super::error::{Error, Result};
+use super::retry::RetryPolicy;
 use super::serialization::deserialize_value;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,9 @@ pub struct Invocation {
     params_hash: u64,
     return_value: Option<Vec<u8>>,
     delay: Option<i64>,
+    /// Retry policy for this invocation (None means no retries)
+    #[serde(default)]
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl Invocation {
@@ -72,6 +76,7 @@ impl Invocation {
         params_hash: u64,
         return_value: Option<Vec<u8>>,
         delay: Option<i64>,
+        retry_policy: Option<RetryPolicy>,
     ) -> Self {
         Self {
             id,
@@ -85,6 +90,7 @@ impl Invocation {
             params_hash,
             return_value,
             delay,
+            retry_policy,
         }
     }
 
@@ -132,6 +138,10 @@ impl Invocation {
         self.delay.map(|ms| Duration::from_millis(ms as u64))
     }
 
+    pub fn retry_policy(&self) -> Option<RetryPolicy> {
+        self.retry_policy
+    }
+
     pub fn is_flow(&self) -> bool {
         self.step == 0
     }
@@ -142,6 +152,10 @@ impl Invocation {
 
     pub fn set_return_value(&mut self, return_value: Vec<u8>) {
         self.return_value = Some(return_value);
+    }
+
+    pub fn increment_attempts(&mut self) {
+        self.attempts += 1;
     }
 
     pub fn deserialize_parameters<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
@@ -197,6 +211,7 @@ mod tests {
             0, // params_hash
             None,
             None,
+            None, // retry_policy
         );
         assert!(inv.is_flow());
 
@@ -212,7 +227,68 @@ mod tests {
             0, // params_hash
             None,
             None,
+            None, // retry_policy
         );
         assert!(!inv2.is_flow());
+    }
+
+    #[test]
+    fn test_invocation_retry_policy() {
+        use super::super::retry::RetryPolicy;
+
+        // Test with no retry policy
+        let inv1 = Invocation::new(
+            Uuid::new_v4(),
+            1,
+            Utc::now(),
+            "TestClass".to_string(),
+            "testMethod".to_string(),
+            InvocationStatus::Pending,
+            1,
+            vec![],
+            0,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(inv1.retry_policy(), None);
+
+        // Test with retry policy
+        let inv2 = Invocation::new(
+            Uuid::new_v4(),
+            1,
+            Utc::now(),
+            "TestClass".to_string(),
+            "testMethod".to_string(),
+            InvocationStatus::Pending,
+            1,
+            vec![],
+            0,
+            None,
+            None,
+            Some(RetryPolicy::STANDARD),
+        );
+        assert_eq!(inv2.retry_policy(), Some(RetryPolicy::STANDARD));
+
+        // Test increment_attempts
+        let mut inv3 = Invocation::new(
+            Uuid::new_v4(),
+            1,
+            Utc::now(),
+            "TestClass".to_string(),
+            "testMethod".to_string(),
+            InvocationStatus::Pending,
+            1,
+            vec![],
+            0,
+            None,
+            None,
+            Some(RetryPolicy::with_max_attempts(3)),
+        );
+        assert_eq!(inv3.attempts(), 1);
+        inv3.increment_attempts();
+        assert_eq!(inv3.attempts(), 2);
+        inv3.increment_attempts();
+        assert_eq!(inv3.attempts(), 3);
     }
 }

@@ -171,6 +171,13 @@ impl SqliteExecutionLog {
             [],
         );
 
+        // Add retry_policy column if it doesn't exist (migration for existing databases)
+        // Store as JSON TEXT for flexibility
+        let _ = conn.execute(
+            "ALTER TABLE execution_log ADD COLUMN retry_policy TEXT",
+            [],
+        );
+
         // Create index for efficient flow lookups
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_execution_log_id ON execution_log(id)",
@@ -193,7 +200,10 @@ impl SqliteExecutionLog {
                 status TEXT CHECK( status IN ('PENDING','RUNNING','COMPLETE','FAILED') ) NOT NULL,
                 locked_by TEXT,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                scheduled_for INTEGER
             )",
             [],
         )?;
@@ -251,6 +261,13 @@ impl SqliteExecutionLog {
         let updated_at =
             chrono::DateTime::from_timestamp_millis(updated_at_millis).unwrap_or_else(Utc::now);
 
+        // Parse retry fields (indices 8, 9, 10)
+        let retry_count: u32 = row.get(8).unwrap_or(0);
+        let error_message: Option<String> = row.get(9).ok();
+        let scheduled_for_millis: Option<i64> = row.get(10).ok();
+        let scheduled_for = scheduled_for_millis
+            .and_then(chrono::DateTime::from_timestamp_millis);
+
         Ok(super::ScheduledFlow {
             task_id,
             flow_id,
@@ -260,6 +277,9 @@ impl SqliteExecutionLog {
             locked_by,
             created_at,
             updated_at,
+            retry_count,
+            error_message,
+            scheduled_for,
         })
     }
 
@@ -289,6 +309,11 @@ impl SqliteExecutionLog {
         let return_value: Option<Vec<u8>> = row.get(9)?;
         let delay: Option<i64> = row.get(10)?;
 
+        // Parse retry_policy from JSON if present
+        let retry_policy_json: Option<String> = row.get(11)?;
+        let retry_policy = retry_policy_json
+            .and_then(|json| serde_json::from_str(&json).ok());
+
         Ok(Invocation::new(
             id,
             step,
@@ -301,6 +326,7 @@ impl SqliteExecutionLog {
             params_hash as u64,
             return_value,
             delay,
+            retry_policy,
         ))
     }
 }
@@ -317,6 +343,7 @@ impl ExecutionLog for SqliteExecutionLog {
             delay,
             status,
             parameters,
+            retry_policy,
         } = params;
 
         // Clone data for move into spawn_blocking
@@ -326,6 +353,10 @@ impl ExecutionLog for SqliteExecutionLog {
         // Compute params_hash internally from the parameters bytes
         let params_hash = hash_params(&parameters);
 
+        // Serialize retry_policy to JSON if present
+        let retry_policy_json = retry_policy
+            .and_then(|p| serde_json::to_string(&p).ok());
+
         // Get a connection from the pool (this is fast)
         let conn = self.get_connection()?;
 
@@ -334,8 +365,8 @@ impl ExecutionLog for SqliteExecutionLog {
             let delay_millis = delay.map(|d| d.as_millis() as i64);
 
             conn.execute(
-                "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, delay, status, attempts, parameters, params_hash)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, delay, status, attempts, parameters, params_hash, retry_policy)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id, step)
                  DO UPDATE SET attempts = attempts + 1",
                 params![
@@ -349,6 +380,7 @@ impl ExecutionLog for SqliteExecutionLog {
                     1,
                     parameters,
                     params_hash as i64,
+                    retry_policy_json,
                 ],
             )?;
 
@@ -384,7 +416,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -412,7 +444,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -432,7 +464,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
                      FROM execution_log
                      WHERE id = ?
                      ORDER BY step DESC
@@ -453,7 +485,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
                  FROM execution_log
                  WHERE id = ?
                  ORDER BY step ASC",
@@ -474,7 +506,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy
                  FROM execution_log
                  WHERE step = 0
                    AND status <> 'COMPLETE'
@@ -516,8 +548,8 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             conn.execute(
-                "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at, retry_count, error_message, scheduled_for)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     task_id.to_string(),
                     flow.flow_id.to_string(),
@@ -527,6 +559,9 @@ impl ExecutionLog for SqliteExecutionLog {
                     flow.locked_by,
                     flow.created_at.timestamp_millis(),
                     flow.updated_at.timestamp_millis(),
+                    flow.retry_count,
+                    flow.error_message,
+                    flow.scheduled_for.map(|dt| dt.timestamp_millis()),
                 ],
             )?;
 
@@ -545,15 +580,18 @@ impl ExecutionLog for SqliteExecutionLog {
             // Use a transaction to atomically find and lock a pending flow
             let tx = conn.unchecked_transaction()?;
 
-            // Find the oldest pending flow
+            // Find the oldest pending flow that's ready to execute
+            let now = Utc::now().timestamp_millis();
             let flow_opt = tx
                 .query_row(
-                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at
+                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
+                            retry_count, error_message, scheduled_for
                      FROM flow_queue
                      WHERE status = 'PENDING'
+                       AND (scheduled_for IS NULL OR scheduled_for <= ?)
                      ORDER BY created_at ASC
                      LIMIT 1",
-                    [],
+                    params![now],
                     SqliteExecutionLog::row_to_scheduled_flow,
                 )
                 .optional()?;
@@ -619,13 +657,50 @@ impl ExecutionLog for SqliteExecutionLog {
         .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
+    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: std::time::Duration) -> Result<()> {
+        let conn = self.get_connection()?;
+
+        tokio::task::spawn_blocking(move || {
+            // Calculate scheduled_for timestamp (current time + delay)
+            let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
+
+            let updated = conn.execute(
+                "UPDATE flow_queue
+                 SET retry_count = retry_count + 1,
+                     error_message = ?,
+                     status = ?,
+                     locked_by = NULL,
+                     scheduled_for = ?,
+                     updated_at = ?
+                 WHERE task_id = ?",
+                params![
+                    error_message,
+                    super::TaskStatus::Pending.as_str(),
+                    scheduled_for.timestamp_millis(),
+                    Utc::now().timestamp_millis(),
+                    task_id.to_string(),
+                ],
+            )?;
+
+            if updated == 0 {
+                return Err(StorageError::ScheduledFlowNotFound(task_id));
+            }
+
+            debug!("Retried flow: task_id={}, retry_count incremented", task_id);
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<super::ScheduledFlow>> {
         let conn = self.get_connection()?;
 
         tokio::task::spawn_blocking(move || {
             let flow = conn
                 .query_row(
-                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at
+                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
+                            retry_count, error_message, scheduled_for
                      FROM flow_queue
                      WHERE task_id = ?",
                     params![task_id.to_string()],
@@ -661,6 +736,7 @@ mod tests {
             delay: None,
             status: InvocationStatus::Pending,
             parameters: &params,
+            retry_policy: None,
         })
         .await
         .unwrap();
@@ -690,6 +766,7 @@ mod tests {
             delay: None,
             status: InvocationStatus::Pending,
             parameters: &params,
+            retry_policy: None,
         })
         .await
         .unwrap();
@@ -722,6 +799,7 @@ mod tests {
             delay: None,
             status: InvocationStatus::Pending,
             parameters: &params,
+            retry_policy: None,
         })
         .await
         .unwrap();
@@ -734,6 +812,7 @@ mod tests {
             delay: None,
             status: InvocationStatus::WaitingForSignal,
             parameters: &params,
+            retry_policy: None,
         })
         .await
         .unwrap();
@@ -746,6 +825,7 @@ mod tests {
             delay: None,
             status: InvocationStatus::Complete,
             parameters: &params,
+            retry_policy: None,
         })
         .await
         .unwrap();
@@ -772,6 +852,7 @@ mod tests {
             delay: None,
             status: InvocationStatus::Pending,
             parameters: &params,
+            retry_policy: None,
         })
         .await
         .unwrap();
@@ -787,6 +868,7 @@ mod tests {
             delay: None,
             status: InvocationStatus::Pending,
             parameters: &params,
+            retry_policy: None,
         })
         .await
         .unwrap();
@@ -811,6 +893,7 @@ mod tests {
                 delay: None,
                 status: InvocationStatus::Complete,
                 parameters: &params,
+                retry_policy: None,
             })
             .await
             .unwrap();

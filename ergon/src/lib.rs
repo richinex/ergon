@@ -89,10 +89,10 @@ pub use core::{
 pub use core::kind;
 
 pub use executor::{
-    await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt, DeferredRegistry,
-    Ergon, ExecutionContext, ExecutionError, FlowContext, FlowExecutor, FlowInstance, FlowRegistry,
-    FlowScheduler, FlowWorker, Result as ExecutionResult, StepFuture, StepHandle, WorkerHandle,
-    CALL_TYPE, EXECUTION_CONTEXT,
+    await_external_signal, idempotency_key, idempotency_key_parts, retry_with_policy, ArcStepExt,
+    DeferredRegistry, Ergon, ExecutionContext, ExecutionError, FlowContext, FlowExecutor,
+    FlowInstance, FlowRegistry, FlowScheduler, FlowWorker, Result as ExecutionResult, StepFuture,
+    StepHandle, WorkerHandle, CALL_TYPE, EXECUTION_CONTEXT,
 };
 
 pub use graph::{FlowGraph, GraphError, GraphResult, StepId, StepNode};

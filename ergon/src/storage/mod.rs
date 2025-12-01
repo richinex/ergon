@@ -20,6 +20,7 @@
 //! ```
 
 use async_trait::async_trait;
+use std::time::Duration;
 use uuid::Uuid;
 
 mod error;
@@ -163,6 +164,27 @@ pub trait ExecutionLog: Send + Sync {
             "flow queue not implemented for this storage backend".to_string(),
         ))
     }
+
+    /// Retry a failed flow with exponential backoff.
+    ///
+    /// This method re-schedules a failed flow for retry, incrementing the retry
+    /// count and setting a delay based on exponential backoff.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The unique identifier of the failed task
+    /// * `error_message` - Error message from the failed execution
+    /// * `delay` - Delay before retrying (for exponential backoff)
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: Duration) -> Result<()> {
+        let _ = (task_id, error_message, delay);
+        Err(StorageError::Unsupported(
+            "flow queue not implemented for this storage backend".to_string(),
+        ))
+    }
 }
 
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage
@@ -221,5 +243,9 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
 
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<ScheduledFlow>> {
         (**self).get_scheduled_flow(task_id).await
+    }
+
+    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: Duration) -> Result<()> {
+        (**self).retry_flow(task_id, error_message, delay).await
     }
 }

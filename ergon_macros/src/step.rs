@@ -156,6 +156,10 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { None }
     };
 
+    // Steps don't have retry policies - only flows do
+    // Retry policy is stored at the flow level (step 0)
+    let retry_policy_expr = quote! { None };
+
     // Extract return type
     let return_type = match &sig.output {
         ReturnType::Default => quote! { () },
@@ -537,12 +541,15 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                                 // Log invocation start
                                 let _ = __ctx.log_step_start(
-                                    __step,
-                                    __class_name,
-                                    #method_name_str,
-                                    #delay_duration,
-                                    ergon::InvocationStatus::Pending,
-                                    &__params
+                                    ergon::executor::LogStepStartParams {
+                                        step: __step,
+                                        class_name: __class_name,
+                                        method_name: #method_name_str,
+                                        delay: #delay_duration,
+                                        status: ergon::InvocationStatus::Pending,
+                                        params: &__params,
+                                        retry_policy: #retry_policy_expr,
+                                    }
                                 ).await;
 
                                 // Handle delay if specified
@@ -606,12 +613,15 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Handle AWAIT call type
                     if matches!(__call_type, ergon::CallType::Await) {
                         let _ = __ctx.log_step_start(
-                            __step,
-                            __class_name,
-                            #method_name_str,
-                            None,
-                            ergon::InvocationStatus::WaitingForSignal,
-                            &__params
+                            ergon::executor::LogStepStartParams {
+                                step: __step,
+                                class_name: __class_name,
+                                method_name: #method_name_str,
+                                delay: None,
+                                status: ergon::InvocationStatus::WaitingForSignal,
+                                params: &__params,
+                                retry_policy: #retry_policy_expr,
+                            }
                         ).await;
                         return None;
                     }
@@ -635,12 +645,15 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     // Log invocation start
                     let _ = __ctx.log_step_start(
-                        __step,
-                        __class_name,
-                        #method_name_str,
-                        #delay_duration,
-                        ergon::InvocationStatus::Pending,
-                        &__params
+                        ergon::executor::LogStepStartParams {
+                            step: __step,
+                            class_name: __class_name,
+                            method_name: #method_name_str,
+                            delay: #delay_duration,
+                            status: ergon::InvocationStatus::Pending,
+                            params: &__params,
+                            retry_policy: #retry_policy_expr,
+                        }
                     ).await;
 
                     // Handle delay
@@ -648,7 +661,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                         tokio::time::sleep(__delay).await;
                     }
 
-                    // Execute the step logic
+                                    // Execute the step logic (with automatic retry if policy is set)
                     let __result: #return_type = (async { #block }).await;
 
                     // Log completion conditionally

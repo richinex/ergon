@@ -127,11 +127,17 @@ impl ExecutionLog for RedisExecutionLog {
             delay,
             status,
             parameters,
+            retry_policy,
         } = params;
 
         let params_hash = hash_params(parameters);
         let delay_ms = delay.map(|d| d.as_millis() as i64);
         let timestamp = Utc::now().timestamp();
+
+        // Serialize retry_policy to JSON if present
+        let retry_policy_json = retry_policy
+            .and_then(|p| serde_json::to_string(&p).ok())
+            .unwrap_or_default();
 
         // Store invocation as HASH
         let inv_key = Self::invocation_key(id, step);
@@ -147,6 +153,7 @@ impl ExecutionLog for RedisExecutionLog {
             .hset(&inv_key, "parameters", parameters)
             .hset(&inv_key, "params_hash", params_hash)
             .hset(&inv_key, "delay_ms", delay_ms.unwrap_or(0))
+            .hset(&inv_key, "retry_policy", retry_policy_json)
             .lpush(Self::invocations_key(id), &inv_key)
             .query(&mut *conn)
             .map_err(|e| StorageError::Connection(e.to_string()))?;
@@ -320,6 +327,21 @@ impl ExecutionLog for RedisExecutionLog {
             let flow_key = Self::flow_key(task_id);
             let now = Utc::now().timestamp();
 
+            // Check if flow is ready to execute (scheduled_for has passed)
+            let scheduled_for: Option<i64> = conn
+                .hget(&flow_key, "scheduled_for")
+                .ok();
+
+            if let Some(scheduled_ts) = scheduled_for {
+                if scheduled_ts > now {
+                    // Flow not ready yet, push back to queue
+                    let _: () = conn
+                        .rpush("ergon:queue:pending", task_id.to_string())
+                        .map_err(|e| StorageError::Connection(e.to_string()))?;
+                    return Ok(None);
+                }
+            }
+
             // Atomically update status and lock
             let _: () = redis::pipe()
                 .atomic()
@@ -368,6 +390,44 @@ impl ExecutionLog for RedisExecutionLog {
             .hset(&flow_key, "status", status_str)
             .hset(&flow_key, "updated_at", Utc::now().timestamp())
             .zrem("ergon:running", task_id.to_string())
+            .query(&mut *conn)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn retry_flow(&self, task_id: Uuid, error_message: String, delay: std::time::Duration) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        let flow_key = Self::flow_key(task_id);
+
+        // Check if flow exists
+        let exists: bool = conn
+            .exists(&flow_key)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if !exists {
+            return Err(StorageError::ScheduledFlowNotFound(task_id));
+        }
+
+        // Get current retry_count
+        let retry_count: u32 = conn
+            .hget(&flow_key, "retry_count")
+            .unwrap_or(0);
+
+        // Calculate scheduled_for timestamp (current time + delay)
+        let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
+
+        // Atomically update flow for retry
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&flow_key, "retry_count", retry_count + 1)
+            .hset(&flow_key, "error_message", error_message)
+            .hset(&flow_key, "status", "Pending")
+            .hdel(&flow_key, "locked_by")
+            .hset(&flow_key, "scheduled_for", scheduled_for.timestamp())
+            .hset(&flow_key, "updated_at", Utc::now().timestamp())
+            .zrem("ergon:running", task_id.to_string())
+            .rpush("ergon:queue:pending", task_id.to_string())
             .query(&mut *conn)
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
@@ -455,6 +515,12 @@ impl RedisExecutionLog {
 
         let delay_ms = if delay_ms > 0 { Some(delay_ms) } else { None };
 
+        // Parse retry_policy from JSON if present
+        let retry_policy = Self::get_string(&data, "retry_policy")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .and_then(|json| serde_json::from_str(&json).ok());
+
         Ok(Invocation::new(
             id,
             step,
@@ -467,6 +533,7 @@ impl RedisExecutionLog {
             params_hash,
             return_value,
             delay_ms,
+            retry_policy,
         ))
     }
 
@@ -508,6 +575,20 @@ impl RedisExecutionLog {
         // flow_data is stored as binary
         let flow_data = Self::get_bytes(&data, "flow_data")?;
 
+        // Parse retry fields (optional, default to 0/None if not present)
+        let retry_count: u32 = data.get("retry_count")
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let error_message = data.get("error_message")
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+
+        let scheduled_for = data.get("scheduled_for")
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
+
         Ok(super::ScheduledFlow {
             task_id,
             flow_id,
@@ -517,6 +598,9 @@ impl RedisExecutionLog {
             updated_at,
             locked_by,
             flow_data,
+            retry_count,
+            error_message,
+            scheduled_for,
         })
     }
 }

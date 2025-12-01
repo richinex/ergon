@@ -9,7 +9,7 @@
 //! decisions about how execution context is managed and propagated.
 
 use super::error::{format_params_preview, ExecutionError, Result};
-use crate::core::{deserialize_value, hash_params, serialize_value, CallType, InvocationStatus};
+use crate::core::{deserialize_value, hash_params, serialize_value, CallType, InvocationStatus, RetryPolicy};
 use crate::graph::{FlowGraph, GraphResult, StepId};
 use crate::storage::{ExecutionLog, InvocationStartParams};
 use std::future::Future;
@@ -17,6 +17,19 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use uuid::Uuid;
+
+/// Parameters for logging a step start.
+///
+/// This struct groups related parameters to avoid having too many function arguments.
+pub struct LogStepStartParams<'a, P: serde::Serialize> {
+    pub step: i32,
+    pub class_name: &'a str,
+    pub method_name: &'a str,
+    pub delay: Option<Duration>,
+    pub status: InvocationStatus,
+    pub params: &'a P,
+    pub retry_policy: Option<RetryPolicy>,
+}
 
 tokio::task_local! {
     pub static CALL_TYPE: CallType;
@@ -130,23 +143,19 @@ impl<S: ExecutionLog> ExecutionContext<S> {
     /// The storage layer computes the params_hash internally from the serialized parameters.
     pub async fn log_step_start<P: serde::Serialize>(
         &self,
-        step: i32,
-        class_name: &str,
-        method_name: &str,
-        delay: Option<Duration>,
-        status: InvocationStatus,
-        params: &P,
+        params: LogStepStartParams<'_, P>,
     ) -> Result<()> {
-        let params_bytes = serialize_value(params)?;
+        let params_bytes = serialize_value(params.params)?;
         self.storage
             .log_invocation_start(InvocationStartParams {
                 id: self.id,
-                step,
-                class_name,
-                method_name,
-                delay,
-                status,
+                step: params.step,
+                class_name: params.class_name,
+                method_name: params.method_name,
+                delay: params.delay,
+                status: params.status,
                 parameters: &params_bytes,
+                retry_policy: params.retry_policy,
             })
             .await
             .map_err(ExecutionError::Storage)?;

@@ -43,6 +43,8 @@ impl DagStepArgs {
         } else if meta.path.is_ident("cache_errors") {
             self.cache_errors = true;
             Ok(())
+        } else if meta.path.is_ident("retry") {
+            Err(meta.error("retry is not supported on steps - use #[flow(retry = ...)] instead"))
         } else if meta.path.is_ident("depends_on") {
             let value = meta.value()?;
 

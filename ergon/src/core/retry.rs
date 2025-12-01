@@ -7,32 +7,254 @@
 // By default, `Result::Err` values are NOT cached because most errors are
 // transient (network timeouts, service unavailable, etc.) and should be retried.
 //
-// Two mechanisms control this behavior:
+// Two mechanisms control retry behavior:
 //
-// 1. SIMPLE OVERRIDE: `#[step(cache_errors)]`
-//    - Caches ALL errors (treats them as permanent)
-//    - Use when you know all errors from this step are permanent
+// 1. RETRY POLICY: `#[step(retry = 3)]` or `#[step(retry = RetryPolicy::STANDARD)]`
+//    - Controls HOW MANY times and WHEN to retry (backoff strategy)
+//    - Simple: `retry = 3` for up to 3 attempts with standard backoff
+//    - Advanced: Custom `RetryPolicy` for full control
 //
-// 2. TRAIT-BASED: `RetryableError` trait
+// 2. RETRYABLE ERROR TRAIT: `RetryableError` trait
+//    - Controls WHICH errors should be retried
 //    - Implement on your error type for fine-grained control
 //    - Each error variant can specify if it's retryable
-//    - The macro automatically uses this if the error type implements it
+//
+// 3. SIMPLE OVERRIDE: `#[step(cache_errors)]`
+//    - Caches ALL errors immediately (treats them as permanent)
+//    - Overrides both RetryPolicy and RetryableError
 //
 // This follows Dave Cheney's principle "APIs should be hard to misuse":
-// - Safe default: all errors trigger retry (prevents silent failures)
-// - Simple override: `cache_errors` for permanent failures
-// - Advanced control: `RetryableError` trait for mixed error types
+// - Safe default: no automatic retries (backward compatible)
+// - Simple retry: `retry = 3` (up to 3 attempts with standard backoff)
+// - Advanced control: `RetryableError` trait + custom `RetryPolicy`
 //
 // IMPLEMENTATION:
 //
 // The macro generates code that:
-// 1. If `cache_errors` is set: always cache the result
+// 1. If `cache_errors` is set: always cache the result, no retries
 // 2. If result is Ok: always cache
-// 3. If result is Err and error implements RetryableError:
-//    - Cache if !error.is_retryable()
-//    - Don't cache if error.is_retryable()
-// 4. If result is Err and error doesn't implement RetryableError:
-//    - Don't cache (default: retry all errors)
+// 3. If result is Err and retry_policy is set:
+//    - Check if error.is_retryable() (if RetryableError implemented)
+//    - If is_retryable() == false: cache error, stop retrying
+//    - If is_retryable() == true AND attempts < max_attempts: retry with backoff
+//    - If is_retryable() == true AND attempts >= max_attempts: return error
+// 4. If result is Err and no retry_policy: return error (no retry)
+// =============================================================================
+
+use std::time::Duration;
+
+// =============================================================================
+// RETRY POLICY
+// =============================================================================
+
+/// Configuration for step retry behavior.
+///
+/// Controls how many times a step should retry on transient errors and
+/// the backoff strategy between attempts.
+///
+/// # Examples
+///
+/// ```rust
+/// use ergon::RetryPolicy;
+/// use std::time::Duration;
+///
+/// // Simple: just specify max attempts (uses standard delays)
+/// #[step(retry = 3)]
+/// async fn fetch_data() -> Result<Data, Error> { ... }
+///
+/// // Named policy: predefined sensible defaults
+/// #[step(retry = RetryPolicy::STANDARD)]
+/// async fn fetch_data() -> Result<Data, Error> { ... }
+///
+/// // Custom policy: full control, reusable
+/// const API_RETRY: RetryPolicy = RetryPolicy {
+///     max_attempts: 5,
+///     initial_delay: Duration::from_secs(1),
+///     max_delay: Duration::from_secs(30),
+///     backoff_multiplier: 2.0,
+/// };
+///
+/// #[step(retry = API_RETRY)]
+/// async fn call_api() -> Result<Response, Error> { ... }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RetryPolicy {
+    /// Maximum number of attempts (including the first try).
+    ///
+    /// For example, `max_attempts = 3` means:
+    /// - Attempt 1: immediate (first try)
+    /// - Attempt 2: after initial_delay
+    /// - Attempt 3: after initial_delay * backoff_multiplier
+    ///
+    /// Default: 1 (no retries, backward compatible)
+    pub max_attempts: u32,
+
+    /// Initial delay before the first retry.
+    ///
+    /// Default: 1 second
+    pub initial_delay: Duration,
+
+    /// Maximum delay between retries (caps exponential backoff).
+    ///
+    /// Default: 60 seconds
+    pub max_delay: Duration,
+
+    /// Multiplier for exponential backoff.
+    ///
+    /// Each retry delay is calculated as:
+    /// `min(initial_delay * backoff_multiplier^(attempt-1), max_delay)`
+    ///
+    /// Default: 2.0 (doubles each time)
+    pub backoff_multiplier: f64,
+}
+
+impl RetryPolicy {
+    /// No retries - fail immediately on first error.
+    ///
+    /// Use this for validation errors or other permanent failures.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// #[step(retry = RetryPolicy::NONE)]
+    /// async fn validate_input(input: String) -> Result<(), Error> {
+    ///     if input.is_empty() {
+    ///         return Err("Input cannot be empty".into());
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub const NONE: Self = Self {
+        max_attempts: 1,
+        initial_delay: Duration::from_secs(0),
+        max_delay: Duration::from_secs(0),
+        backoff_multiplier: 1.0,
+    };
+
+    /// Standard retry policy - sensible defaults for most use cases.
+    ///
+    /// - Max attempts: 3 (initial try + 2 retries)
+    /// - Initial delay: 1 second
+    /// - Max delay: 30 seconds
+    /// - Backoff: exponential (2x each time)
+    ///
+    /// Retry schedule: immediate → 1s → 2s
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// #[step(retry = RetryPolicy::STANDARD)]
+    /// async fn fetch_data() -> Result<Data, Error> {
+    ///     http::get("https://api.example.com/data").await
+    /// }
+    /// ```
+    pub const STANDARD: Self = Self {
+        max_attempts: 3,
+        initial_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(30),
+        backoff_multiplier: 2.0,
+    };
+
+    /// Aggressive retry policy for critical operations.
+    ///
+    /// - Max attempts: 10
+    /// - Initial delay: 100ms
+    /// - Max delay: 10 seconds
+    /// - Backoff: exponential (1.5x each time)
+    ///
+    /// Retry schedule: immediate → 100ms → 150ms → 225ms → ... → max 10s
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// #[step(retry = RetryPolicy::AGGRESSIVE)]
+    /// async fn save_to_db() -> Result<(), DbError> {
+    ///     database.save(data).await
+    /// }
+    /// ```
+    pub const AGGRESSIVE: Self = Self {
+        max_attempts: 10,
+        initial_delay: Duration::from_millis(100),
+        max_delay: Duration::from_secs(10),
+        backoff_multiplier: 1.5,
+    };
+
+    /// Create a policy with custom max_attempts (uses standard delays).
+    ///
+    /// This is used for the shorthand `retry = 3` syntax.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// // These are equivalent:
+    /// #[step(retry = 3)]
+    /// #[step(retry = RetryPolicy::with_max_attempts(3))]
+    /// async fn my_step() -> Result<T, E> { ... }
+    /// ```
+    pub const fn with_max_attempts(max_attempts: u32) -> Self {
+        Self {
+            max_attempts,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+        }
+    }
+
+    /// Calculate the delay before the next retry attempt.
+    ///
+    /// Uses exponential backoff: `initial_delay * backoff_multiplier^(attempt-1)`
+    /// capped at `max_delay`.
+    ///
+    /// # Arguments
+    ///
+    /// * `attempt` - The current attempt number (1-indexed)
+    ///
+    /// # Returns
+    ///
+    /// Duration to wait before the next retry, or None if no more retries.
+    pub fn delay_for_attempt(&self, attempt: u32) -> Option<Duration> {
+        if attempt >= self.max_attempts {
+            return None; // No more retries
+        }
+
+        // Calculate: initial_delay * multiplier^(attempt-1)
+        // attempt=1 (first retry): multiplier^0 = 1 → initial_delay
+        // attempt=2 (second retry): multiplier^1 → initial_delay * multiplier
+        // attempt=3 (third retry): multiplier^2 → initial_delay * multiplier^2
+        let exponent = (attempt - 1) as f64;
+        let multiplier = self.backoff_multiplier.powf(exponent);
+        let delay_secs = self.initial_delay.as_secs_f64() * multiplier;
+
+        // Cap at max_delay
+        let delay = Duration::from_secs_f64(delay_secs.min(self.max_delay.as_secs_f64()));
+
+        Some(delay)
+    }
+}
+
+impl Default for RetryPolicy {
+    /// Default is NONE (no retries) for backward compatibility.
+    ///
+    /// Existing code without `retry` attribute will continue to work
+    /// with the same behavior (no automatic retries).
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl From<u32> for RetryPolicy {
+    /// Convert a number to a RetryPolicy with that many max_attempts.
+    ///
+    /// Enables the shorthand syntax: `retry = 3`
+    ///
+    /// Uses standard delays: 1s initial, 30s max, 2x multiplier
+    fn from(max_attempts: u32) -> Self {
+        Self::with_max_attempts(max_attempts)
+    }
+}
+
+// =============================================================================
+// RETRYABLE ERROR TRAIT
 // =============================================================================
 
 /// Trait for error types to specify whether they should trigger a retry.
@@ -257,6 +479,205 @@ pub mod kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // =============================================================================
+    // RETRY POLICY TESTS
+    // =============================================================================
+
+    #[test]
+    fn test_retry_policy_none() {
+        let policy = RetryPolicy::NONE;
+        assert_eq!(policy.max_attempts, 1);
+        assert_eq!(policy.initial_delay, Duration::from_secs(0));
+        assert_eq!(policy.max_delay, Duration::from_secs(0));
+        assert_eq!(policy.backoff_multiplier, 1.0);
+
+        // No retries - should return None for any attempt
+        assert_eq!(policy.delay_for_attempt(1), None);
+        assert_eq!(policy.delay_for_attempt(2), None);
+    }
+
+    #[test]
+    fn test_retry_policy_standard() {
+        let policy = RetryPolicy::STANDARD;
+        assert_eq!(policy.max_attempts, 3);
+        assert_eq!(policy.initial_delay, Duration::from_secs(1));
+        assert_eq!(policy.max_delay, Duration::from_secs(30));
+        assert_eq!(policy.backoff_multiplier, 2.0);
+
+        // Test backoff schedule: 1s, 2s, then None
+        assert_eq!(policy.delay_for_attempt(1), Some(Duration::from_secs(1))); // First retry
+        assert_eq!(policy.delay_for_attempt(2), Some(Duration::from_secs(2))); // Second retry
+        assert_eq!(policy.delay_for_attempt(3), None); // No more retries
+        assert_eq!(policy.delay_for_attempt(4), None); // Still no retries
+    }
+
+    #[test]
+    fn test_retry_policy_aggressive() {
+        let policy = RetryPolicy::AGGRESSIVE;
+        assert_eq!(policy.max_attempts, 10);
+        assert_eq!(policy.initial_delay, Duration::from_millis(100));
+        assert_eq!(policy.max_delay, Duration::from_secs(10));
+        assert_eq!(policy.backoff_multiplier, 1.5);
+
+        // Test first few backoff delays: 100ms, 150ms, 225ms, ...
+        assert_eq!(
+            policy.delay_for_attempt(1),
+            Some(Duration::from_millis(100))
+        ); // 100 * 1.5^0
+        assert_eq!(
+            policy.delay_for_attempt(2),
+            Some(Duration::from_millis(150))
+        ); // 100 * 1.5^1
+        assert_eq!(
+            policy.delay_for_attempt(3),
+            Some(Duration::from_millis(225))
+        ); // 100 * 1.5^2
+    }
+
+    #[test]
+    fn test_retry_policy_with_max_attempts() {
+        let policy = RetryPolicy::with_max_attempts(5);
+        assert_eq!(policy.max_attempts, 5);
+        assert_eq!(policy.initial_delay, Duration::from_secs(1));
+        assert_eq!(policy.max_delay, Duration::from_secs(30));
+        assert_eq!(policy.backoff_multiplier, 2.0);
+
+        // Should allow 5 attempts total (attempt 1-4 return delays, attempt 5 returns None)
+        assert!(policy.delay_for_attempt(1).is_some());
+        assert!(policy.delay_for_attempt(2).is_some());
+        assert!(policy.delay_for_attempt(3).is_some());
+        assert!(policy.delay_for_attempt(4).is_some());
+        assert_eq!(policy.delay_for_attempt(5), None); // max_attempts reached
+    }
+
+    #[test]
+    fn test_retry_policy_exponential_backoff() {
+        let policy = RetryPolicy {
+            max_attempts: 10,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            backoff_multiplier: 2.0,
+        };
+
+        // Test exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (capped)
+        assert_eq!(policy.delay_for_attempt(1), Some(Duration::from_secs(1))); // 1 * 2^0
+        assert_eq!(policy.delay_for_attempt(2), Some(Duration::from_secs(2))); // 1 * 2^1
+        assert_eq!(policy.delay_for_attempt(3), Some(Duration::from_secs(4))); // 1 * 2^2
+        assert_eq!(policy.delay_for_attempt(4), Some(Duration::from_secs(8))); // 1 * 2^3
+        assert_eq!(policy.delay_for_attempt(5), Some(Duration::from_secs(16))); // 1 * 2^4
+        assert_eq!(policy.delay_for_attempt(6), Some(Duration::from_secs(32))); // 1 * 2^5
+        assert_eq!(policy.delay_for_attempt(7), Some(Duration::from_secs(60))); // 1 * 2^6 = 64, capped at 60
+        assert_eq!(policy.delay_for_attempt(8), Some(Duration::from_secs(60))); // Still capped
+    }
+
+    #[test]
+    fn test_retry_policy_max_delay_capping() {
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            initial_delay: Duration::from_secs(10),
+            max_delay: Duration::from_secs(15), // Cap at 15 seconds
+            backoff_multiplier: 2.0,
+        };
+
+        // Test that delays are capped at max_delay
+        assert_eq!(policy.delay_for_attempt(1), Some(Duration::from_secs(10))); // 10 * 2^0 = 10
+        assert_eq!(policy.delay_for_attempt(2), Some(Duration::from_secs(15))); // 10 * 2^1 = 20, capped at 15
+        assert_eq!(policy.delay_for_attempt(3), Some(Duration::from_secs(15))); // 10 * 2^2 = 40, capped at 15
+        assert_eq!(policy.delay_for_attempt(4), Some(Duration::from_secs(15))); // Still capped
+    }
+
+    #[test]
+    fn test_retry_policy_default() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy, RetryPolicy::NONE);
+
+        // Default should be NONE (no retries) for backward compatibility
+        assert_eq!(policy.max_attempts, 1);
+    }
+
+    #[test]
+    fn test_retry_policy_from_u32() {
+        let policy: RetryPolicy = 5.into();
+        assert_eq!(policy.max_attempts, 5);
+        assert_eq!(policy.initial_delay, Duration::from_secs(1));
+        assert_eq!(policy.max_delay, Duration::from_secs(30));
+        assert_eq!(policy.backoff_multiplier, 2.0);
+
+        // Should be equivalent to with_max_attempts
+        assert_eq!(policy, RetryPolicy::with_max_attempts(5));
+    }
+
+    #[test]
+    fn test_retry_policy_edge_cases() {
+        // Test with 0 max_attempts (shouldn't happen, but let's be defensive)
+        let policy_zero = RetryPolicy::with_max_attempts(0);
+        assert_eq!(policy_zero.delay_for_attempt(0), None);
+        assert_eq!(policy_zero.delay_for_attempt(1), None);
+
+        // Test with 1 max_attempt (equivalent to NONE)
+        let policy_one = RetryPolicy::with_max_attempts(1);
+        assert_eq!(policy_one.delay_for_attempt(1), None); // Already at max
+        assert_eq!(policy_one.delay_for_attempt(2), None);
+
+        // Test with very large multiplier
+        let policy_large = RetryPolicy {
+            max_attempts: 5,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_secs(100),
+            backoff_multiplier: 10.0,
+        };
+        assert_eq!(
+            policy_large.delay_for_attempt(1),
+            Some(Duration::from_millis(10))
+        ); // 10 * 10^0
+        assert_eq!(
+            policy_large.delay_for_attempt(2),
+            Some(Duration::from_millis(100))
+        ); // 10 * 10^1
+        assert_eq!(
+            policy_large.delay_for_attempt(3),
+            Some(Duration::from_millis(1000))
+        ); // 10 * 10^2
+        assert_eq!(
+            policy_large.delay_for_attempt(4),
+            Some(Duration::from_secs(10))
+        ); // 10 * 10^3 = 10000ms = 10s
+    }
+
+    #[test]
+    fn test_retry_policy_realistic_scenario() {
+        // Test a realistic API retry policy:
+        // - 3 attempts
+        // - Start with 500ms delay
+        // - Cap at 5 seconds
+        // - 2x multiplier
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(5),
+            backoff_multiplier: 2.0,
+        };
+
+        // Attempt 1 (first retry): 500ms
+        assert_eq!(
+            policy.delay_for_attempt(1),
+            Some(Duration::from_millis(500))
+        );
+
+        // Attempt 2 (second retry): 1000ms
+        assert_eq!(
+            policy.delay_for_attempt(2),
+            Some(Duration::from_millis(1000))
+        );
+
+        // Attempt 3: no more retries
+        assert_eq!(policy.delay_for_attempt(3), None);
+    }
+
+    // =============================================================================
+    // RETRYABLE ERROR TESTS
+    // =============================================================================
 
     #[test]
     fn test_retryable_error_trait() {

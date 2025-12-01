@@ -1,4 +1,4 @@
-use crate::core::InvocationStatus;
+use crate::core::{InvocationStatus, RetryPolicy};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -21,4 +21,6 @@ pub struct InvocationStartParams<'a> {
     pub status: InvocationStatus,
     /// Serialized parameters
     pub parameters: &'a [u8],
+    /// Optional retry policy for this step
+    pub retry_policy: Option<RetryPolicy>,
 }

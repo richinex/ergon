@@ -96,12 +96,13 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
     /// let mut registry = FlowRegistry::new();
     /// registry.register(|flow: Arc<OrderProcessor>| flow.process());
     /// ```
-    pub fn register<T, F, Fut, R>(&mut self, executor: F)
+    pub fn register<T, F, Fut, R, E>(&mut self, executor: F)
     where
         T: DeserializeOwned + Send + Sync + Clone + 'static,
         F: Fn(Arc<T>) -> Fut + Send + Sync + Clone + 'static,
-        Fut: Future<Output = R> + Send + 'static,
+        Fut: Future<Output = Result<R, E>> + Send + 'static,
         R: Send + 'static,
+        E: std::fmt::Display + Send + 'static,
     {
         let type_name = std::any::type_name::<T>().to_string();
 
@@ -121,12 +122,13 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
                     // Execute the flow using the registered executor
                     // The executor expects Arc<T>, but instance.execute expects FnOnce(T)
                     // So we wrap the executor call to convert T -> Arc<T>
-                    instance
+                    let result = instance
                         .execute(move |f: T| executor(Arc::new(f)))
                         .await
                         .map_err(|e| format!("flow execution failed: {}", e))?;
 
-                    Ok(())
+                    // Check if the flow itself returned an error
+                    result.map(|_| ()).map_err(|e| e.to_string())
                 })
             });
 
@@ -224,6 +226,57 @@ impl<S: ExecutionLog + 'static> FlowWorker<S> {
         }
     }
 
+    /// Check if a failed flow should be retried and return the delay.
+    ///
+    /// This method checks the retry policy stored with the flow (step 0 invocation)
+    /// and determines if the flow should be retried based on:
+    /// - Retry count vs max_attempts
+    /// - Whether the error is retryable (if RetryableError trait is implemented)
+    ///
+    /// Returns:
+    /// - Ok(Some(delay)) if the flow should be retried with the given delay
+    /// - Ok(None) if the flow should not be retried
+    /// - Err(e) if there was an error checking the policy
+    async fn should_retry_flow(&self, flow: &ScheduledFlow, _error_msg: &str) -> Result<Option<Duration>, String> {
+        // Get the flow's invocation (step 0) to check retry policy
+        match self.storage.get_invocation(flow.flow_id, 0).await {
+            Ok(Some(invocation)) => {
+                if let Some(policy) = invocation.retry_policy() {
+                    // Calculate delay for next attempt (retry_count is 0-indexed, attempt is 1-indexed)
+                    let next_attempt = flow.retry_count + 1;
+
+                    // delay_for_attempt returns None if we've exceeded max attempts
+                    if let Some(delay) = policy.delay_for_attempt(next_attempt) {
+                        debug!(
+                            "Flow {} will retry (attempt {}/{}) after {:?}",
+                            flow.flow_id, next_attempt, policy.max_attempts, delay
+                        );
+                        Ok(Some(delay))
+                    } else {
+                        debug!(
+                            "Flow {} exceeded max retry attempts ({}/{})",
+                            flow.flow_id, next_attempt, policy.max_attempts
+                        );
+                        Ok(None)
+                    }
+                } else {
+                    // No retry policy - don't retry
+                    debug!("Flow {} has no retry policy", flow.flow_id);
+                    Ok(None)
+                }
+            }
+            Ok(None) => {
+                // No invocation found - shouldn't happen, but don't retry
+                warn!("No invocation found for flow {}", flow.flow_id);
+                Ok(None)
+            }
+            Err(e) => {
+                // Error getting invocation
+                Err(format!("Failed to get invocation for flow {}: {}", flow.flow_id, e))
+            }
+        }
+    }
+
     /// Sets the poll interval for checking the queue.
     ///
     /// Default is 1 second.
@@ -235,12 +288,13 @@ impl<S: ExecutionLog + 'static> FlowWorker<S> {
     /// Registers a flow type with its executor function.
     ///
     /// See [`FlowRegistry::register`] for details.
-    pub async fn register<T, F, Fut, R>(&self, executor: F)
+    pub async fn register<T, F, Fut, R, E>(&self, executor: F)
     where
         T: DeserializeOwned + Send + Sync + Clone + 'static,
         F: Fn(Arc<T>) -> Fut + Send + Sync + Clone + 'static,
-        Fut: Future<Output = R> + Send + 'static,
+        Fut: Future<Output = Result<R, E>> + Send + 'static,
         R: Send + 'static,
+        E: std::fmt::Display + Send + 'static,
     {
         let mut registry = self.registry.write().await;
         registry.register(executor);
@@ -276,26 +330,68 @@ impl<S: ExecutionLog + 'static> FlowWorker<S> {
                         let result = registry.execute(&flow, self.storage.clone()).await;
                         drop(registry);
 
-                        // Mark as complete or failed
-                        let status = if result.is_ok() {
-                            info!(
-                                "Worker {} completed flow: task_id={}",
-                                self.worker_id, flow.task_id
-                            );
-                            TaskStatus::Complete
-                        } else {
-                            error!(
-                                "Worker {} flow failed: task_id={}, error={:?}",
-                                self.worker_id, flow.task_id, result
-                            );
-                            TaskStatus::Failed
-                        };
+                        // Handle completion or retry
+                        match result {
+                            Ok(_) => {
+                                info!(
+                                    "Worker {} completed flow: task_id={}",
+                                    self.worker_id, flow.task_id
+                                );
+                                if let Err(e) = self.storage.complete_flow(flow.task_id, TaskStatus::Complete).await {
+                                    error!(
+                                        "Worker {} failed to mark flow complete: {}",
+                                        self.worker_id, e
+                                    );
+                                }
+                            }
+                            Err(error_msg) => {
+                                // Flow failed - check if we should retry
+                                error!(
+                                    "Worker {} flow failed: task_id={}, error={}",
+                                    self.worker_id, flow.task_id, error_msg
+                                );
 
-                        if let Err(e) = self.storage.complete_flow(flow.task_id, status).await {
-                            error!(
-                                "Worker {} failed to mark flow complete: {}",
-                                self.worker_id, e
-                            );
+                                // Check if this flow should be retried
+                                match self.should_retry_flow(&flow, &error_msg).await {
+                                    Ok(Some(delay)) => {
+                                        info!(
+                                            "Worker {} retrying flow: task_id={}, attempt={}, delay={:?}",
+                                            self.worker_id, flow.task_id, flow.retry_count + 1, delay
+                                        );
+                                        if let Err(e) = self.storage.retry_flow(flow.task_id, error_msg.clone(), delay).await {
+                                            error!(
+                                                "Worker {} failed to schedule retry: {}",
+                                                self.worker_id, e
+                                            );
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        // Don't retry - mark as failed permanently
+                                        debug!(
+                                            "Worker {} not retrying flow: task_id={} (not retryable or max attempts reached)",
+                                            self.worker_id, flow.task_id
+                                        );
+                                        if let Err(e) = self.storage.complete_flow(flow.task_id, TaskStatus::Failed).await {
+                                            error!(
+                                                "Worker {} failed to mark flow failed: {}",
+                                                self.worker_id, e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "Worker {} failed to check retry policy: {}, marking as failed",
+                                            self.worker_id, e
+                                        );
+                                        if let Err(e) = self.storage.complete_flow(flow.task_id, TaskStatus::Failed).await {
+                                            error!(
+                                                "Worker {} failed to mark flow failed: {}",
+                                                self.worker_id, e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     Ok(None) => {
