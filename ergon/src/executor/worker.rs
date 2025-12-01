@@ -439,7 +439,7 @@ impl<S: ExecutionLog + 'static> FlowWorker<S> {
                         }
                     }
                     Ok(None) => {
-                        // No pending flows, sleep and retry
+                        // No work available - sleep before next poll
                         tokio::time::sleep(self.poll_interval).await;
                     }
                     Err(e) => {

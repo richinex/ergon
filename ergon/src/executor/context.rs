@@ -270,6 +270,21 @@ impl<S: ExecutionLog> ExecutionContext<S> {
 
         Ok(None)
     }
+
+    /// Returns the flow ID for this execution context.
+    pub fn flow_id(&self) -> Uuid {
+        self.id
+    }
+
+    /// Returns the current step number.
+    pub fn step(&self) -> i32 {
+        self.current_step()
+    }
+
+    /// Returns a reference to the storage backend.
+    pub fn storage(&self) -> &Arc<S> {
+        &self.storage
+    }
 }
 
 /// Manages execution context setup and scoping for flow execution.

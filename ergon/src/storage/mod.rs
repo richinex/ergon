@@ -175,7 +175,7 @@ pub trait ExecutionLog: Send + Sync {
         ))
     }
 
-    /// Get the current status of a scheduled flow.
+    /// Get the current status of a scheduled flow by task_id.
     ///
     /// # Default Implementation
     ///

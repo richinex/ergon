@@ -36,6 +36,10 @@ pub enum Error {
     /// An invalid status string was encountered during parsing.
     #[error("invalid invocation status: {0}")]
     InvalidStatus(String),
+
+    /// General storage error.
+    #[error("storage error: {0}")]
+    Storage(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

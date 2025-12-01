@@ -155,7 +155,7 @@ impl SqliteExecutionLog {
                 class_name TEXT NOT NULL,
                 method_name TEXT NOT NULL,
                 delay INTEGER,
-                status TEXT CHECK( status IN ('PENDING','WAITING_FOR_SIGNAL','COMPLETE') ) NOT NULL,
+                status TEXT CHECK( status IN ('PENDING','WAITING_FOR_SIGNAL','WAITING_FOR_TIMER','COMPLETE') ) NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 1,
                 parameters BLOB,
                 params_hash INTEGER NOT NULL DEFAULT 0,
@@ -184,6 +184,13 @@ impl SqliteExecutionLog {
             [],
         );
 
+        // Add timer_fire_at column if it doesn't exist (migration for existing databases)
+        // Stores when a timer should fire (milliseconds since epoch)
+        let _ = conn.execute(
+            "ALTER TABLE execution_log ADD COLUMN timer_fire_at INTEGER",
+            [],
+        );
+
         // Create index for efficient flow lookups
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_execution_log_id ON execution_log(id)",
@@ -193,6 +200,12 @@ impl SqliteExecutionLog {
         // Create index for incomplete flow queries
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_execution_log_status ON execution_log(step, status)",
+            [],
+        )?;
+
+        // Create index for timer queries (find expired timers)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_execution_log_timers ON execution_log(status, timer_fire_at)",
             [],
         )?;
 
@@ -424,7 +437,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -452,7 +465,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -472,7 +485,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
                      FROM execution_log
                      WHERE id = ?
                      ORDER BY step DESC
@@ -493,7 +506,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
                  FROM execution_log
                  WHERE id = ?
                  ORDER BY step ASC",
@@ -514,7 +527,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
                  FROM execution_log
                  WHERE step = 0
                    AND status <> 'COMPLETE'
