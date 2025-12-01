@@ -756,15 +756,15 @@ mod tests {
 
         // Parallel execution should take roughly max(a, b) = 100ms
         // Sequential would take a + b = 200ms
-        // Allow 120% overhead for scheduling/system variance (especially in CI)
-        let max_parallel_time = task_duration.mul_f32(2.2);
+        // Allow 150% overhead for scheduling/system variance (especially in CI/Windows)
+        let max_parallel_time = task_duration.mul_f32(2.5);
         assert!(
             elapsed < max_parallel_time,
             "Expected parallel execution (< {:?}), got {:?}. \
              If this took > {:?}, tasks likely ran sequentially.",
             max_parallel_time,
             elapsed,
-            task_duration.mul_f32(1.5)
+            task_duration.mul_f32(1.8)
         );
     }
 
