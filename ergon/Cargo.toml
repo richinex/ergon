@@ -17,36 +17,38 @@ redis = ["dep:redis"]
 
 [dependencies]
 # Core dependencies
-uuid = { version = "1.11", features = ["v4", "serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-thiserror = "2.0"
-bincode = { version = "2.0", features = ["serde"] }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+bincode = { workspace = true }
 
 # Storage dependencies
-async-trait = "0.1"
-r2d2 = { version = "0.8", optional = true }
-r2d2_sqlite = { version = "0.25", optional = true }
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
-redis = { version = "0.32", features = ["r2d2"], optional = true }
+async-trait = { workspace = true }
+r2d2 = { workspace = true, optional = true }
+r2d2_sqlite = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
+redis = { workspace = true, optional = true }
 
 # Graph dependencies
-petgraph = "0.8"
+petgraph = { workspace = true }
 
 # Executor dependencies
-tokio = { version = "1.42", features = ["full"] }
-tracing = "0.1"
-lazy_static = "1.4"
-futures = "0.3"
-dashmap = "6.1"
+tokio = { workspace = true }
+tracing = { workspace = true }
+lazy_static = { workspace = true }
+futures = { workspace = true }
+dashmap = { workspace = true }
 
 # Proc-macros
 ergon_macros = { path = "../ergon_macros" }
 
 [dev-dependencies]
-tokio = { version = "1.42", features = ["full"] }
-serde_json = "1.0"
+tokio = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Example configurations with required features
 [[example]]
@@ -64,3 +66,11 @@ required-features = ["redis"]
 [[example]]
 name = "benchmark_redis"
 required-features = ["redis"]
+
+[[example]]
+name = "axum_order_processing_redis"
+required-features = ["redis"]
+
+[[example]]
+name = "axum_order_processing"
+required-features = ["sqlite"]

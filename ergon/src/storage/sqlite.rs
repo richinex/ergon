@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
@@ -643,12 +643,12 @@ impl ExecutionLog for SqliteExecutionLog {
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        let conn = self.get_connection()?;
+        let mut conn = self.get_connection()?;
         let worker_id = worker_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            // Use a transaction to atomically find and lock a pending flow
-            let tx = conn.unchecked_transaction()?;
+            // Use IMMEDIATE transaction to acquire write lock early and reduce contention
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
             // Find the oldest pending flow that's ready to execute
             let now = Utc::now().timestamp_millis();
@@ -668,16 +668,27 @@ impl ExecutionLog for SqliteExecutionLog {
 
             if let Some(flow) = flow_opt {
                 // Lock it by updating status and locked_by
-                tx.execute(
+                // Include status = 'PENDING' check for optimistic concurrency control
+                let rows_updated = tx.execute(
                     "UPDATE flow_queue
                      SET status = 'RUNNING', locked_by = ?, updated_at = ?
-                     WHERE task_id = ?",
+                     WHERE task_id = ? AND status = 'PENDING'",
                     params![
                         &worker_id,
                         Utc::now().timestamp_millis(),
                         flow.task_id.to_string(),
                     ],
                 )?;
+
+                // Check if we actually locked the flow (another worker may have grabbed it)
+                if rows_updated == 0 {
+                    // Another worker already locked this flow, return None
+                    debug!(
+                        "Flow already locked by another worker: task_id={}",
+                        flow.task_id
+                    );
+                    return Ok(None);
+                }
 
                 tx.commit()?;
 

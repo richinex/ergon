@@ -10,7 +10,7 @@ use uuid::Uuid;
 #[non_exhaustive]
 pub enum StorageError {
     /// A database operation failed.
-    #[error("database operation failed")]
+    #[error("database operation failed: {0}")]
     Database(#[from] rusqlite::Error),
 
     /// A core serialization or deserialization error occurred.
