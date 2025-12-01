@@ -54,7 +54,7 @@ use std::time::Duration;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use ergon::RetryPolicy;
 /// use std::time::Duration;
 ///
@@ -115,7 +115,7 @@ impl RetryPolicy {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// #[step(retry = RetryPolicy::NONE)]
     /// async fn validate_input(input: String) -> Result<(), Error> {
     ///     if input.is_empty() {
@@ -142,7 +142,7 @@ impl RetryPolicy {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// #[step(retry = RetryPolicy::STANDARD)]
     /// async fn fetch_data() -> Result<Data, Error> {
     ///     http::get("https://api.example.com/data").await
@@ -166,7 +166,7 @@ impl RetryPolicy {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// #[step(retry = RetryPolicy::AGGRESSIVE)]
     /// async fn save_to_db() -> Result<(), DbError> {
     ///     database.save(data).await
@@ -185,7 +185,7 @@ impl RetryPolicy {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// // These are equivalent:
     /// #[step(retry = 3)]
     /// #[step(retry = RetryPolicy::with_max_attempts(3))]

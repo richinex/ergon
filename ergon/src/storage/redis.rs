@@ -45,8 +45,11 @@ use uuid::Uuid;
 /// use ergon::storage::RedisExecutionLog;
 /// use std::sync::Arc;
 ///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let redis_url = "redis://127.0.0.1:6379";
 /// let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+/// # Ok(())
+/// # }
 /// ```
 pub struct RedisExecutionLog {
     pool: r2d2::Pool<redis::Client>,

@@ -37,6 +37,7 @@ type BoxedExecutor<S> = Box<
 ///
 /// ```no_run
 /// use ergon::executor::FlowRegistry;
+/// use ergon::storage::InMemoryExecutionLog;
 /// use serde::{Serialize, Deserialize};
 /// use std::sync::Arc;
 ///
@@ -51,7 +52,7 @@ type BoxedExecutor<S> = Box<
 ///     }
 /// }
 ///
-/// let mut registry = FlowRegistry::new();
+/// let mut registry: FlowRegistry<InMemoryExecutionLog> = FlowRegistry::new();
 /// registry.register(|flow: Arc<MyFlow>| flow.run());
 /// ```
 pub struct FlowRegistry<S: ExecutionLog> {
@@ -82,6 +83,7 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
     ///
     /// ```no_run
     /// # use ergon::executor::FlowRegistry;
+    /// # use ergon::storage::InMemoryExecutionLog;
     /// # use serde::{Serialize, Deserialize};
     /// # use std::sync::Arc;
     /// #
@@ -93,7 +95,7 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
     /// #         Ok(self.order_id.clone())
     /// #     }
     /// # }
-    /// let mut registry = FlowRegistry::new();
+    /// let mut registry: FlowRegistry<InMemoryExecutionLog> = FlowRegistry::new();
     /// registry.register(|flow: Arc<OrderProcessor>| flow.process());
     /// ```
     pub fn register<T, F, Fut, R, E>(&mut self, executor: F)
