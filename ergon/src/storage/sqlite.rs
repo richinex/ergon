@@ -191,6 +191,13 @@ impl SqliteExecutionLog {
             [],
         );
 
+        // Add timer_name column if it doesn't exist (migration for existing databases)
+        // Optional name for debugging and observability
+        let _ = conn.execute(
+            "ALTER TABLE execution_log ADD COLUMN timer_name TEXT",
+            [],
+        );
+
         // Create index for efficient flow lookups
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_execution_log_id ON execution_log(id)",
@@ -335,7 +342,14 @@ impl SqliteExecutionLog {
         let is_retryable_int: Option<i32> = row.get(12).ok().flatten();
         let is_retryable = is_retryable_int.map(|v| v != 0);
 
-        Ok(Invocation::new(
+        // Parse timer_fire_at from milliseconds since epoch
+        let timer_fire_at_millis: Option<i64> = row.get(13).ok().flatten();
+        let timer_fire_at = timer_fire_at_millis.and_then(chrono::DateTime::from_timestamp_millis);
+
+        // Parse timer_name
+        let timer_name: Option<String> = row.get(14).ok().flatten();
+
+        let mut invocation = Invocation::new(
             id,
             step,
             timestamp,
@@ -349,7 +363,17 @@ impl SqliteExecutionLog {
             delay,
             retry_policy,
             is_retryable,
-        ))
+        );
+
+        // Set timer fields if present
+        if let Some(fire_at) = timer_fire_at {
+            invocation.set_timer_fire_at(Some(fire_at));
+        }
+        if let Some(name) = timer_name {
+            invocation.set_timer_name(Some(name));
+        }
+
+        Ok(invocation)
     }
 }
 
@@ -437,7 +461,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -465,7 +489,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
                      FROM execution_log
                      WHERE id = ? AND step = ?",
                     params![id.to_string(), step],
@@ -485,7 +509,7 @@ impl ExecutionLog for SqliteExecutionLog {
         tokio::task::spawn_blocking(move || {
             let invocation = conn
                 .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
+                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
                      FROM execution_log
                      WHERE id = ?
                      ORDER BY step DESC
@@ -506,7 +530,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
                  FROM execution_log
                  WHERE id = ?
                  ORDER BY step ASC",
@@ -527,7 +551,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at
+                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
                  FROM execution_log
                  WHERE step = 0
                    AND status <> 'COMPLETE'
@@ -795,6 +819,112 @@ impl ExecutionLog for SqliteExecutionLog {
                 .optional()?;
 
             Ok(flow)
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn get_expired_timers(&self, now: chrono::DateTime<Utc>) -> Result<Vec<super::TimerInfo>> {
+        let conn = self.get_connection()?;
+        let now_millis = now.timestamp_millis();
+
+        tokio::task::spawn_blocking(move || {
+            let mut stmt = conn.prepare(
+                "SELECT id, step, timer_fire_at, timer_name
+                 FROM execution_log
+                 WHERE status = 'WAITING_FOR_TIMER'
+                   AND timer_fire_at IS NOT NULL
+                   AND timer_fire_at <= ?
+                 ORDER BY timer_fire_at ASC
+                 LIMIT 100"
+            )?;
+
+            let timers = stmt
+                .query_map(params![now_millis], |row| {
+                    let flow_id_str: String = row.get(0)?;
+                    let flow_id = Uuid::parse_str(&flow_id_str)
+                        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+                    let step: i32 = row.get(1)?;
+
+                    let fire_at_millis: i64 = row.get(2)?;
+                    let fire_at = chrono::DateTime::from_timestamp_millis(fire_at_millis)
+                        .ok_or_else(|| rusqlite::Error::InvalidParameterName("Invalid timestamp".to_string()))?;
+
+                    let timer_name: Option<String> = row.get(3)?;
+
+                    Ok(super::TimerInfo {
+                        flow_id,
+                        step,
+                        fire_at,
+                        timer_name,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            Ok(timers)
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
+        let mut conn = self.get_connection()?;
+
+        tokio::task::spawn_blocking(move || {
+            // Use IMMEDIATE transaction for early write lock (same as dequeue_flow)
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+            // Optimistic concurrency: UPDATE with status check
+            let unit_value = bincode::serde::encode_to_vec(&(), bincode::config::standard())
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+            let rows_updated = tx.execute(
+                "UPDATE execution_log
+                 SET status = 'COMPLETE', return_value = ?
+                 WHERE id = ? AND step = ? AND status = 'WAITING_FOR_TIMER'",
+                params![
+                    // Return unit value () for timer completion
+                    &unit_value,
+                    flow_id.to_string(),
+                    step,
+                ],
+            )?;
+
+            tx.commit()?;
+
+            // If rows_updated == 0, another worker already claimed this timer
+            Ok(rows_updated > 0)
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn log_timer(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        fire_at: chrono::DateTime<Utc>,
+        timer_name: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.get_connection()?;
+        let timer_name = timer_name.map(|s| s.to_string());
+
+        tokio::task::spawn_blocking(move || {
+            conn.execute(
+                "UPDATE execution_log
+                 SET status = 'WAITING_FOR_TIMER',
+                     timer_fire_at = ?,
+                     timer_name = ?
+                 WHERE id = ? AND step = ?",
+                params![
+                    fire_at.timestamp_millis(),
+                    timer_name,
+                    flow_id.to_string(),
+                    step,
+                ],
+            )?;
+            Ok(())
         })
         .await
         .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?

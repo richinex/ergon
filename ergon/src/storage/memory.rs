@@ -274,6 +274,75 @@ impl ExecutionLog for InMemoryExecutionLog {
             Err(StorageError::ScheduledFlowNotFound(task_id))
         }
     }
+
+    async fn get_expired_timers(&self, now: chrono::DateTime<Utc>) -> Result<Vec<super::TimerInfo>> {
+        let mut timers = Vec::new();
+
+        for entry in self.invocations.iter() {
+            let (flow_id, step) = *entry.key();
+            let inv = entry.value();
+
+            // Check if this is a timer waiting to fire
+            if inv.status() == InvocationStatus::WaitingForTimer {
+                if let Some(fire_at) = inv.timer_fire_at() {
+                    if fire_at <= now {
+                        timers.push(super::TimerInfo {
+                            flow_id,
+                            step,
+                            fire_at,
+                            timer_name: inv.timer_name().map(|s| s.to_string()),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sort by fire_at (oldest first)
+        timers.sort_by_key(|t| t.fire_at);
+
+        // Limit to 100 timers per batch (same as SQLite)
+        timers.truncate(100);
+
+        Ok(timers)
+    }
+
+    async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
+        let key = (flow_id, step);
+
+        if let Some(mut entry) = self.invocations.get_mut(&key) {
+            // Check if still waiting for timer
+            if entry.status() == InvocationStatus::WaitingForTimer {
+                // Claim it by marking as complete
+                entry.set_status(InvocationStatus::Complete);
+                entry.set_return_value(
+                    crate::core::serialize_value(&())
+                        .map_err(|_| StorageError::Serialization)?,
+                );
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn log_timer(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        fire_at: chrono::DateTime<Utc>,
+        timer_name: Option<&str>,
+    ) -> Result<()> {
+        let key = (flow_id, step);
+
+        if let Some(mut entry) = self.invocations.get_mut(&key) {
+            entry.set_status(InvocationStatus::WaitingForTimer);
+            entry.set_timer_fire_at(Some(fire_at));
+            entry.set_timer_name(timer_name.map(|s| s.to_string()));
+            Ok(())
+        } else {
+            Err(StorageError::InvocationNotFound { id: flow_id, step })
+        }
+    }
 }
 
 #[cfg(test)]

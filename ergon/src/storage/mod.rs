@@ -48,6 +48,16 @@ pub use sqlite::{PoolConfig, SqliteExecutionLog};
 pub use redis::RedisExecutionLog;
 
 use crate::core::Invocation;
+use chrono::{DateTime, Utc};
+
+/// Information about a timer that needs to fire.
+#[derive(Debug, Clone)]
+pub struct TimerInfo {
+    pub flow_id: Uuid,
+    pub step: i32,
+    pub fire_at: DateTime<Utc>,
+    pub timer_name: Option<String>,
+}
 
 /// Trait for execution log storage backends.
 ///
@@ -212,6 +222,62 @@ pub trait ExecutionLog: Send + Sync {
             "flow queue not implemented for this storage backend".to_string(),
         ))
     }
+
+    // ===== Durable Timer Operations =====
+    // These methods support durable timers that survive worker crashes.
+
+    /// Get all timers that should have fired by `now`.
+    ///
+    /// Returns timers with status=WAITING_FOR_TIMER and timer_fire_at <= now.
+    /// Used by TimerProcessor to find expired timers.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns an empty vector by default. Storage backends that support
+    /// timers should override this method.
+    async fn get_expired_timers(&self, now: DateTime<Utc>) -> Result<Vec<TimerInfo>> {
+        let _ = now;
+        Ok(Vec::new())
+    }
+
+    /// Atomically claim an expired timer using optimistic concurrency.
+    ///
+    /// Updates status from WAITING_FOR_TIMER to COMPLETE only if the
+    /// status is still WAITING_FOR_TIMER (prevents duplicate firing).
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if we successfully claimed the timer, `false` if
+    /// another worker already claimed it.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `false` by default.
+    async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
+        let _ = (flow_id, step);
+        Ok(false)
+    }
+
+    /// Log a timer that should fire at the specified time.
+    ///
+    /// Called by schedule_timer() to persist the timer to storage.
+    /// Updates the invocation with WAITING_FOR_TIMER status and fire_at time.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn log_timer(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        fire_at: DateTime<Utc>,
+        timer_name: Option<&str>,
+    ) -> Result<()> {
+        let _ = (flow_id, step, fire_at, timer_name);
+        Err(StorageError::Unsupported(
+            "timers not implemented for this storage backend".to_string(),
+        ))
+    }
 }
 
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage
@@ -287,5 +353,23 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         delay: Duration,
     ) -> Result<()> {
         (**self).retry_flow(task_id, error_message, delay).await
+    }
+
+    async fn get_expired_timers(&self, now: DateTime<Utc>) -> Result<Vec<TimerInfo>> {
+        (**self).get_expired_timers(now).await
+    }
+
+    async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
+        (**self).claim_timer(flow_id, step).await
+    }
+
+    async fn log_timer(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        fire_at: DateTime<Utc>,
+        timer_name: Option<&str>,
+    ) -> Result<()> {
+        (**self).log_timer(flow_id, step, fire_at, timer_name).await
     }
 }

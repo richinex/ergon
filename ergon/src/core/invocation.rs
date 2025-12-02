@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub enum InvocationStatus {
     Pending,
     WaitingForSignal,
+    WaitingForTimer,
     Complete,
 }
 
@@ -19,6 +20,7 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Pending => "PENDING",
             InvocationStatus::WaitingForSignal => "WAITING_FOR_SIGNAL",
+            InvocationStatus::WaitingForTimer => "WAITING_FOR_TIMER",
             InvocationStatus::Complete => "COMPLETE",
         }
     }
@@ -31,6 +33,7 @@ impl FromStr for InvocationStatus {
         match s {
             "PENDING" => Ok(InvocationStatus::Pending),
             "WAITING_FOR_SIGNAL" => Ok(InvocationStatus::WaitingForSignal),
+            "WAITING_FOR_TIMER" => Ok(InvocationStatus::WaitingForTimer),
             "COMPLETE" => Ok(InvocationStatus::Complete),
             _ => Err(Error::InvalidStatus(s.to_string())),
         }
@@ -63,6 +66,12 @@ pub struct Invocation {
     /// Whether the cached error is retryable (None = not an error, true = retryable, false = permanent)
     #[serde(default)]
     is_retryable: Option<bool>,
+    /// When the timer should fire (for WAITING_FOR_TIMER status)
+    #[serde(default)]
+    timer_fire_at: Option<DateTime<Utc>>,
+    /// Optional timer name for debugging
+    #[serde(default)]
+    timer_name: Option<String>,
 }
 
 impl Invocation {
@@ -96,6 +105,8 @@ impl Invocation {
             delay,
             retry_policy,
             is_retryable,
+            timer_fire_at: None,
+            timer_name: None,
         }
     }
 
@@ -181,6 +192,29 @@ impl Invocation {
             None => Ok(None),
         }
     }
+
+    pub fn timer_fire_at(&self) -> Option<DateTime<Utc>> {
+        self.timer_fire_at
+    }
+
+    pub fn timer_name(&self) -> Option<&str> {
+        self.timer_name.as_deref()
+    }
+
+    pub fn is_timer_expired(&self) -> bool {
+        match self.timer_fire_at {
+            Some(ft) => Utc::now() >= ft,
+            None => false,
+        }
+    }
+
+    pub fn set_timer_fire_at(&mut self, fire_at: Option<DateTime<Utc>>) {
+        self.timer_fire_at = fire_at;
+    }
+
+    pub fn set_timer_name(&mut self, name: Option<String>) {
+        self.timer_name = name;
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +228,10 @@ mod tests {
             InvocationStatus::WaitingForSignal.as_str(),
             "WAITING_FOR_SIGNAL"
         );
+        assert_eq!(
+            InvocationStatus::WaitingForTimer.as_str(),
+            "WAITING_FOR_TIMER"
+        );
         assert_eq!(InvocationStatus::Complete.as_str(), "COMPLETE");
 
         assert_eq!(
@@ -203,6 +241,10 @@ mod tests {
         assert_eq!(
             InvocationStatus::from_str("WAITING_FOR_SIGNAL").unwrap(),
             InvocationStatus::WaitingForSignal
+        );
+        assert_eq!(
+            InvocationStatus::from_str("WAITING_FOR_TIMER").unwrap(),
+            InvocationStatus::WaitingForTimer
         );
         assert_eq!(
             InvocationStatus::from_str("COMPLETE").unwrap(),
