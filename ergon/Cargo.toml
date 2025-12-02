@@ -72,5 +72,17 @@ name = "axum_order_processing_redis"
 required-features = ["redis"]
 
 [[example]]
+name = "distributed_worker_timer_redis"
+required-features = ["redis"]
+
+[[example]]
+name = "timer_race_condition_redis"
+required-features = ["redis"]
+
+[[example]]
+name = "observability_demo"
+required-features = ["redis"]
+
+[[example]]
 name = "axum_order_processing"
 required-features = ["sqlite"]

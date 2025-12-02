@@ -8,10 +8,10 @@
 //! Following the same pattern as signal.rs, this module provides
 //! a simple API for scheduling durable timers that survive crashes.
 
-use super::context::{ExecutionContext, CALL_TYPE, EXECUTION_CONTEXT};
-use super::error::{ExecutionError, Result};
-use crate::core::{CallType, InvocationStatus};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use super::context::{ExecutionContext, EXECUTION_CONTEXT};
+use super::error::Result;
+use crate::core::InvocationStatus;
+use chrono::{Duration as ChronoDuration, Utc};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -68,8 +68,10 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) {
         .try_with(|c| c.clone())
         .expect("schedule_timer called outside execution context");
 
-    // Get current step (don't increment yet - that happens in step macro)
-    let current_step = ctx.step_counter.load(Ordering::SeqCst);
+    // Get current step - the step macro already incremented it, so we need the previous value
+    // The step macro calls next_step() which returns the old value and increments
+    // So if the step was logged with step=N, the counter is now N+1, we need to use N
+    let current_step = ctx.step_counter.load(Ordering::SeqCst) - 1;
 
     // Check if we're resuming from a timer
     let existing_inv = ctx
@@ -94,7 +96,7 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) {
             }
 
             // Timer not fired yet - wait for notification
-            ctx.await_timer().await.unwrap();
+            ctx.await_timer(current_step).await.unwrap();
             return;
         }
     }
@@ -108,7 +110,9 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) {
         .expect("Failed to log timer");
 
     // Wait for timer to fire
-    ctx.await_timer().await.unwrap();
+    // Note: There's a potential race condition here - the timer might fire between
+    // logging and awaiting. The await_timer method handles this by checking the database.
+    ctx.await_timer(current_step).await.unwrap();
 }
 
 impl<S: crate::storage::ExecutionLog> ExecutionContext<S> {
@@ -116,8 +120,8 @@ impl<S: crate::storage::ExecutionLog> ExecutionContext<S> {
     ///
     /// This method blocks until the timer processor fires the timer
     /// and notifies us via the TIMER_NOTIFIERS map.
-    pub(super) async fn await_timer(&self) -> Result<()> {
-        let key = (self.id, self.step_counter.load(Ordering::SeqCst));
+    pub(super) async fn await_timer(&self, step: i32) -> Result<()> {
+        let key = (self.id, step);
 
         let notifier = {
             let mut notifiers = TIMER_NOTIFIERS
@@ -128,6 +132,14 @@ impl<S: crate::storage::ExecutionLog> ExecutionContext<S> {
                 .or_insert_with(|| Arc::new(Notify::new()))
                 .clone()
         };
+
+        // Check if timer already fired (handles race condition)
+        if let Ok(Some(inv)) = self.storage.get_invocation(self.id, step).await {
+            if inv.status() == InvocationStatus::Complete {
+                // Timer already fired, no need to wait
+                return Ok(());
+            }
+        }
 
         // Wait for timer to fire
         notifier.notified().await;

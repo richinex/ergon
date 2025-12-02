@@ -876,7 +876,7 @@ impl ExecutionLog for SqliteExecutionLog {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
             // Optimistic concurrency: UPDATE with status check
-            let unit_value = bincode::serde::encode_to_vec(&(), bincode::config::standard())
+            let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
             let rows_updated = tx.execute(

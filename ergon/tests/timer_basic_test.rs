@@ -7,7 +7,7 @@
 //! 4. Optimistic concurrency prevents duplicate firing
 
 use ergon::prelude::*;
-use ergon::storage::{InMemoryExecutionLog, TimerInfo};
+use ergon::storage::InMemoryExecutionLog;
 use std::sync::Arc;
 use std::time::Duration;
 use chrono::Utc;
@@ -89,8 +89,8 @@ async fn test_timer_optimistic_concurrency() {
     let claimed2 = storage.claim_timer(flow_id, step).await.unwrap();
 
     // Only ONE should succeed
-    assert_eq!(claimed1, true, "First worker should claim the timer");
-    assert_eq!(claimed2, false, "Second worker should fail to claim");
+    assert!(claimed1, "First worker should claim the timer");
+    assert!(!claimed2, "Second worker should fail to claim");
 }
 
 #[tokio::test]

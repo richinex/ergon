@@ -283,6 +283,7 @@ async fn get_order_status(
             let status_str = match inv.status() {
                 InvocationStatus::Pending => "processing".to_string(),
                 InvocationStatus::WaitingForSignal => "waiting".to_string(),
+                InvocationStatus::WaitingForTimer => "waiting_for_timer".to_string(),
                 InvocationStatus::Complete => "complete".to_string(),
             };
 

@@ -102,3 +102,6 @@ docs_to_ignore/
 images/
 *.json
 ergon/output
+ergon/data
+output/
+data/

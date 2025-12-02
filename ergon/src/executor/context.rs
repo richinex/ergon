@@ -472,4 +472,25 @@ impl<S: ExecutionLog> ExecutionLog for StorageWrapper<S> {
     async fn close(&self) -> crate::storage::Result<()> {
         self.0.close().await
     }
+
+    async fn get_expired_timers(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::storage::Result<Vec<crate::storage::TimerInfo>> {
+        self.0.get_expired_timers(now).await
+    }
+
+    async fn claim_timer(&self, flow_id: Uuid, step: i32) -> crate::storage::Result<bool> {
+        self.0.claim_timer(flow_id, step).await
+    }
+
+    async fn log_timer(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        fire_at: chrono::DateTime<chrono::Utc>,
+        timer_name: Option<&str>,
+    ) -> crate::storage::Result<()> {
+        self.0.log_timer(flow_id, step, fire_at, timer_name).await
+    }
 }

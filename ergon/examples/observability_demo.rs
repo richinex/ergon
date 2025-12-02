@@ -254,6 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InvocationStatus::Complete => "✓",
                     InvocationStatus::Pending => "⏸",
                     InvocationStatus::WaitingForSignal => "⏳",
+                    InvocationStatus::WaitingForTimer => "⏲",
                 };
                 println!(
                     "       {} {} (step {})",

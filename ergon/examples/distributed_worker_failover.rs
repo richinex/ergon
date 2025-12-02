@@ -1,26 +1,26 @@
 //! Distributed Worker Failover Demo with RetryableError
 //!
-//! This example demonstrates the FULL POWER of Ergon's distributed retry system:
+//! This example demonstrates Ergon's distributed retry system with multiple workers.
 //!
 //! ## Scenario:
 //! 1. Three workers (Worker-A, Worker-B, Worker-C) polling the same queue
 //! 2. Worker-A picks up the flow and starts processing
 //! 3. Worker-A completes Steps 1-2 (validate, charge payment)
-//! 4. Worker-A **CRASHES** during Step 3 (reserve inventory)
+//! 4. Worker-A CRASHES during Step 3 (reserve inventory)
 //! 5. Flow is automatically retried and re-queued
 //! 6. Worker-B picks up the flow
 //! 7. Worker-B skips Steps 1-2 (loaded from cache)
 //! 8. Worker-B completes Step 3 successfully
 //!
 //! ## Key Demonstrations:
-//! - ✅ Distributed execution with multiple workers
-//! - ✅ Automatic failover when a worker crashes
-//! - ✅ Step-level resumability (payment NOT re-charged)
-//! - ✅ **RetryableError** trait for smart error handling
-//! - ✅ Transient vs Permanent error distinction
-//! - ✅ Durable retry state (survives worker crashes)
-//! - ✅ Exponential backoff between retries
-//! - ✅ Zero duplicate operations
+//! - Distributed execution with multiple workers
+//! - Automatic failover when a worker crashes
+//! - Step-level resumability (payment NOT re-charged)
+//! - RetryableError trait for smart error handling
+//! - Transient vs Permanent error distinction
+//! - Durable retry state (survives worker crashes)
+//! - Exponential backoff between retries
+//! - Zero duplicate operations
 //!
 //! Run: cargo run --example distributed_worker_failover
 
@@ -129,6 +129,8 @@ struct OrderProcessor {
 impl OrderProcessor {
     #[flow(retry = RetryPolicy::STANDARD)]
     async fn process_order(self: Arc<Self>) -> Result<OrderResult, InventoryError> {
+        // Get worker ID from execution context if available
+        // For now, we'll track this via storage metadata
         println!("[FLOW] Processing order {}", self.order_id);
 
         // Step 1: Validate order
@@ -172,17 +174,8 @@ impl OrderProcessor {
         // Track payment execution
         let count = PAYMENT_CHARGE_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
 
-        println!(
-            "    💳 CHARGING ${:.2} to customer {} (execution #{})",
-            self.amount, self.customer_id, count
-        );
-
         tokio::time::sleep(Duration::from_millis(200)).await;
-
-        println!(
-            "    ✓ Payment successful! Transaction ID: TXN-{}",
-            self.order_id
-        );
+        println!("    Charging ${:.2} - Execution #{}", self.amount, count);
 
         Ok(PaymentResult {
             transaction_id: format!("TXN-{}", self.order_id),
@@ -207,30 +200,24 @@ impl OrderProcessor {
             payment.amount_charged, payment.charged_at
         );
 
-        // Simulate Worker-A crash on first attempt (TRANSIENT ERROR - will retry)
+        // Simulate Worker-A crash on first attempt
+        // We return an error (which triggers retry) and Worker-A will shutdown
         if count == 1 && !WORKER_A_CRASHED.load(Ordering::SeqCst) {
-            println!("    💥 WORKER-A CRASH! Simulating worker failure...");
-            println!("       Error type: WorkerCrashed (is_retryable = true)");
             WORKER_A_CRASHED.store(true, Ordering::SeqCst);
-
-            // Return RETRYABLE error - worker will retry the flow
+            println!("    Worker-A crashing! (error + shutdown simulates crash)");
             return Err(InventoryError::WorkerCrashed);
         }
 
         // Simulate transient API timeout on second attempt (TRANSIENT ERROR - will retry)
         if count == 2 {
-            println!("    ⚠️  Transient error: External inventory API timeout");
-            println!("       Error type: ApiTimeout (is_retryable = true)");
+            println!("    API timeout - transient error");
             tokio::time::sleep(Duration::from_millis(50)).await;
             return Err(InventoryError::ApiTimeout);
         }
 
         // Success on 3rd attempt
         tokio::time::sleep(Duration::from_millis(150)).await;
-        println!(
-            "    ✓ Inventory reserved successfully on attempt {} (Worker recovered!)",
-            count
-        );
+        println!("    Inventory reserved on attempt {}", count);
 
         Ok(InventoryResult {
             reservation_id: format!("RES-{}", self.order_id),
@@ -287,10 +274,8 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║        Distributed Worker Failover Demo                   ║");
-    println!("║  (Multiple Workers + Crash Recovery + Step Resumability)  ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nDistributed Worker Failover Demo");
+    println!("===================================\n");
 
     // Use in-memory storage (works same for Redis/SQLite)
     let storage = Arc::new(InMemoryExecutionLog::new());
@@ -303,23 +288,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         customer_id: "CUST-VIP-001".to_string(),
     };
     let flow_id = Uuid::new_v4();
-    scheduler.schedule(order.clone(), flow_id).await?;
+    let task_id = scheduler.schedule(order.clone(), flow_id).await?;
 
-    println!("📋 Scheduled order: {}", order.order_id);
-    println!("💰 Amount to charge: ${:.2}", order.amount);
-    println!("🔄 Retry Policy: STANDARD (3 attempts, exponential backoff)");
-    println!("👥 Workers: 3 workers (Worker-A, Worker-B, Worker-C)");
-    println!("💥 Simulation: Worker-A will crash, Worker-B will take over\n");
+    println!("Scheduled order: {}", order.order_id);
+    println!("Amount to charge: ${:.2}", order.amount);
+    println!("Starting workers...\n");
 
-    // ========================================================================
-    // Start Multiple Workers (Distributed Execution)
-    // ========================================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║              Starting Distributed Workers                  ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
-    // Worker-A: Will crash during Step 3
+    // Worker-A: Will crash during Step 3 (panic simulates hard crash)
     let storage_a = storage.clone();
     let worker_a = tokio::spawn(async move {
         println!("[Worker-A] Starting up...");
@@ -331,11 +306,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         let handle = worker.start().await;
 
-        // Worker-A will process and crash
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // Worker-A will execute the flow, which will panic during Step 3
+        // The panic happens in the spawned task, simulating a crash
+        // Wait long enough for the crash to occur, then shutdown
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
-        println!("[Worker-A] Shutting down gracefully");
-        handle.shutdown().await;
+        // After Worker-A crashes (panic in spawned task), shut it down
+        // This simulates the worker process dying
+        if WORKER_A_CRASHED.load(Ordering::SeqCst) {
+            println!("[Worker-A] Detected crash, shutting down immediately!");
+            handle.shutdown().await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            println!("[Worker-A] Shutting down gracefully");
+            handle.shutdown().await;
+        }
     });
 
     // Worker-B: Will pick up after Worker-A crashes
@@ -375,121 +360,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Wait for all workers
-    println!();
     let _ = tokio::join!(worker_a, worker_b, worker_c);
 
-    // ========================================================================
-    // FINAL RESULTS
-    // ========================================================================
-
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                     FINAL RESULTS                          ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    // Final results
+    println!("\nFinal Results");
+    println!("=============\n");
 
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
     let flow_invocation = invocations.iter().find(|i| i.step() == 0);
 
     if let Some(flow) = flow_invocation {
         println!("Flow Status: {:?}", flow.status());
-        if let Some(retry_policy) = flow.retry_policy() {
-            println!(
-                "Retry Policy: max_attempts={}, initial_delay={}ms",
-                retry_policy.max_attempts,
-                retry_policy.initial_delay.as_millis()
-            );
-        }
-    }
-
-    println!("\nCompleted Steps:");
-    for inv in &invocations {
-        if inv.step() > 0 {
-            println!("  ✓ {} (status: {:?})", inv.method_name(), inv.status());
-        }
     }
 
     let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
     let inventory_count = INVENTORY_RESERVE_COUNT.load(Ordering::SeqCst);
-    let worker_crashed = WORKER_A_CRASHED.load(Ordering::SeqCst);
 
-    println!("\n📊 Execution Statistics:");
-    println!("  Payment charged:           {} time(s)", payment_count);
-    println!("  Inventory reserve attempts: {} time(s)", inventory_count);
-    println!(
-        "  Worker-A crashed:          {}",
-        if worker_crashed { "Yes" } else { "No" }
-    );
+    println!("\nExecution Statistics:");
+    println!("  Payment charged: {} time(s)", payment_count);
+    println!("  Inventory attempts: {} time(s)", inventory_count);
 
-    println!("\n🎯 What Happened:");
-    println!("  1️⃣  Worker-A picked up the flow from queue");
-    println!("  2️⃣  Worker-A completed Step 1 (validate_order) ✓");
-    println!(
-        "  3️⃣  Worker-A completed Step 2 (charge_payment) - ${:.2} charged ✓",
-        order.amount
-    );
-    println!("  4️⃣  Worker-A attempted Step 3 (reserve_inventory)");
-    println!("  5️⃣  💥 Worker-A CRASHED during Step 3");
-    println!("  6️⃣  Flow auto-retried, re-queued with exponential backoff");
-    println!("  7️⃣  Worker-B picked up the retried flow");
-    println!("  8️⃣  Worker-B loaded Step 1 from cache (skipped execution)");
-    println!("  9️⃣  Worker-B loaded Step 2 from cache (NO RE-CHARGE!) ✓");
-    println!("  🔟 Worker-B completed Step 3 successfully after 2 more attempts");
-    println!("  1️⃣1️⃣  Worker-B completed Step 4 (send_confirmation) ✓");
-
-    println!("\n💪 FULL POWER Demonstrations:");
-
-    if payment_count == 1 {
-        println!("  ✅ Payment ran EXACTLY ONCE despite:");
-        println!("     - Worker crash");
-        println!("     - {} flow retry attempts", inventory_count);
-        println!("     - {} inventory execution attempts", inventory_count);
-        println!("     - Worker handoff (A → B)");
-    } else {
-        println!(
-            "  ❌ Payment ran {} times - THIS SHOULD NOT HAPPEN!",
-            payment_count
-        );
+    // Show which worker handled the flow
+    println!("\nWorker Distribution:");
+    if let Some(scheduled_flow) = storage.get_scheduled_flow(task_id).await? {
+        let worker = scheduled_flow.locked_by.as_deref().unwrap_or("unknown");
+        println!("  Order ORD-99999 completed by: {}", worker);
+        println!("  (Note: Worker-A crashed, so Worker-B or Worker-C took over)");
     }
-
-    println!("\n  ✅ RetryableError Trait (KEY FEATURE):");
-    println!("     - InventoryError::WorkerCrashed → is_retryable() = true");
-    println!("     - InventoryError::ApiTimeout → is_retryable() = true");
-    println!("     - Both errors triggered automatic retry");
-    println!("     - If error was ItemNotFound → is_retryable() = false");
-    println!("     - Permanent errors would fail immediately (no retry)");
-
-    println!("\n  ✅ Distributed Execution:");
-    println!("     - Multiple workers polling same queue");
-    println!("     - Automatic failover when Worker-A crashed");
-    println!("     - Worker-B seamlessly continued from Step 3");
-
-    println!("\n  ✅ Step-Level Resumability:");
-    println!("     - Steps 1-2 loaded from cache (not re-executed)");
-    println!("     - Flow resumed exactly where it failed");
-    println!("     - Zero wasted computation");
-
-    println!("\n  ✅ Durable Retry:");
-    println!("     - Retry state persisted in storage");
-    println!("     - Survived Worker-A crash");
-    println!("     - Exponential backoff respected");
-
-    println!("\n💡 Without Ergon (Traditional Queue):");
-    println!("  ❌ Worker crash = entire task lost OR manual requeue");
-    println!(
-        "  ❌ Retry from Step 1 = customer charged {} times",
-        inventory_count
-    );
-    println!("  ❌ Need manual idempotency checks (50+ lines of code)");
-    println!("  ❌ Need manual worker coordination");
-    println!("  ❌ Need manual retry logic with exponential backoff");
-    println!("  ❌ Need manual crash detection and recovery");
-
-    println!("\n💡 With Ergon:");
-    println!("  ✅ Automatic worker failover - zero configuration");
-    println!("  ✅ Step-level resumability - payment charged once");
-    println!("  ✅ Durable retry state - survives crashes");
-    println!("  ✅ Distributed execution - multiple workers, one queue");
-    println!("  ✅ Zero boilerplate - just add #[flow(retry = ...)]");
-    println!("  ✅ Production-ready reliability with 5 lines of code\n");
 
     Ok(())
 }

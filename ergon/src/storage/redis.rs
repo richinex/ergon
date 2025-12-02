@@ -10,6 +10,8 @@
 //! - `ergon:flow:{task_id}` (HASH): Flow metadata and serialized data
 //! - `ergon:invocations:{flow_id}` (LIST): Invocation history per flow
 //! - `ergon:running` (ZSET): Running flows index (score = start time)
+//! - `ergon:timers:pending` (ZSET): Pending timers (score = fire_at timestamp)
+//! - `ergon:inv:{flow_id}:{step}` (HASH): Invocation data including timer info
 //!
 //! # Key Features
 //!
@@ -501,6 +503,122 @@ impl ExecutionLog for RedisExecutionLog {
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(Some(self.parse_scheduled_flow(data)?))
+    }
+
+    async fn log_timer(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        fire_at: chrono::DateTime<Utc>,
+        timer_name: Option<&str>,
+    ) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        let inv_key = Self::invocation_key(flow_id, step);
+        let fire_at_millis = fire_at.timestamp_millis();
+
+        // Update invocation to WAITING_FOR_TIMER status and add to sorted set
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&inv_key, "status", "WaitingForTimer")
+            .hset(&inv_key, "timer_fire_at", fire_at_millis)
+            .hset(&inv_key, "timer_name", timer_name.unwrap_or(""))
+            // Add to sorted set for efficient expiry queries (score = fire_at_millis)
+            .zadd("ergon:timers:pending", format!("{}:{}", flow_id, step), fire_at_millis)
+            .query(&mut *conn)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_expired_timers(&self, now: chrono::DateTime<Utc>) -> Result<Vec<super::TimerInfo>> {
+        let mut conn = self.get_connection()?;
+        let now_millis = now.timestamp_millis();
+
+        // Query sorted set for timers with score <= now_millis
+        let expired: Vec<String> = conn
+            .zrangebyscore_limit("ergon:timers:pending", 0, now_millis, 0, 100)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        let mut timers = Vec::new();
+
+        for key in expired {
+            // key format: "flow_id:step"
+            let parts: Vec<&str> = key.split(':').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+
+            let flow_id = match Uuid::parse_str(parts[0]) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            let step: i32 = match parts[1].parse() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let inv_key = Self::invocation_key(flow_id, step);
+
+            // Get timer details from invocation hash
+            let fire_at_millis: Option<i64> = conn
+                .hget(&inv_key, "timer_fire_at")
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            let timer_name: Option<String> = conn
+                .hget(&inv_key, "timer_name")
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            if let Some(millis) = fire_at_millis {
+                if let Some(fire_at) = chrono::DateTime::from_timestamp_millis(millis) {
+                    timers.push(super::TimerInfo {
+                        flow_id,
+                        step,
+                        fire_at,
+                        timer_name: timer_name.filter(|s| !s.is_empty()),
+                    });
+                }
+            }
+        }
+
+        Ok(timers)
+    }
+
+    async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
+        let mut conn = self.get_connection()?;
+        let inv_key = Self::invocation_key(flow_id, step);
+
+        // Lua script for atomic claim: check status and update
+        let script = r#"
+            local inv_key = KEYS[1]
+            local timer_key = KEYS[2]
+            local member = ARGV[1]
+
+            local status = redis.call('HGET', inv_key, 'status')
+
+            if status == 'WaitingForTimer' then
+                redis.call('HSET', inv_key, 'status', 'Complete')
+                redis.call('HSET', inv_key, 'return_value', ARGV[2])
+                redis.call('ZREM', timer_key, member)
+                return 1
+            else
+                return 0
+            end
+        "#;
+
+        // Unit value for timer completion
+        let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
+            .map_err(|_| StorageError::Serialization)?;
+
+        let claimed: i32 = redis::Script::new(script)
+            .key(&inv_key)
+            .key("ergon:timers:pending")
+            .arg(format!("{}:{}", flow_id, step))
+            .arg(unit_value)
+            .invoke(&mut *conn)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(claimed == 1)
     }
 }
 

@@ -12,7 +12,10 @@
 - **Step caching**: Memoizes step results for deterministic replay
 - **DAG-based parallelization**: Automatically parallelizes independent steps
 - **Retry logic**: Configurable retry with exponential backoff
+- **Durable timers**: Long-running timers that survive crashes and are distributed across workers
 - **External signals**: Wait for and respond to external events
+- **Custom error types**: Type-safe error handling with fine-grained retry control
+- **Distributed workers**: Multiple workers can process flows and timers concurrently
 - **Type-safe**: Full type safety with Rust's type system
 
 ## Quick Start
@@ -21,31 +24,30 @@ Add ergon to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ergon = { path = "../ergon/ergon" }
-```
-
-Or if published to crates.io:
-
-```toml
-[dependencies]
 ergon = "0.1"
+
+# With default features (SQLite storage)
+ergon = { version = "0.1", features = ["sqlite"] }
+
+# With Redis storage
+ergon = { version = "0.1", features = ["redis"] }
 ```
 
 ## Example
 
 ```rust
 use ergon::prelude::*;
+use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MyFlow {
     name: String,
 }
 
-#[flow]
 impl MyFlow {
     #[flow]
     async fn run(self: Arc<Self>) -> Result<String, String> {
-        let greeting = self.greet().await?;
+        let greeting = self.clone().greet().await?;
         let result = self.process(&greeting).await?;
         Ok(result)
     }
@@ -64,13 +66,13 @@ impl MyFlow {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("my.db")?);
-    let flow = Arc::new(MyFlow { name: "World".to_string() });
+    let flow = MyFlow { name: "World".to_string() };
     let id = Uuid::new_v4();
 
-    let instance = Ergon::new_flow(flow, id, storage);
-    let result = instance.execute(|f| f.run()).await?;
+    let instance = FlowInstance::new(id, flow, storage);
+    let result = instance.execute(|f| Arc::new(f).run()).await?;
 
-    println!("Result: {}", result);
+    println!("Result: {:?}", result);
     Ok(())
 }
 ```
@@ -156,13 +158,21 @@ MSRV increases are considered breaking changes and will only occur with minor ve
 
 ### Feature Flags
 
-Currently, Ergon does not use feature flags. All features are enabled by default.
+Ergon supports multiple storage backends via feature flags:
 
-Future versions may introduce optional features for:
+- **`sqlite`** (default): SQLite-based storage with bundled SQLite
+- **`redis`**: Redis-based storage for distributed deployments
 
-- Different storage backends (PostgreSQL, in-memory only)
-- Optional tracing/metrics integrations
-- Performance vs binary size trade-offs
+All storage backends support durable timers with atomic operations.
+
+Example:
+```toml
+# Default: SQLite storage
+ergon = "0.1"
+
+# Redis storage for distributed systems
+ergon = { version = "0.1", default-features = false, features = ["redis"] }
+```
 
 ## License
 

@@ -37,7 +37,6 @@ mod retry_helper;
 mod scheduler;
 mod signal;
 mod timer;
-mod timer_processor;
 mod worker;
 
 // Re-export public types
@@ -51,8 +50,7 @@ pub use retry_helper::retry_with_policy;
 pub use scheduler::FlowScheduler;
 pub use signal::{await_external_signal, StepFuture};
 pub use timer::{schedule_timer, schedule_timer_named};
-pub use timer_processor::{TimerProcessor, TimerProcessorHandle};
-pub use worker::{FlowRegistry, FlowWorker, WorkerHandle};
+pub use worker::{FlowRegistry, FlowWorker, WithTimers, WithoutTimers, WorkerHandle};
 
 // Re-export from other modules for convenience
 use crate::storage::ExecutionLog;
