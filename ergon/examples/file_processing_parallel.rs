@@ -31,7 +31,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct FileProcessor {
     input_file: String,
     output_file: String,
@@ -246,14 +246,14 @@ impl FileProcessor {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct Record {
     id: String,
     value: f64,
     category: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct Statistics {
     total: usize,
     sum: f64,
@@ -264,7 +264,7 @@ struct Statistics {
     records: Vec<Record>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct ProcessingReport {
     input_file: String,
     output_file: String,

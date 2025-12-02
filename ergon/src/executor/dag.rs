@@ -73,6 +73,10 @@ type StepFactory = Box<dyn FnOnce(StepInputs) -> StepFuture + Send>;
 ///
 /// The step is not executed immediately - it's registered with the executor
 /// and resolved later based on the dependency graph.
+///
+/// **Important**: Handles are single-use. The `resolve()` method consumes the handle
+/// and can only be called once. If you need the result multiple times, store it
+/// after resolving.
 pub struct StepHandle<T> {
     /// Unique step identifier
     step_id: StepId,
@@ -80,8 +84,6 @@ pub struct StepHandle<T> {
     dependencies: Vec<StepId>,
     /// Receiver for the result (when resolved)
     receiver: oneshot::Receiver<Result<T>>,
-    /// Marker for the result type
-    _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T> StepHandle<T> {
@@ -95,7 +97,6 @@ impl<T> StepHandle<T> {
             step_id,
             dependencies,
             receiver,
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -109,7 +110,15 @@ impl<T> StepHandle<T> {
         &self.dependencies
     }
 
-    /// Awaits the result (blocks until the step is resolved)
+    /// Awaits the result (blocks until the step is resolved).
+    ///
+    /// **This method consumes the handle and can only be called once.**
+    /// If you need the result in multiple places, store it in a variable:
+    ///
+    /// ```ignore
+    /// let result = handle.resolve().await?;
+    /// // Now you can use `result` multiple times
+    /// ```
     pub async fn resolve(self) -> Result<T> {
         self.receiver
             .await
@@ -133,29 +142,29 @@ pub struct DeferredStep {
 pub struct DeferredRegistry {
     /// Registered steps
     steps: Vec<DeferredStep>,
-    /// Last registered step (for auto-chaining sequential execution)
-    last_step: Option<StepId>,
 }
 
 impl DeferredRegistry {
     /// Creates a new registry
     pub fn new() -> Self {
-        Self {
-            steps: Vec::new(),
-            last_step: None,
-        }
+        Self { steps: Vec::new() }
     }
 
-    /// Registers a deferred step and returns a handle
+    /// Registers a deferred step with explicit dependencies.
     ///
-    /// By default, steps execute sequentially based on registration order.
-    /// If `dependencies` is empty and there's a previously registered step,
-    /// this step will automatically depend on it.
+    /// Dependencies must be explicitly declared - the DAG structure should be clear from the code.
     ///
-    /// To disable auto-chaining and run steps in parallel, use the special
-    /// marker `__NO_AUTO_CHAIN__` as the first dependency (via `depends_on = []`).
+    /// **Example - Independent parallel steps**:
+    /// ```ignore
+    /// let mut registry = DeferredRegistry::new();
     ///
-    /// To run steps in parallel, explicitly specify dependencies with `depends_on`:
+    /// // These three steps run in parallel (no dependencies):
+    /// let a = registry.register("fetch_user", &[], |_| async { Ok(user) });
+    /// let b = registry.register("fetch_inventory", &[], |_| async { Ok(inventory) });
+    /// let c = registry.register("fetch_pricing", &[], |_| async { Ok(price) });
+    /// ```
+    ///
+    /// **Example - Explicit dependencies**:
     /// ```ignore
     /// #[step]
     /// async fn root() -> i32 { 1 }
@@ -165,10 +174,6 @@ impl DeferredRegistry {
     ///
     /// #[step(depends_on = "root")]  // Explicit: runs in PARALLEL with branch1
     /// async fn branch2() -> i32 { 3 }
-    ///
-    /// // Or disable auto-chaining for truly independent steps:
-    /// #[step(depends_on = [])]  // No dependencies, runs in parallel with others
-    /// async fn independent() -> i32 { 4 }
     /// ```
     pub fn register<T, F, Fut>(
         &mut self,
@@ -182,25 +187,7 @@ impl DeferredRegistry {
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
         let step_id = StepId::new(step_name);
-
-        // Check for special marker to disable auto-chaining
-        let disable_auto_chain = dependencies
-            .first()
-            .is_some_and(|&d| d == "__NO_AUTO_CHAIN__");
-
-        // Auto-chain: If no explicit dependencies and there's a previous step, depend on it
-        let deps: Vec<StepId> = if disable_auto_chain {
-            // Explicit opt-out of auto-chaining: no dependencies
-            vec![]
-        } else if dependencies.is_empty() {
-            if let Some(ref last) = self.last_step {
-                vec![last.clone()]
-            } else {
-                Vec::new()
-            }
-        } else {
-            dependencies.iter().map(|d| StepId::new(*d)).collect()
-        };
+        let deps: Vec<StepId> = dependencies.iter().map(|d| StepId::new(*d)).collect();
 
         // Create channel for result
         let (tx, rx) = oneshot::channel::<Result<T>>();
@@ -229,16 +216,61 @@ impl DeferredRegistry {
             result_sender: sender_boxed,
         });
 
-        // Update last_step for sequential chaining
-        self.last_step = Some(step_id.clone());
-
         StepHandle::new(step_id, deps, rx)
     }
 
-    /// Executes all registered steps with automatic parallelization
+    /// Validates the DAG structure without executing.
+    ///
+    /// Checks for:
+    /// - Cycles in the dependency graph
+    /// - Invalid dependencies (referencing non-existent steps)
+    ///
+    /// Call this before `execute()` to catch structural issues early,
+    /// especially useful for debugging and testing.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut registry = DeferredRegistry::new();
+    /// // ... register steps ...
+    ///
+    /// // Validate before execution
+    /// registry.validate()?;
+    ///
+    /// // If validation passes, safe to execute
+    /// registry.execute().await?;
+    /// ```
+    pub fn validate(&self) -> Result<()> {
+        let mut flow_graph = FlowGraph::new();
+
+        for step in &self.steps {
+            flow_graph
+                .add_step(step.step_id.clone())
+                .map_err(|e| ExecutionError::Failed(format!("Failed to add step: {}", e)))?;
+
+            for dep in &step.dependencies {
+                flow_graph
+                    .add_dependency(step.step_id.clone(), dep.clone())
+                    .map_err(|e| {
+                        ExecutionError::Failed(format!("Failed to add dependency: {}", e))
+                    })?;
+            }
+        }
+
+        // Validate graph for cycles and invalid dependencies
+        flow_graph
+            .validate()
+            .map_err(|e| ExecutionError::Failed(format!("Invalid dependency graph: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Executes all registered steps with automatic parallelization.
+    ///
+    /// **Note**: This method automatically validates the DAG before execution.
+    /// You can call `validate()` beforehand if you want to check for issues
+    /// without consuming the registry.
     pub async fn execute(self) -> Result<()> {
-        let executor = DeferredExecutor::new();
-        executor.execute(self.steps).await
+        execute_dag(self.steps).await
     }
 
     /// Generates a DOT format representation of the DAG for Graphviz visualization
@@ -291,7 +323,7 @@ impl DeferredRegistry {
         std::fs::write(path, self.to_dot())
     }
 
-    /// Prints an ASCII tree representation of the DAG to stdout
+    /// Returns an ASCII tree representation of the DAG.
     ///
     /// Shows the dependency structure in a human-readable format.
     /// Steps at the same level can run in parallel.
@@ -305,8 +337,8 @@ impl DeferredRegistry {
     ///     └─ process_order
     ///       └─ send_confirmation
     /// ```
-    pub fn print_ascii_tree(&self) {
-        println!("DAG Structure ({} steps):", self.steps.len());
+    pub fn ascii_tree(&self) -> String {
+        let mut output = format!("DAG Structure ({} steps):\n", self.steps.len());
 
         // Build dependency map (step -> steps that depend on it)
         let mut dep_map: HashMap<StepId, Vec<StepId>> = HashMap::new();
@@ -329,19 +361,21 @@ impl DeferredRegistry {
             .collect();
 
         if roots.is_empty() {
-            println!("  (No root nodes found - possible cycle or empty DAG)");
-            return;
+            output.push_str("  (No root nodes found - possible cycle or empty DAG)\n");
+            return output;
         }
 
-        // Print tree recursively
+        // Build tree recursively
         let mut visited = std::collections::HashSet::new();
         for (i, root) in roots.iter().enumerate() {
             let is_last = i == roots.len() - 1;
-            Self::print_node(root, &dep_map, "", is_last, &mut visited);
+            Self::format_node(root, &dep_map, "", is_last, &mut visited, &mut output);
         }
+
+        output
     }
 
-    /// Prints a level-based graph view showing parallel execution levels
+    /// Returns a level-based graph view showing parallel execution levels.
     ///
     /// Shows steps grouped by their execution level, making it clear
     /// which steps run in parallel.
@@ -356,53 +390,11 @@ impl DeferredRegistry {
     ///          ↓
     /// Level 3: [send_confirmation]
     /// ```
-    pub fn print_level_graph(&self) {
-        println!("DAG Execution Levels ({} steps):", self.steps.len());
-        println!();
+    pub fn level_graph(&self) -> String {
+        let mut output = format!("DAG Execution Levels ({} steps):\n\n", self.steps.len());
 
-        // Calculate depths for all steps
-        let mut depths: HashMap<StepId, usize> = HashMap::new();
-        let mut changed = true;
-
-        // Find roots
-        let roots: Vec<&DeferredStep> = self
-            .steps
-            .iter()
-            .filter(|s| s.dependencies.is_empty())
-            .collect();
-
-        // Initialize roots with depth 0
-        for root in &roots {
-            depths.insert(root.step_id.clone(), 0);
-        }
-
-        // Iteratively calculate depths
-        while changed {
-            changed = false;
-            for step in &self.steps {
-                let mut max_dep_depth = None;
-                let mut all_deps_known = true;
-
-                for dep in &step.dependencies {
-                    if let Some(&dep_depth) = depths.get(dep) {
-                        max_dep_depth = Some(max_dep_depth.unwrap_or(0).max(dep_depth));
-                    } else {
-                        all_deps_known = false;
-                        break;
-                    }
-                }
-
-                if all_deps_known {
-                    if let Some(max_depth) = max_dep_depth {
-                        let new_depth = max_depth + 1;
-                        if depths.get(&step.step_id) != Some(&new_depth) {
-                            depths.insert(step.step_id.clone(), new_depth);
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
+        // Calculate depths for all steps using shared helper
+        let depths = self.calculate_depths();
 
         // Group steps by level
         let max_level = depths.values().max().copied().unwrap_or(0);
@@ -414,7 +406,7 @@ impl DeferredRegistry {
             }
         }
 
-        // Print each level
+        // Format each level
         for (level, steps) in levels.iter().enumerate() {
             if steps.is_empty() {
                 continue;
@@ -426,40 +418,63 @@ impl DeferredRegistry {
                 String::new()
             };
 
-            println!("Level {}: [{}]{}", level, steps.join("] ["), parallel_note);
+            output.push_str(&format!(
+                "Level {}: [{}]{}\n",
+                level,
+                steps.join("] ["),
+                parallel_note
+            ));
 
             if level < max_level {
-                println!("         ↓");
+                output.push_str("         ↓\n");
             }
         }
 
-        println!();
-        println!("Steps at the same level run in parallel!");
+        output.push_str("\nSteps at the same level run in parallel!\n");
+        output
     }
 
-    /// Helper function to recursively print nodes in tree format
-    fn print_node(
+    /// Helper function to recursively format nodes in tree format.
+    ///
+    /// Appends the formatted tree to the output string.
+    /// Returns whether a cycle was detected.
+    fn format_node(
         node: &StepId,
         dep_map: &HashMap<StepId, Vec<StepId>>,
         prefix: &str,
         is_last: bool,
         visited: &mut std::collections::HashSet<StepId>,
-    ) {
+        output: &mut String,
+    ) -> bool {
         let connector = if is_last { "└─ " } else { "├─ " };
-        println!("{}{}{}", prefix, connector, node);
+        output.push_str(&format!("{}{}{}\n", prefix, connector, node));
 
+        // Detect cycles: if we've visited this node before, it's a cycle
         if visited.contains(node) {
-            return;
+            output.push_str(&format!("{}    ⚠️  CYCLE DETECTED\n", prefix));
+            return true;
         }
         visited.insert(node.clone());
 
+        let mut cycle_detected = false;
         if let Some(children) = dep_map.get(node) {
             let child_prefix = format!("{}{}  ", prefix, if is_last { "  " } else { "│ " });
             for (i, child) in children.iter().enumerate() {
                 let is_last_child = i == children.len() - 1;
-                Self::print_node(child, dep_map, &child_prefix, is_last_child, visited);
+                if Self::format_node(
+                    child,
+                    dep_map,
+                    &child_prefix,
+                    is_last_child,
+                    visited,
+                    output,
+                ) {
+                    cycle_detected = true;
+                }
             }
         }
+
+        cycle_detected
     }
 
     /// Returns a summary of the DAG structure
@@ -508,8 +523,11 @@ impl DeferredRegistry {
         }
     }
 
-    /// Calculates the maximum depth of the DAG
-    fn calculate_max_depth(&self) -> usize {
+    /// Calculates the depth of each step in the DAG.
+    ///
+    /// Returns a HashMap mapping each StepId to its depth (distance from root).
+    /// Root nodes have depth 0, their children have depth 1, etc.
+    fn calculate_depths(&self) -> HashMap<StepId, usize> {
         let mut depths: HashMap<StepId, usize> = HashMap::new();
         let mut changed = true;
 
@@ -525,7 +543,7 @@ impl DeferredRegistry {
             depths.insert(root.step_id.clone(), 0);
         }
 
-        // Iteratively calculate depths
+        // Iteratively calculate depths using dynamic programming
         while changed {
             changed = false;
             for step in &self.steps {
@@ -553,7 +571,12 @@ impl DeferredRegistry {
             }
         }
 
-        depths.values().max().copied().unwrap_or(0)
+        depths
+    }
+
+    /// Calculates the maximum depth of the DAG
+    fn calculate_max_depth(&self) -> usize {
+        self.calculate_depths().values().max().copied().unwrap_or(0)
     }
 }
 
@@ -574,120 +597,113 @@ impl Default for DeferredRegistry {
     }
 }
 
-/// Executor for deferred steps with automatic parallelization
-pub struct DeferredExecutor;
+/// Executes deferred steps in parallel based on dependencies.
+///
+/// This is the core DAG execution engine that:
+/// 1. Builds and validates the dependency graph
+/// 2. Executes steps in topological order
+/// 3. Runs independent steps in parallel
+/// 4. Preserves task-local context (no tokio::spawn)
+///
+/// # Example
+/// ```ignore
+/// let mut registry = DeferredRegistry::new();
+/// // ... register steps ...
+/// registry.execute().await?;  // Internally calls execute_dag
+/// ```
+pub async fn execute_dag(mut steps: Vec<DeferredStep>) -> Result<()> {
+    let total = steps.len();
+    let mut completed: HashSet<StepId> = HashSet::new();
+    let results: Arc<Mutex<HashMap<StepId, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
 
-impl DeferredExecutor {
-    /// Creates a new executor
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Executes deferred steps in parallel based on dependencies
-    pub async fn execute(&self, mut steps: Vec<DeferredStep>) -> Result<()> {
-        let total = steps.len();
-        let mut completed: HashSet<StepId> = HashSet::new();
-        let results: Arc<Mutex<HashMap<StepId, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
-
-        // Build dependency graph using FlowGraph
-        let mut flow_graph = FlowGraph::new();
-        for step in &steps {
-            flow_graph
-                .add_step(step.step_id.clone())
-                .map_err(|e| ExecutionError::Failed(format!("Failed to add step: {}", e)))?;
-            for dep in &step.dependencies {
-                flow_graph
-                    .add_dependency(step.step_id.clone(), dep.clone())
-                    .map_err(|e| {
-                        ExecutionError::Failed(format!("Failed to add dependency: {}", e))
-                    })?;
-            }
-        }
-
-        // Validate graph for cycles
+    // Build dependency graph using FlowGraph
+    let mut flow_graph = FlowGraph::new();
+    for step in &steps {
         flow_graph
-            .validate()
-            .map_err(|e| ExecutionError::Failed(format!("Invalid dependency graph: {}", e)))?;
+            .add_step(step.step_id.clone())
+            .map_err(|e| ExecutionError::Failed(format!("Failed to add step: {}", e)))?;
+        for dep in &step.dependencies {
+            flow_graph
+                .add_dependency(step.step_id.clone(), dep.clone())
+                .map_err(|e| ExecutionError::Failed(format!("Failed to add dependency: {}", e)))?;
+        }
+    }
 
-        // Build step lookup
-        let mut step_map: HashMap<StepId, DeferredStep> =
-            steps.drain(..).map(|s| (s.step_id.clone(), s)).collect();
+    // Validate graph for cycles
+    flow_graph
+        .validate()
+        .map_err(|e| ExecutionError::Failed(format!("Invalid dependency graph: {}", e)))?;
 
-        while completed.len() < total {
-            // Use FlowGraph to find ready steps (eliminates duplication)
-            let ready = flow_graph.runnable(&completed);
+    // Build step lookup
+    let mut step_map: HashMap<StepId, DeferredStep> =
+        steps.drain(..).map(|s| (s.step_id.clone(), s)).collect();
 
-            if ready.is_empty() && completed.len() < total {
-                return Err(ExecutionError::Failed(
-                    "Deadlock: no steps ready but not all completed".to_string(),
-                ));
-            }
+    while completed.len() < total {
+        // Use FlowGraph to find ready steps (eliminates duplication)
+        let ready = flow_graph.runnable(&completed);
 
-            // Execute ready steps in parallel using futures::join_all
-            // This runs futures concurrently in the SAME task, preserving task-local context
-            let mut futures = Vec::new();
+        if ready.is_empty() && completed.len() < total {
+            return Err(ExecutionError::Failed(
+                "Deadlock: no steps ready but not all completed".to_string(),
+            ));
+        }
 
-            for step_id in ready {
-                if let Some(step) = step_map.remove(&step_id) {
-                    let results_clone = Arc::clone(&results);
-                    let step_id_clone = step_id.clone();
+        // Execute ready steps in parallel using futures::join_all
+        // This runs futures concurrently in the SAME task, preserving task-local context
+        let mut futures = Vec::new();
 
-                    // Gather inputs
-                    let inputs = {
-                        let results_guard = results_clone.lock().await;
-                        step.dependencies
-                            .iter()
-                            .filter_map(|dep| {
-                                results_guard.get(dep).map(|v| (dep.clone(), v.clone()))
-                            })
-                            .collect::<HashMap<_, _>>()
-                    };
+        for step_id in ready {
+            if let Some(step) = step_map.remove(&step_id) {
+                let results_clone = Arc::clone(&results);
+                let step_id_clone = step_id.clone();
 
-                    // Create future (NO tokio::spawn - preserves context!)
-                    let fut = async move {
-                        let output = (step.factory)(inputs).await;
-                        (step_id_clone, output, step.result_sender)
-                    };
+                // Gather inputs
+                let inputs = {
+                    let results_guard = results_clone.lock().await;
+                    step.dependencies
+                        .iter()
+                        .filter_map(|dep| results_guard.get(dep).map(|v| (dep.clone(), v.clone())))
+                        .collect::<HashMap<_, _>>()
+                };
 
-                    futures.push((step_id, fut));
-                }
-            }
+                // Create future (NO tokio::spawn - preserves context!)
+                let fut = async move {
+                    let output = (step.factory)(inputs).await;
+                    (step_id_clone, output, step.result_sender)
+                };
 
-            // Run all futures concurrently in the same task
-            let step_results: Vec<_> = futures::future::join_all(
-                futures
-                    .into_iter()
-                    .map(|(id, fut)| async move { (id, fut.await) }),
-            )
-            .await;
-
-            // Process results
-            for (_step_id, (id, output, sender)) in step_results {
-                match output {
-                    Ok(bytes) => {
-                        {
-                            let mut results_guard = results.lock().await;
-                            results_guard.insert(id.clone(), bytes.clone());
-                        }
-                        sender(Ok(bytes));
-                        completed.insert(id);
-                    }
-                    Err(e) => {
-                        sender(Err(ExecutionError::Failed(format!("Step failed: {}", e))));
-                        return Err(e);
-                    }
-                }
+                futures.push((step_id, fut));
             }
         }
 
-        Ok(())
-    }
-}
+        // Run all futures concurrently in the same task
+        let step_results: Vec<_> = futures::future::join_all(
+            futures
+                .into_iter()
+                .map(|(id, fut)| async move { (id, fut.await) }),
+        )
+        .await;
 
-impl Default for DeferredExecutor {
-    fn default() -> Self {
-        Self::new()
+        // Process results
+        for (_step_id, (id, output, sender)) in step_results {
+            match output {
+                Ok(bytes) => {
+                    {
+                        let mut results_guard = results.lock().await;
+                        results_guard.insert(id.clone(), bytes.clone());
+                    }
+                    sender(Ok(bytes));
+                    completed.insert(id);
+                }
+                Err(e) => {
+                    sender(Err(ExecutionError::Failed(format!("Step failed: {}", e))));
+                    return Err(e);
+                }
+            }
+        }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

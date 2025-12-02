@@ -31,7 +31,7 @@ use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct PaymentProcessor {
     order_id: String,
     amount: f64,
@@ -115,25 +115,25 @@ impl PaymentProcessor {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct ValidationResult {
     order_id: String,
     amount: f64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct AuthResult {
     auth_code: String,
     amount: f64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct CaptureResult {
     transaction_id: String,
     captured_amount: f64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct PaymentResult {
     order_id: String,
     transaction_id: String,

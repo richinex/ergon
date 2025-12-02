@@ -83,7 +83,7 @@ impl RetryableError for InventoryError {
 // Scenario A: RETRYABLE Error (should execute 3 times)
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct OrderA {
     order_id: String,
 }
@@ -122,7 +122,7 @@ impl OrderA {
 // Scenario B: NON-RETRYABLE Error (should execute ONLY 1 time)
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct OrderB {
     order_id: String,
     item_sku: String,

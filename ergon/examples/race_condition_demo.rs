@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 static EXECUTION_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct CriticalTask {
     task_id: String,
     operation: String,
@@ -80,7 +80,7 @@ impl CriticalTask {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct OperationResult {
     task_id: String,
     operation: String,
@@ -88,7 +88,7 @@ struct OperationResult {
     executed_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct TaskResult {
     task_id: String,
     status: String,

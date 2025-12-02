@@ -57,14 +57,14 @@ use uuid::Uuid;
 
 // ===== Domain Types =====
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct OrderRequest {
     item: String,
     quantity: u32,
     customer_email: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct OrderFlow {
     order_id: Uuid,
     item: String,
@@ -72,27 +72,27 @@ struct OrderFlow {
     customer_email: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct ValidationResult {
     order_id: Uuid,
     available: bool,
     price: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct PaymentResult {
     order_id: Uuid,
     transaction_id: String,
     amount: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct FulfillmentResult {
     order_id: Uuid,
     tracking_number: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct OrderComplete {
     order_id: Uuid,
     transaction_id: String,
@@ -211,13 +211,13 @@ impl OrderFlow {
 
 // ===== API Types =====
 
-#[derive(Serialize)]
+#[derive(Serialize, FlowType)]
 struct OrderSubmitted {
     flow_id: Uuid,
     message: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, FlowType)]
 struct OrderStatus {
     flow_id: Uuid,
     status: String,
@@ -227,7 +227,7 @@ struct OrderStatus {
 
 // ===== Application State =====
 
-#[derive(Clone)]
+#[derive(Clone, FlowType)]
 struct AppState {
     storage: Arc<SqliteExecutionLog>,
     scheduler: Arc<FlowScheduler<SqliteExecutionLog>>,

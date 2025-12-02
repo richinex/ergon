@@ -224,7 +224,7 @@ impl RetryableError for NotificationError {
 // Order Flow with Custom Errors
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct OrderFlow {
     order_id: String,
     product_id: String,
@@ -234,7 +234,7 @@ struct OrderFlow {
     simulate_error: Option<String>, // For demonstration
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct OrderResult {
     order_id: String,
     status: String,
@@ -417,7 +417,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id1 = uuid::Uuid::new_v4();
     let instance1 = FlowInstance::new(flow_id1, order1, storage.clone());
 
-    match instance1.execute(|f| Arc::new(f).process_order()).await {
+    match instance1
+        .executor()
+        .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
+        .await
+    {
         Ok(Ok(result)) => println!("\nResult: {} - {}", result.order_id, result.status),
         Ok(Err(e)) => println!("\nOrder failed: {}", e),
         Err(e) => println!("\nExecution error: {}", e),
@@ -440,7 +444,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id2 = uuid::Uuid::new_v4();
     let instance2 = FlowInstance::new(flow_id2, order2, storage.clone());
 
-    match instance2.execute(|f| Arc::new(f).process_order()).await {
+    match instance2
+        .executor()
+        .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
+        .await
+    {
         Ok(Ok(result)) => println!("\nResult: {} - {}", result.order_id, result.status),
         Ok(Err(e)) => println!("\nOrder failed: {}", e),
         Err(e) => println!("\nExecution error: {}", e),
@@ -463,7 +471,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id3 = uuid::Uuid::new_v4();
     let instance3 = FlowInstance::new(flow_id3, order3, storage.clone());
 
-    match instance3.execute(|f| Arc::new(f).process_order()).await {
+    match instance3
+        .executor()
+        .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
+        .await
+    {
         Ok(Ok(result)) => println!("\nResult: {} - {}", result.order_id, result.status),
         Ok(Err(e)) => println!("\nOrder failed: {}", e),
         Err(e) => println!("\nExecution error: {}", e),

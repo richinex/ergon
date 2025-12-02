@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// An order processing flow that validates and processes orders
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct OrderProcessor {
     order_id: String,
     customer: String,
@@ -93,14 +93,14 @@ impl OrderProcessor {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, FlowType)]
 struct OrderResult {
     order_id: String,
     status: String,
 }
 
 /// A simple notification flow
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct NotificationSender {
     recipient: String,
     message: String,

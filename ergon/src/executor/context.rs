@@ -9,6 +9,8 @@
 //! decisions about how execution context is managed and propagated.
 
 use super::error::{format_params_preview, ExecutionError, Result};
+use super::signal::{RESUME_PARAMS, WAIT_NOTIFIERS};
+use super::timer::TIMER_NOTIFIERS;
 use crate::core::{
     deserialize_value, hash_params, serialize_value, CallType, InvocationStatus, RetryPolicy,
 };
@@ -138,6 +140,17 @@ impl<S: ExecutionLog> ExecutionContext<S> {
     /// to ensure that concurrent calls will always receive unique step numbers.
     pub fn next_step(&self) -> i32 {
         self.step_counter.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Returns the most recently allocated step number.
+    ///
+    /// This is the step number that was returned by the last call to `next_step()`.
+    /// Since `next_step()` increments the counter, the current value is one ahead,
+    /// so we subtract 1 to get the last allocated step.
+    ///
+    /// Use this when you need to reference the step that was just registered.
+    pub fn last_allocated_step(&self) -> i32 {
+        self.current_step() - 1
     }
 
     /// Log the start of a step invocation.
@@ -284,6 +297,24 @@ impl<S: ExecutionLog> ExecutionContext<S> {
     /// Returns a reference to the storage backend.
     pub fn storage(&self) -> &Arc<S> {
         &self.storage
+    }
+}
+
+impl<S: ExecutionLog> Drop for ExecutionContext<S> {
+    /// Clean up notifiers when the execution context is dropped.
+    ///
+    /// This prevents memory leaks when flows are cancelled or aborted
+    /// before completion. Without this cleanup, notifiers would remain
+    /// in the global maps indefinitely.
+    fn drop(&mut self) {
+        // Clean up signal-related notifiers
+        WAIT_NOTIFIERS.remove(&self.id);
+        RESUME_PARAMS.remove(&self.id);
+
+        // Clean up all timer notifiers for this flow
+        // TIMER_NOTIFIERS uses (flow_id, step) as key, so we need to remove all entries
+        // where flow_id matches self.id
+        TIMER_NOTIFIERS.retain(|(flow_id, _step), _notifier| *flow_id != self.id);
     }
 }
 

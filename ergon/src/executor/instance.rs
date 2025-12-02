@@ -59,87 +59,15 @@ impl<T, S: ExecutionLog + 'static> FlowInstance<T, S> {
     /// - `execute_sync_blocking`: For sync flows from async contexts
     /// - `resume`: For resuming flows waiting for signals
     /// - `signal_resume`: For sending signals to waiting flows
+    ///
+    /// # Example
+    /// ```ignore
+    /// let result = instance.executor()
+    ///     .execute(|f| Box::pin(f.process()))
+    ///     .await?;
+    /// ```
     pub fn executor(&self) -> FlowExecutor<'_, T, S> {
         FlowExecutor::new(&self.flow, self.id, Arc::clone(&self.storage))
-    }
-
-    /// Execute a flow method with ergonomic syntax.
-    ///
-    /// This helper method eliminates the boilerplate of boxing and pinning
-    /// futures when executing flow methods.
-    ///
-    /// The closure receives the flow object (cloned from the instance), which
-    /// can be passed directly to methods that use `self: Arc<Self>` receiver.
-    ///
-    /// # Example
-    ///
-    /// Instead of:
-    /// ```ignore
-    /// let result = instance
-    ///     .executor()
-    ///     .execute(|f| Box::pin(Arc::clone(f).process()))
-    ///     .await??;
-    /// ```
-    ///
-    /// You can write:
-    /// ```ignore
-    /// let result = instance.execute(|f| f.process()).await??;
-    /// ```
-    ///
-    /// # Type Parameters
-    ///
-    /// - `F`: The closure that calls the flow method
-    /// - `Fut`: The future returned by the flow method
-    /// - `R`: The return type of the flow method
-    ///
-    /// # Requirements
-    ///
-    /// - `T` must implement `Clone`
-    /// - The future must be `Send + 'static` for async execution
-    pub async fn execute<F, Fut, R>(&self, method: F) -> Result<R>
-    where
-        T: Clone,
-        F: FnOnce(T) -> Fut,
-        Fut: std::future::Future<Output = R> + Send + 'static,
-        R: Send + 'static,
-    {
-        self.executor()
-            .execute(move |f| {
-                // f is &T from executor, clone it and pass to user's method
-                Box::pin(method(f.clone()))
-            })
-            .await
-    }
-
-    /// Execute a synchronous flow method without boilerplate
-    ///
-    /// This is a convenience wrapper around `executor().execute_sync_blocking()` that
-    /// eliminates the need to call `executor()` explicitly for synchronous flows.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Instead of:
-    /// let result = instance.executor().execute_sync_blocking(|f| f.calculate_sum(&numbers)).await;
-    ///
-    /// // You can write:
-    /// let result = instance.execute_sync(|f| f.calculate_sum(&numbers)).await;
-    /// ```
-    ///
-    /// # Requirements
-    ///
-    /// - `T` must implement `Clone + Send + Sync`
-    /// - The method must be synchronous (not async)
-    /// - Uses `spawn_blocking` internally to avoid blocking the async runtime
-    pub async fn execute_sync<F, R>(&self, method: F) -> Result<R>
-    where
-        T: Clone + Send + Sync + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        self.executor()
-            .execute_sync_blocking(move |f| method(f.clone()))
-            .await
     }
 }
 
@@ -228,10 +156,9 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
     /// - No invocation is found for this flow
     /// - The latest step is not in WaitingForSignal status
     /// - The class/method names don't match (incompatible flow structure)
-    pub async fn resume<F, P>(&self, class_name: &str, method_name: &str, f: F) -> Result<()>
+    pub async fn resume<F>(&self, class_name: &str, method_name: &str, f: F) -> Result<()>
     where
         F: FnOnce(&T) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>,
-        P: serde::Serialize,
     {
         let latest = self
             .storage
@@ -267,22 +194,13 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
     pub fn signal_resume<P: serde::Serialize>(&self, params: &P) -> Result<()> {
         let params_bytes = serialize_value(params)?;
 
-        {
-            let mut resume_params = RESUME_PARAMS
-                .lock()
-                .expect("RESUME_PARAMS Mutex poisoned - unrecoverable state");
-            resume_params.insert(self.id, params_bytes);
-        }
+        RESUME_PARAMS.insert(self.id, params_bytes);
 
-        let notifier = {
-            let mut notifiers = WAIT_NOTIFIERS
-                .lock()
-                .expect("WAIT_NOTIFIERS Mutex poisoned - unrecoverable state");
-            notifiers
-                .entry(self.id)
-                .or_insert_with(|| Arc::new(Notify::new()))
-                .clone()
-        };
+        let notifier = WAIT_NOTIFIERS
+            .entry(self.id)
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .value()
+            .clone();
 
         notifier.notify_one();
 

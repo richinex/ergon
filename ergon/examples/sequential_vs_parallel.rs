@@ -4,15 +4,13 @@
 //! 1. Steps WITHOUT depends_on run SEQUENTIALLY (auto-chained)
 //! 2. Steps WITH explicit depends_on enable PARALLEL execution
 
-use ergon::Ergon;
-use ergon::{flow, step};
-use ergon::{ExecutionLog, InMemoryExecutionLog};
+use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct Workflow {
     id: String,
 }
@@ -153,7 +151,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start1 = Instant::now();
     let instance1 = Ergon::new_flow(Arc::clone(&workflow1), flow_id1, Arc::clone(&storage1));
-    let result1 = instance1.execute(|f| f.run_sequential()).await;
+    let result1 = instance1
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_sequential()))
+        .await;
     let elapsed1 = start1.elapsed();
 
     println!("\nResult: {:?}", result1);
@@ -175,7 +176,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start2 = Instant::now();
     let instance2 = Ergon::new_flow(Arc::clone(&workflow2), flow_id2, Arc::clone(&storage2));
-    let result2 = instance2.execute(|f| f.run_parallel()).await;
+    let result2 = instance2
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_parallel()))
+        .await;
     let elapsed2 = start2.elapsed();
 
     println!("\nResult: {:?}", result2);
@@ -196,7 +200,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id3 = Uuid::new_v4();
 
     let instance3 = Ergon::new_flow(Arc::clone(&workflow3), flow_id3, Arc::clone(&storage3));
-    let result3 = instance3.execute(|f| f.run_with_inputs()).await;
+    let result3 = instance3
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_with_inputs()))
+        .await;
 
     println!("\nResult: {:?}", result3);
 

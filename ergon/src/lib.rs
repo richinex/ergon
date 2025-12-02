@@ -150,7 +150,7 @@ pub mod prelude {
     #[cfg(feature = "redis")]
     pub use crate::storage::RedisExecutionLog;
 
-    pub use ergon_macros::{flow, step};
+    pub use ergon_macros::{flow, step, FlowType};
 
     // Re-export commonly used external types
     pub use serde::{Deserialize, Serialize};

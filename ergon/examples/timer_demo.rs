@@ -41,7 +41,7 @@ use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct OrderWorkflow {
     order_id: String,
     customer_email: String,
@@ -180,7 +180,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
 
     // Execute the flow
-    let result = instance.execute(|f| Arc::new(f).process_order()).await?;
+    let result = instance
+        .executor()
+        .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
+        .await?;
 
     let elapsed = start.elapsed();
 

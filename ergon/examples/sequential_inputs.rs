@@ -32,34 +32,32 @@
 //! cargo run --example sequential_inputs
 //! ```
 
-use ergon::Ergon;
-use ergon::{flow, step};
-use ergon::{ExecutionLog, InMemoryExecutionLog};
+use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct DataPipeline {
     source: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct RawData {
     id: String,
     value: i32,
     timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct TransformedData {
     id: String,
     normalized_value: f64,
     timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct ValidationResult {
     data: TransformedData,
     is_valid: bool,
@@ -168,19 +166,19 @@ impl DataPipeline {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct EnrichmentPipeline {
     user_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct UserProfile {
     id: String,
     name: String,
     age: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct Preferences {
     theme: String,
     language: String,
@@ -270,7 +268,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id1 = Uuid::new_v4();
 
     let instance1 = Ergon::new_flow(Arc::clone(&pipeline), flow_id1, Arc::clone(&storage1));
-    let result1 = instance1.execute(|f| f.process_pipeline()).await;
+    let result1 = instance1
+        .executor()
+        .execute(|f| Box::pin(f.clone().process_pipeline()))
+        .await;
 
     println!("\nResult:");
     println!("{:?}", result1);
@@ -285,7 +286,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id2 = Uuid::new_v4();
 
     let instance2 = Ergon::new_flow(Arc::clone(&enrichment), flow_id2, Arc::clone(&storage2));
-    let result2 = instance2.execute(|f| f.process()).await;
+    let result2 = instance2
+        .executor()
+        .execute(|f| Box::pin(f.clone().process()))
+        .await;
 
     println!("\nResult:");
     println!("{:?}", result2);

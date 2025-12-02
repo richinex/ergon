@@ -42,7 +42,7 @@ use std::time::Duration;
 static PAYMENT_CHARGE_COUNT: AtomicU32 = AtomicU32::new(0);
 static INVENTORY_RESERVE_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct OrderProcessor {
     order_id: String,
     amount: f64,
@@ -175,27 +175,27 @@ impl OrderProcessor {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct ValidationResult {
     order_id: String,
     customer_id: String,
     validated_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct PaymentResult {
     transaction_id: String,
     amount_charged: f64,
     charged_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct InventoryResult {
     reservation_id: String,
     reserved_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct OrderResult {
     order_id: String,
     status: String,

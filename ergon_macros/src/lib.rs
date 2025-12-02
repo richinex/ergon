@@ -1,9 +1,9 @@
 //! Procedural macros for the Ergon durable execution framework.
 //!
 //! This crate provides #[step] and #[flow] macros with:
-//! - Sequential-by-default execution with opt-in parallelism
+//! - Explicit dependency graph management
+//! - Automatic parallel execution of independent steps
 //! - Execution context integration
-//! - Dependency graph management
 //! - Input wiring for data flow
 //! - Cache checking with non-determinism detection
 //! - Invocation logging
@@ -25,6 +25,7 @@
 use proc_macro::TokenStream;
 
 mod flow;
+mod flow_type;
 mod parsing;
 mod step;
 
@@ -62,6 +63,20 @@ pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn flow(attr: TokenStream, item: TokenStream) -> TokenStream {
     flow::flow_impl(attr, item)
+}
+
+/// Derives the FlowType trait for a struct, providing a stable type identifier.
+///
+/// The type ID defaults to the struct name. For custom type IDs, use the `flow_type` attribute:
+///
+/// ```ignore
+/// #[derive(FlowType)]
+/// #[flow_type(id = "com.company.MyFlow.v1")]
+/// struct MyFlow { }
+/// ```
+#[proc_macro_derive(FlowType, attributes(flow_type))]
+pub fn derive_flow_type(input: TokenStream) -> TokenStream {
+    flow_type::derive_flow_type_impl(input)
 }
 
 /// Helper macro for ergonomic DAG execution.

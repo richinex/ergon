@@ -27,8 +27,6 @@ pub(crate) struct DagStepArgs {
     /// Input mappings: parameter name -> step name
     /// e.g., inputs(customer = "get_customer", payment = "validate_payment")
     pub inputs: std::collections::HashMap<String, String>,
-    /// Track if depends_on was explicitly set to [] (to disable auto-chaining)
-    pub has_explicit_empty_depends_on: bool,
 }
 
 impl DagStepArgs {
@@ -54,13 +52,8 @@ impl DagStepArgs {
                 let deps: syn::punctuated::Punctuated<syn::LitStr, syn::Token![,]> =
                     content.parse_terminated(|input| input.parse(), syn::Token![,])?;
 
-                // Check if it's explicitly empty
-                if deps.is_empty() {
-                    self.has_explicit_empty_depends_on = true;
-                } else {
-                    for dep in deps {
-                        self.depends_on.push(dep.value());
-                    }
+                for dep in deps {
+                    self.depends_on.push(dep.value());
                 }
             } else {
                 let dep: syn::LitStr = value.parse()?;

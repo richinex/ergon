@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 const NUM_FLOWS: usize = 20;
 const SEED_BASE: u64 = 12345;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct DataAnalysis {
     id: u64,
     size: usize,
@@ -145,13 +145,13 @@ impl DataAnalysis {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct Dataset {
     values: Vec<f64>,
     source_id: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct Statistics {
     mean: f64,
     std_dev: f64,
@@ -161,7 +161,7 @@ struct Statistics {
     source_id: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct TransformedData {
     cv: f64,
     range: f64,
@@ -171,7 +171,7 @@ struct TransformedData {
     source_id: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct AnalysisResult {
     pipeline_id: u64,
     final_score: f64,

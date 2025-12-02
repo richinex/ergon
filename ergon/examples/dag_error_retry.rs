@@ -36,10 +36,7 @@
 //! - On retry: A is skipped, B runs again
 //! - More efficient than re-running everything!
 
-use ergon::Ergon;
-use ergon::RetryableError;
-use ergon::{flow, step};
-use ergon::{ExecutionLog, InMemoryExecutionLog};
+use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -94,7 +91,7 @@ impl RetryableError for PaymentError {
 // Order Result
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct OrderResult {
     order_id: String,
     customer: String,
@@ -107,7 +104,7 @@ struct OrderResult {
 // OrderProcessor with DAG parallel execution and error retry
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct OrderProcessor {
     customer_id: String,
     amount: f64,
@@ -257,7 +254,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for run in 1..=5 {
         println!("Run {}", run);
         let instance = Ergon::new_flow(Arc::clone(&processor), flow_id, Arc::clone(&storage1));
-        let result = instance.execute(|f| f.process_order()).await;
+        let result = instance
+            .executor()
+            .execute(|f| Box::pin(f.clone().process_order()))
+            .await;
         println!("Result: {:?}\n", result);
     }
 
@@ -300,7 +300,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for run in 1..=3 {
         println!("Run {}", run);
         let instance = Ergon::new_flow(Arc::clone(&processor_oos), flow_id2, Arc::clone(&storage2));
-        let result = instance.execute(|f| f.process_order()).await;
+        let result = instance
+            .executor()
+            .execute(|f| Box::pin(f.clone().process_order()))
+            .await;
         println!("Result: {:?}\n", result);
     }
 
@@ -343,7 +346,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for run in 1..=5 {
         println!("Run {}", run);
         let instance = Ergon::new_flow(Arc::clone(&processor_nsf), flow_id3, Arc::clone(&storage3));
-        let result = instance.execute(|f| f.process_order()).await;
+        let result = instance
+            .executor()
+            .execute(|f| Box::pin(f.clone().process_order()))
+            .await;
         println!("Result: {:?}\n", result);
     }
 

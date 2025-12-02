@@ -12,9 +12,8 @@ use super::context::{ExecutionContext, EXECUTION_CONTEXT};
 use super::error::Result;
 use crate::core::InvocationStatus;
 use chrono::{Duration as ChronoDuration, Utc};
-use std::collections::HashMap;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use dashmap::DashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -22,8 +21,7 @@ use uuid::Uuid;
 lazy_static::lazy_static! {
     /// Notifiers for timers that have fired.
     /// Maps (flow_id, step) -> Notify for waking waiting flows.
-    pub(super) static ref TIMER_NOTIFIERS: Mutex<HashMap<(Uuid, i32), Arc<Notify>>> =
-        Mutex::new(HashMap::new());
+    pub(super) static ref TIMER_NOTIFIERS: DashMap<(Uuid, i32), Arc<Notify>> = DashMap::new();
 }
 
 /// Schedules a durable timer that pauses workflow execution.
@@ -68,10 +66,8 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) {
         .try_with(|c| c.clone())
         .expect("schedule_timer called outside execution context");
 
-    // Get current step - the step macro already incremented it, so we need the previous value
-    // The step macro calls next_step() which returns the old value and increments
-    // So if the step was logged with step=N, the counter is now N+1, we need to use N
-    let current_step = ctx.step_counter.load(Ordering::SeqCst) - 1;
+    // Get the step number that was just allocated by the step macro
+    let current_step = ctx.last_allocated_step();
 
     // Check if we're resuming from a timer
     let existing_inv = ctx
@@ -90,13 +86,17 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) {
         if inv.status() == InvocationStatus::WaitingForTimer {
             // We're waiting for this timer - check if it's fired
             if inv.is_timer_expired() {
-                // Timer fired, but we haven't processed it yet
-                // This can happen during replay - just continue
+                // Timer fired while worker was down - mark it complete explicitly
+                ctx.complete_timer(current_step)
+                    .await
+                    .expect("Failed to complete expired timer");
                 return;
             }
 
             // Timer not fired yet - wait for notification
-            ctx.await_timer(current_step).await.unwrap();
+            ctx.await_timer(current_step)
+                .await
+                .expect("Failed to await timer");
             return;
         }
     }
@@ -116,41 +116,58 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) {
 }
 
 impl<S: crate::storage::ExecutionLog> ExecutionContext<S> {
+    /// Complete a timer that has already fired.
+    ///
+    /// This is called when replaying a step that was waiting for a timer
+    /// that fired while the worker was down. It explicitly marks the timer
+    /// step as complete to ensure proper state transitions.
+    pub(super) async fn complete_timer(&self, step: i32) -> Result<()> {
+        self.storage
+            .log_invocation_completion(self.id, step, &crate::core::serialize_value(&())?)
+            .await
+            .map(|_| ())
+            .map_err(super::error::ExecutionError::Storage)
+    }
+
     /// Wait for a timer to fire.
     ///
     /// This method blocks until the timer processor fires the timer
     /// and notifies us via the TIMER_NOTIFIERS map.
+    ///
+    /// Uses the defensive notified() pattern to avoid missing notifications.
     pub(super) async fn await_timer(&self, step: i32) -> Result<()> {
         let key = (self.id, step);
 
-        let notifier = {
-            let mut notifiers = TIMER_NOTIFIERS
-                .lock()
-                .expect("TIMER_NOTIFIERS Mutex poisoned");
-            notifiers
-                .entry(key)
-                .or_insert_with(|| Arc::new(Notify::new()))
-                .clone()
-        };
+        // Defensive pattern: Register for notification FIRST
+        let notifier = TIMER_NOTIFIERS
+            .entry(key)
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .value()
+            .clone();
 
-        // Check if timer already fired (handles race condition)
+        let notified = notifier.notified();
+
+        // THEN check if already complete
         if let Ok(Some(inv)) = self.storage.get_invocation(self.id, step).await {
             if inv.status() == InvocationStatus::Complete {
                 // Timer already fired, no need to wait
+                TIMER_NOTIFIERS.remove(&key);
                 return Ok(());
             }
         }
 
-        // Wait for timer to fire
-        notifier.notified().await;
+        // Wait for timer to fire with timeout
+        tokio::time::timeout(Duration::from_secs(3600), notified)
+            .await
+            .map_err(|_| {
+                super::error::ExecutionError::Failed(format!(
+                    "Timer wait timed out for step {}",
+                    step
+                ))
+            })?;
 
         // Clean up notifier
-        {
-            let mut notifiers = TIMER_NOTIFIERS
-                .lock()
-                .expect("TIMER_NOTIFIERS Mutex poisoned");
-            notifiers.remove(&key);
-        }
+        TIMER_NOTIFIERS.remove(&key);
 
         Ok(())
     }

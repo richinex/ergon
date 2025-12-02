@@ -18,7 +18,7 @@ use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct DataPipeline {
     pipeline_id: String,
     batch_size: u32,
@@ -91,25 +91,25 @@ impl DataPipeline {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct DataBatch {
     records: u32,
     source: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct ValidatedBatch {
     valid_records: u32,
     transformed_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct ProcessingResult {
     total_records: u32,
     status: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct NotificationTask {
     task_id: String,
     recipient_count: u32,
@@ -166,13 +166,13 @@ impl NotificationTask {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct RecipientList {
     count: u32,
     list_id: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct NotificationResult {
     batch_id: String,
     sent_count: u32,

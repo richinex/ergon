@@ -50,16 +50,15 @@
 //! cargo run --example comparison_etl_parallel
 //! ```
 
-use ergon::Ergon;
-use ergon::{deserialize_value, flow, step};
-use ergon::{ExecutionLog, InMemoryExecutionLog};
+use ergon::deserialize_value;
+use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 // ==================== Data Models ====================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct RawCustomer {
     customer_id: String,
     name: String,
@@ -68,7 +67,7 @@ struct RawCustomer {
     signup_date: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct ValidatedCustomer {
     customer_id: String,
     name: String,
@@ -78,7 +77,7 @@ struct ValidatedCustomer {
     validation_status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct RawSalesRecord {
     transaction_id: String,
     customer_id: String,
@@ -88,7 +87,7 @@ struct RawSalesRecord {
     timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct CleansedSalesRecord {
     transaction_id: String,
     customer_id: String,
@@ -99,7 +98,7 @@ struct CleansedSalesRecord {
     is_duplicate: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct RawProduct {
     product_id: String,
     name: String,
@@ -107,7 +106,7 @@ struct RawProduct {
     base_price: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct EnrichedProduct {
     product_id: String,
     name: String,
@@ -117,7 +116,7 @@ struct EnrichedProduct {
     supplier: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct SalesWithProduct {
     transaction_id: String,
     customer_id: String,
@@ -128,7 +127,7 @@ struct SalesWithProduct {
     margin: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct RegionalAggregation {
     region: String,
     total_sales: f64,
@@ -137,7 +136,7 @@ struct RegionalAggregation {
     top_category: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct CustomerMetrics {
     customer_id: String,
     total_spend: f64,
@@ -146,7 +145,7 @@ struct CustomerMetrics {
     customer_segment: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct AnalyticsReport {
     report_id: String,
     generated_at: String,
@@ -158,7 +157,7 @@ struct AnalyticsReport {
     data_quality_score: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct WarehouseLoadResult {
     success: bool,
     records_loaded: usize,
@@ -168,7 +167,7 @@ struct WarehouseLoadResult {
 
 // ==================== ETL Pipeline Implementation ====================
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, FlowType)]
 struct RetailETLPipeline {
     pipeline_id: String,
     run_date: String,
@@ -693,7 +692,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     let instance = Ergon::new_flow(pipeline, flow_id, Arc::clone(&storage));
 
-    let result = instance.execute(|p| p.run_etl_pipeline()).await??;
+    let result = instance
+        .executor()
+        .execute(|p| Box::pin(p.clone().run_etl_pipeline()))
+        .await??;
     let elapsed = start.elapsed();
 
     // Retrieve the analytics report from storage for JSON export

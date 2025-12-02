@@ -52,7 +52,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 /// An order processing flow with timed delays
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct TimedOrderProcessor {
     order_id: String,
     customer: String,
@@ -140,14 +140,14 @@ impl TimedOrderProcessor {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, FlowType)]
 struct OrderResult {
     order_id: String,
     status: String,
 }
 
 /// A trial expiry notification flow with timer
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct TrialExpiryNotification {
     user_id: String,
     email: String,

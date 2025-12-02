@@ -27,15 +27,13 @@
 //! cargo run --example depends_on_inputs_precedence
 //! ```
 
-use ergon::Ergon;
-use ergon::{flow, step};
-use ergon::{ExecutionLog, InMemoryExecutionLog};
+use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct PrecedenceTest {
     id: String,
 }
@@ -287,7 +285,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test1 = Arc::new(PrecedenceTest::new("case1".to_string()));
     let start1 = Instant::now();
     let instance1 = Ergon::new_flow(Arc::clone(&test1), Uuid::new_v4(), Arc::clone(&storage));
-    let result1 = instance1.execute(|f| f.run_case1()).await;
+    let result1 = instance1
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_case1()))
+        .await;
     let elapsed1 = start1.elapsed();
 
     println!("\nResult: {:?}", result1);
@@ -314,7 +315,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test2 = Arc::new(PrecedenceTest::new("case2".to_string()));
     let start2 = Instant::now();
     let instance2 = Ergon::new_flow(Arc::clone(&test2), Uuid::new_v4(), Arc::clone(&storage));
-    let result2 = instance2.execute(|f| f.run_case2()).await;
+    let result2 = instance2
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_case2()))
+        .await;
     let elapsed2 = start2.elapsed();
 
     println!("\nResult: {:?}", result2);
@@ -342,7 +346,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test3 = Arc::new(PrecedenceTest::new("case3".to_string()));
     let start3 = Instant::now();
     let instance3 = Ergon::new_flow(Arc::clone(&test3), Uuid::new_v4(), Arc::clone(&storage));
-    let result3 = instance3.execute(|f| f.run_case3()).await;
+    let result3 = instance3
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_case3()))
+        .await;
     let elapsed3 = start3.elapsed();
 
     println!("\nResult: {:?}", result3);
@@ -376,7 +383,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test4 = Arc::new(PrecedenceTest::new("case4".to_string()));
     let start4 = Instant::now();
     let instance4 = Ergon::new_flow(Arc::clone(&test4), Uuid::new_v4(), Arc::clone(&storage));
-    let result4 = instance4.execute(|f| f.run_case4()).await;
+    let result4 = instance4
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_case4()))
+        .await;
     let elapsed4 = start4.elapsed();
 
     println!("\nResult: {:?}", result4);
@@ -402,7 +412,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test5 = Arc::new(PrecedenceTest::new("case5".to_string()));
     let start5 = Instant::now();
     let instance5 = Ergon::new_flow(Arc::clone(&test5), Uuid::new_v4(), Arc::clone(&storage));
-    let result5 = instance5.execute(|f| f.run_case5()).await;
+    let result5 = instance5
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_case5()))
+        .await;
     let elapsed5 = start5.elapsed();
 
     println!("\nResult: {:?}", result5);
@@ -430,7 +443,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test6 = Arc::new(PrecedenceTest::new("case6".to_string()));
     let start6 = Instant::now();
     let instance6 = Ergon::new_flow(Arc::clone(&test6), Uuid::new_v4(), Arc::clone(&storage));
-    let result6 = instance6.execute(|f| f.run_case6()).await;
+    let result6 = instance6
+        .executor()
+        .execute(|f| Box::pin(f.clone().run_case6()))
+        .await;
     let elapsed6 = start6.elapsed();
 
     println!("\nResult: {:?}", result6);

@@ -42,7 +42,7 @@ use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct OrderFlow {
     order_id: String,
     amount: f64,
@@ -99,7 +99,7 @@ impl OrderFlow {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct ShippingFlow {
     order_id: String,
     address: String,

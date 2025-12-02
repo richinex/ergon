@@ -56,7 +56,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct DataProcessor {
     job_id: String,
     data_size_mb: u32,
@@ -106,7 +106,7 @@ impl DataProcessor {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct EmailTask {
     recipient: String,
     subject: String,

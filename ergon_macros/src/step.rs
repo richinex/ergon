@@ -20,8 +20,10 @@ use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
 
 /// The `#[step]` macro marks an async function as a step in a workflow.
 ///
-/// Steps execute **sequentially by default** based on registration order.
-/// Use explicit `depends_on` to enable parallel execution.
+/// Dependencies must be **explicitly declared** using `depends_on`:
+/// - **No dependencies**: Steps without `depends_on` run in parallel
+/// - **Explicit dependencies**: `depends_on = "step"` creates a sequential dependency
+/// - **Multiple dependencies**: `depends_on = ["step_a", "step_b"]` waits for all
 ///
 /// # Using self: Arc<Self>
 ///
@@ -43,11 +45,14 @@ use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
 ///
 /// # Execution Behavior
 ///
-/// **Without `depends_on`**: Step auto-depends on the previously registered step
-/// (sequential execution).
+/// **Without `depends_on` attribute**: Step has no dependencies and runs immediately
+/// in parallel with other independent steps.
 ///
-/// **With `depends_on`**: Step depends on explicitly named steps. Multiple steps
-/// with the same dependency run in parallel.
+/// **With explicit dependencies**: `depends_on = "step"` makes the step wait for the
+/// named step to complete. Multiple steps with the same dependency run in parallel.
+///
+/// **Sequential execution**: To make steps run sequentially, explicitly declare each
+/// dependency: `depends_on = "previous_step"`.
 ///
 /// # Input Wiring
 ///
@@ -178,9 +183,6 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Auto-include steps from 'inputs' as dependencies
     let mut all_deps: Vec<String> = args.depends_on.clone();
 
-    // Track if depends_on was explicitly set to empty (to disable auto-chain)
-    let has_explicit_empty_depends_on = args.has_explicit_empty_depends_on;
-
     // Add input step names to dependencies (if not already present)
     for input_step in args.inputs.values() {
         if !all_deps.contains(input_step) {
@@ -188,11 +190,8 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    let deps_array = if all_deps.is_empty() && has_explicit_empty_depends_on {
-        // Explicit depends_on = [] -> disable auto-chaining
-        quote! { &["__NO_AUTO_CHAIN__"] }
-    } else if all_deps.is_empty() {
-        // No depends_on specified -> allow auto-chaining
+    // Build dependencies array - always use register() with explicit deps
+    let deps_array = if all_deps.is_empty() {
         quote! { &[] }
     } else {
         quote! { &[#(#all_deps),*] }

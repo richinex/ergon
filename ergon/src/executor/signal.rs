@@ -11,15 +11,15 @@
 use super::context::{ExecutionContext, CALL_TYPE, EXECUTION_CONTEXT};
 use super::error::{ExecutionError, Result};
 use crate::core::{deserialize_value, CallType, InvocationStatus};
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
 lazy_static::lazy_static! {
-    pub(super) static ref WAIT_NOTIFIERS: Mutex<HashMap<Uuid, Arc<Notify>>> = Mutex::new(HashMap::new());
-    pub(super) static ref RESUME_PARAMS: Mutex<HashMap<Uuid, Vec<u8>>> = Mutex::new(HashMap::new());
+    pub(super) static ref WAIT_NOTIFIERS: DashMap<Uuid, Arc<Notify>> = DashMap::new();
+    pub(super) static ref RESUME_PARAMS: DashMap<Uuid, Vec<u8>> = DashMap::new();
 }
 
 /// Wrapper type for step futures that return Option<R>.
@@ -87,15 +87,17 @@ where
 /// ```
 ///
 /// # Panics
-/// Panics if called outside of an execution context (i.e., not within a flow).
+/// - Panics if called outside of an execution context (i.e., not within a flow)
+/// - Panics if the step returns None in Resume mode (framework error)
+/// - Panics if awaiting the signal fails (storage or deserialization error)
 pub async fn await_external_signal<Fut, R>(step_future: StepFuture<Fut>) -> R
 where
     Fut: std::future::Future<Output = Option<R>>,
     R: serde::Serialize + for<'de> serde::Deserialize<'de>,
 {
-    let ctx = EXECUTION_CONTEXT
-        .try_with(|c| c.clone())
-        .expect("await_external_signal called outside execution context");
+    let ctx = EXECUTION_CONTEXT.try_with(|c| c.clone()).expect(
+        "BUG: await_external_signal called outside execution context - this is a framework error",
+    );
 
     // Get the current step number (peek without incrementing)
     let current_step = ctx.step_counter.load(Ordering::SeqCst);
@@ -113,7 +115,8 @@ where
             // We're resuming - execute the step
             let result = CALL_TYPE.scope(CallType::Resume, step_future.inner).await;
             // In Resume mode, step should return Some(value)
-            return result.expect("Step returned None in Resume mode");
+            return result
+                .expect("BUG: Step returned None in Resume mode - step implementation error");
         }
     }
 
@@ -126,7 +129,8 @@ where
             match result {
                 None => {
                     // Step is awaiting - wait for external signal
-                    ctx.await_signal().await.unwrap()
+                    ctx.await_signal().await
+                        .expect("Failed to await external signal - check storage and signal_resume parameters")
                 }
                 Some(value) => {
                     // Step completed immediately (shouldn't happen in Await mode)
@@ -143,26 +147,18 @@ impl<S: crate::storage::ExecutionLog> ExecutionContext<S> {
     /// This method is called internally by `await_external_signal` to block
     /// until a signal is received via `signal_resume`.
     pub(super) async fn await_signal<R: for<'de> serde::Deserialize<'de>>(&self) -> Result<R> {
-        let notifier = {
-            let mut notifiers = WAIT_NOTIFIERS
-                .lock()
-                .expect("WAIT_NOTIFIERS Mutex poisoned - unrecoverable state");
-            notifiers
-                .entry(self.id)
-                .or_insert_with(|| Arc::new(Notify::new()))
-                .clone()
-        };
+        let notifier = WAIT_NOTIFIERS
+            .entry(self.id)
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .value()
+            .clone();
 
         notifier.notified().await;
 
-        let params = {
-            let mut resume_params = RESUME_PARAMS
-                .lock()
-                .expect("RESUME_PARAMS Mutex poisoned - unrecoverable state");
-            resume_params
-                .remove(&self.id)
-                .ok_or_else(|| ExecutionError::Failed("No resume parameters found".to_string()))?
-        };
+        let params = RESUME_PARAMS
+            .remove(&self.id)
+            .map(|(_, v)| v)
+            .ok_or_else(|| ExecutionError::Failed("No resume parameters found".to_string()))?;
 
         let result: R = deserialize_value(&params)?;
         Ok(result)

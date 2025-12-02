@@ -12,7 +12,7 @@ use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct ComputeTask {
     task_id: String,
     value: i32,

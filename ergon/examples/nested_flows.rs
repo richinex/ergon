@@ -38,7 +38,7 @@ use std::time::Duration;
 // PARENT FLOW: Orchestrates the entire order processing
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct OrderProcessor {
     order_id: String,
     items: Vec<String>,
@@ -172,7 +172,7 @@ impl OrderProcessor {
 // CHILD FLOW: Independent payment processing
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct PaymentFlow {
     transaction_id: String,
     amount: f64,
@@ -245,7 +245,7 @@ impl PaymentFlow {
 // CHILD FLOW: Independent inventory management
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct InventoryFlow {
     reservation_id: String,
     items: Vec<String>,
@@ -327,63 +327,63 @@ impl InventoryFlow {
 // Data structures
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct ValidationResult {
     order_id: String,
     validated_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct PaymentInfo {
     transaction_id: String,
     amount: f64,
     status: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct InventoryReservation {
     reservation_id: String,
     items: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct OrderResult {
     order_id: String,
     status: String,
     items_count: usize,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct AuthResult {
     auth_code: String,
     authorized_amount: f64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct CaptureResult {
     capture_id: String,
     captured_amount: f64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct PaymentResult {
     transaction_id: String,
     status: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct StockCheck {
     all_available: bool,
     items: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, FlowType)]
 struct ReservationData {
     reservation_id: String,
     items: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct InventoryResult {
     reservation_id: String,
     status: String,

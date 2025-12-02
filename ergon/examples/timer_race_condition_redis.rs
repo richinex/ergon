@@ -38,7 +38,7 @@ use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct RaceConditionFlow {
     id: String,
 }
@@ -123,7 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let instance = FlowInstance::new(flow_id, flow, storage_clone);
 
             let start = std::time::Instant::now();
-            let result = instance.execute(|f| Arc::new(f).test_race()).await;
+            let result = instance
+                .executor()
+                .execute(|f| Arc::new(f).test_race())
+                .await;
             let elapsed = start.elapsed();
             (i, result, elapsed)
         });
