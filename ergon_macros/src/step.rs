@@ -526,12 +526,11 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 // For DAG steps, use a stable step ID derived from the step name
                                 // This ensures consistent IDs across executions even when parallel steps
                                 // execute in different orders
+                                //
+                                // Uses seahash for stable hashing across Rust versions.
+                                // Masking with 0x7FFFFFFF ensures positive i32 without the i32::MIN.abs() bug.
                                 let __step = {
-                                    use std::collections::hash_map::DefaultHasher;
-                                    use std::hash::{Hash, Hasher};
-                                    let mut hasher = DefaultHasher::new();
-                                    #step_name_str.hash(&mut hasher);
-                                    (hasher.finish() as i32).abs()
+                                    (seahash::hash(#step_name_str.as_bytes()) & 0x7FFFFFFF) as i32
                                 };
                                 let __class_name = "DagStep";
 

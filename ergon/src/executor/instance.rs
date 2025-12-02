@@ -115,7 +115,7 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
         F: FnOnce(&T) -> std::pin::Pin<Box<dyn std::future::Future<Output = R> + Send + '_>>,
         R: Send + 'static,
     {
-        let ctx = FlowContext::new(self.id, Arc::clone(&self.storage));
+        let ctx = FlowContext::new(self.id, self.storage.clone());
         let result = ctx.run_scoped(|| async { f(self.flow).await }).await;
         Ok(result)
     }
@@ -144,7 +144,7 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
         F: FnOnce(&T) -> R,
         R: Send + 'static,
     {
-        let ctx = FlowContext::new(self.id, Arc::clone(&self.storage));
+        let ctx = FlowContext::new(self.id, self.storage.clone());
         let result = ctx.run_sync_scoped(|| f(self.flow));
         Ok(result)
     }
@@ -182,7 +182,7 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
             return Err(ExecutionError::Failed("No invocation found".to_string()));
         }
 
-        let ctx = FlowContext::new(self.id, Arc::clone(&self.storage));
+        let ctx = FlowContext::new(self.id, self.storage.clone());
         ctx.resume_scoped(|| async { f(self.flow).await }).await;
 
         Ok(())

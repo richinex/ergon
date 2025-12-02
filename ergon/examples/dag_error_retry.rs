@@ -224,11 +224,13 @@ impl OrderProcessor {
     /// Main DAG flow - the macro handles all orchestration
     #[flow]
     async fn process_order(self: Arc<Self>) -> Result<OrderResult, String> {
-        // Just list the steps - macro handles registry, execution, and result resolution
-        self.register_validate_customer();
-        self.register_check_inventory();
-        self.register_authorize_payment();
-        self.register_finalize_order()
+        dag! {
+            // Just list the steps - macro handles registry, execution, and result resolution
+            self.register_validate_customer();
+            self.register_check_inventory();
+            self.register_authorize_payment();
+            self.register_finalize_order()
+        }
     }
 }
 

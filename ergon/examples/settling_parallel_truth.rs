@@ -55,9 +55,11 @@ impl TestFlow {
 
     #[flow]
     async fn run_case1(self: Arc<Self>) -> Result<String, String> {
-        self.register_case1_extract_a(); // 1st registration: no deps
-        self.register_case1_extract_b(); // 2nd registration: auto-chain?
-        self.register_case1_merge() // 3rd registration: inputs(a, b)
+        dag! {
+            self.register_case1_extract_a(); // 1st registration: no deps
+            self.register_case1_extract_b(); // 2nd registration: auto-chain?
+            self.register_case1_merge() // 3rd registration: inputs(a, b)
+        }
     }
 
     // =========================================================================
@@ -101,10 +103,12 @@ impl TestFlow {
 
     #[flow]
     async fn run_case2(self: Arc<Self>) -> Result<String, String> {
-        self.register_case2_root();
-        self.register_case2_extract_a(); // depends_on = "root"
-        self.register_case2_extract_b(); // depends_on = "root"
-        self.register_case2_merge() // inputs(a, b)
+        dag! {
+            self.register_case2_root();
+            self.register_case2_extract_a(); // depends_on = "root"
+            self.register_case2_extract_b(); // depends_on = "root"
+            self.register_case2_merge() // inputs(a, b)
+        }
     }
 
     // =========================================================================
@@ -148,10 +152,12 @@ impl TestFlow {
 
     #[flow]
     async fn run_case3(self: Arc<Self>) -> Result<String, String> {
-        self.register_case3_root();
-        self.register_case3_extract_a(); // inputs(config = "root")
-        self.register_case3_extract_b(); // inputs(config = "root")
-        self.register_case3_merge() // inputs(a, b)
+        dag! {
+            self.register_case3_root();
+            self.register_case3_extract_a(); // inputs(config = "root")
+            self.register_case3_extract_b(); // inputs(config = "root")
+            self.register_case3_merge() // inputs(a, b)
+        }
     }
 
     // =========================================================================
@@ -186,9 +192,11 @@ impl TestFlow {
 
     #[flow]
     async fn run_case4(self: Arc<Self>) -> Result<String, String> {
-        self.register_case4_extract_a();
-        self.register_case4_extract_b(); // depends_on = [] → NO auto-chain!
-        self.register_case4_merge() // inputs(a, b)
+        dag! {
+            self.register_case4_extract_a();
+            self.register_case4_extract_b(); // depends_on = [] → NO auto-chain!
+            self.register_case4_merge() // inputs(a, b)
+        }
     }
 }
 

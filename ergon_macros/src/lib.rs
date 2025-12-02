@@ -47,7 +47,7 @@ pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[flow]
-/// async fn process(&self) -> OrderResult {
+/// async fn process(&self) -> Result<OrderResult, String> {
 ///     let mut registry = DeferredRegistry::new();
 ///
 ///     let customer_handle = self.register_get_customer(&mut registry);
@@ -55,9 +55,8 @@ pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     let check_handle = self.register_check(&mut registry);
 ///     let final_handle = self.register_finalize(&mut registry);
 ///
-///     registry.execute().await.expect("DAG execution failed");
-///
-///     final_handle.resolve().await.expect("Failed to get result")
+///     registry.execute().await.map_err(|e| e.to_string())?;
+///     final_handle.resolve().await.map_err(|e| e.to_string())?
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -90,7 +89,7 @@ pub fn derive_flow_type(input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[flow]
-/// async fn process(self: Arc<Self>) -> OrderResult {
+/// async fn process(self: Arc<Self>) -> Result<OrderResult, String> {
 ///     dag! {
 ///         self.register_get_customer();
 ///         self.register_validate_payment();
@@ -110,8 +109,8 @@ pub fn derive_flow_type(input: TokenStream) -> TokenStream {
 ///     self.register_check_inventory(&mut registry);
 ///     self.register_process_order(&mut registry);
 ///     let final_handle = self.register_send_confirmation(&mut registry);
-///     registry.execute().await.expect("DAG execution failed");
-///     final_handle.resolve().await.expect("Failed to get result")
+///     registry.execute().await.map_err(|e| e.to_string())?;
+///     final_handle.resolve().await.map_err(|e| e.to_string())?
 /// }
 /// ```
 #[proc_macro]
@@ -159,20 +158,41 @@ pub fn dag(input: TokenStream) -> TokenStream {
     let intermediate_calls = &calls[..calls.len() - 1];
 
     // Transform each call to add &mut registry parameter
+    // The input is like: self.register_foo()
+    // We need to transform it to: self.register_foo(&mut __registry)
     let intermediate_stmts: Vec<TokenStream2> = intermediate_calls
         .iter()
         .map(|call| {
-            quote! { #call(&mut __registry); }
+            if let Expr::MethodCall(ref method_call) = call {
+                let receiver = &method_call.receiver;
+                let method = &method_call.method;
+                let turbofish = &method_call.turbofish;
+                // Insert &mut __registry as first argument
+                quote! { #receiver.#method #turbofish(&mut __registry); }
+            } else {
+                // Not a method call, pass through as-is
+                quote! { #call; }
+            }
         })
         .collect();
+
+    // Handle the last call the same way
+    let final_call_stmt = if let Expr::MethodCall(ref method_call) = last_call {
+        let receiver = &method_call.receiver;
+        let method = &method_call.method;
+        let turbofish = &method_call.turbofish;
+        quote! { #receiver.#method #turbofish(&mut __registry) }
+    } else {
+        quote! { #last_call }
+    };
 
     let expanded = quote! {
         {
             let mut __registry = ergon::DeferredRegistry::new();
             #(#intermediate_stmts)*
-            let __final_handle = #last_call(&mut __registry);
-            __registry.execute().await.expect("DAG execution failed");
-            __final_handle.resolve().await.expect("Failed to resolve final result")
+            let __final_handle = #final_call_stmt;
+            __registry.execute().await.map_err(|e| e.to_string())?;
+            __final_handle.resolve().await.map_err(|e| e.to_string())?
         }
     };
 

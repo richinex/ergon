@@ -12,7 +12,8 @@ use super::error::{format_params_preview, ExecutionError, Result};
 use super::signal::{RESUME_PARAMS, WAIT_NOTIFIERS};
 use super::timer::TIMER_NOTIFIERS;
 use crate::core::{
-    deserialize_value, hash_params, serialize_value, CallType, InvocationStatus, RetryPolicy,
+    deserialize_value, hash_params, serialize_value, CallType, Invocation, InvocationStatus,
+    RetryPolicy,
 };
 use crate::graph::{FlowGraph, GraphResult, StepId};
 use crate::storage::{ExecutionLog, InvocationStartParams};
@@ -40,7 +41,7 @@ tokio::task_local! {
 }
 
 tokio::task_local! {
-    pub static EXECUTION_CONTEXT: Arc<ExecutionContext<Box<dyn ExecutionLog>>>;
+    pub static EXECUTION_CONTEXT: Arc<ExecutionContext>;
 }
 
 /// Execution context for a single flow instance.
@@ -48,14 +49,14 @@ tokio::task_local! {
 /// This struct holds the state needed during flow execution, including
 /// the flow ID, storage backend, and step counter.
 ///
-/// The generic parameter `S` allows for monomorphization over concrete storage
-/// types, enabling compiler optimizations like inlining and devirtualization
-/// for hot paths.
-pub struct ExecutionContext<S: ExecutionLog> {
+/// Uses Arc<dyn ExecutionLog> for storage to enable task-local context
+/// without type erasure overhead. Storage implementations still benefit
+/// from monomorphization at their level.
+pub struct ExecutionContext {
     /// The unique identifier for this flow execution.
     pub id: Uuid,
     /// The storage backend for persisting invocation logs.
-    pub storage: Arc<S>,
+    pub storage: Arc<dyn ExecutionLog>,
     /// Atomic step counter to prevent race conditions.
     /// Using AtomicI32 instead of RwLock<i32> for lock-free increment operations.
     pub(super) step_counter: AtomicI32,
@@ -64,9 +65,9 @@ pub struct ExecutionContext<S: ExecutionLog> {
     dependency_graph: RwLock<FlowGraph>,
 }
 
-impl<S: ExecutionLog> ExecutionContext<S> {
+impl ExecutionContext {
     /// Creates a new execution context for a flow.
-    pub fn new(id: Uuid, storage: Arc<S>) -> Self {
+    pub fn new(id: Uuid, storage: Arc<dyn ExecutionLog>) -> Self {
         Self {
             id,
             storage,
@@ -148,9 +149,16 @@ impl<S: ExecutionLog> ExecutionContext<S> {
     /// Since `next_step()` increments the counter, the current value is one ahead,
     /// so we subtract 1 to get the last allocated step.
     ///
+    /// Returns `None` if no steps have been allocated yet (counter is still 0).
+    ///
     /// Use this when you need to reference the step that was just registered.
-    pub fn last_allocated_step(&self) -> i32 {
-        self.current_step() - 1
+    pub fn last_allocated_step(&self) -> Option<i32> {
+        let current = self.current_step();
+        if current > 0 {
+            Some(current - 1)
+        } else {
+            None
+        }
     }
 
     /// Log the start of a step invocation.
@@ -208,11 +216,75 @@ impl<S: ExecutionLog> ExecutionContext<S> {
         Ok(())
     }
 
-    /// Get a cached result for a step if it exists and is complete.
+    /// Validates that an invocation matches the expected class/method and parameters.
     ///
-    /// This method validates that:
+    /// This method checks for non-determinism by validating:
     /// 1. The class and method names match the stored invocation
     /// 2. The parameter values hash matches (detects Option<Some> vs Option<None>, etc.)
+    ///
+    /// # Errors
+    /// Returns `ExecutionError::Incompatible` if:
+    /// - Class/method name mismatch (control flow changed)
+    /// - Parameter hash mismatch (same method called with different args)
+    fn validate_invocation<P: serde::Serialize>(
+        &self,
+        inv: &Invocation,
+        step: i32,
+        class_name: &str,
+        method_name: &str,
+        current_params: &P,
+    ) -> Result<()> {
+        // Validate that the same method is being executed at this step
+        // This detects non-determinism where control flow takes a different path on replay
+        if inv.class_name() != class_name || inv.method_name() != method_name {
+            return Err(ExecutionError::Incompatible(format!(
+                "Non-determinism detected at step {}: expected {}.{}, but stored invocation is {}.{}. \
+                 This typically happens when control flow depends on non-deterministic values \
+                 (like current time, random numbers, or external state) that weren't captured as steps.",
+                step,
+                class_name,
+                method_name,
+                inv.class_name(),
+                inv.method_name()
+            )));
+        }
+
+        // Validate that the parameter values match
+        // This detects non-determinism where the same method is called with different arguments
+        // (e.g., Option<Some> vs Option<None> based on external state)
+        let current_params_bytes = serialize_value(current_params)?;
+        let current_params_hash = hash_params(&current_params_bytes);
+        if inv.params_hash() != current_params_hash {
+            // Format parameter bytes for debugging (show first 64 bytes as hex)
+            let stored_params = inv.parameters();
+            let stored_preview = format_params_preview(stored_params);
+            let current_preview = format_params_preview(&current_params_bytes);
+
+            return Err(ExecutionError::Incompatible(format!(
+                "Non-determinism detected at step {}: {}.{} called with different parameter values.\n\
+                 Stored params:  {} (hash: 0x{:016x})\n\
+                 Current params: {} (hash: 0x{:016x})\n\
+                 This typically happens when parameter values depend on non-deterministic state \
+                 (like Option<Some> vs Option<None> based on external conditions).",
+                step,
+                class_name,
+                method_name,
+                stored_preview,
+                inv.params_hash(),
+                current_preview,
+                current_params_hash
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Get a cached result for a step if it exists and is complete.
+    ///
+    /// This method:
+    /// 1. Fetches the invocation from storage
+    /// 2. Validates it matches the current execution (via `validate_invocation`)
+    /// 3. Returns the cached result if the step is complete
     ///
     /// # Errors
     /// Returns `ExecutionError::Incompatible` if the stored invocation has a different
@@ -231,48 +303,10 @@ impl<S: ExecutionLog> ExecutionContext<S> {
             .map_err(ExecutionError::Storage)?;
 
         if let Some(inv) = invocation {
-            // Validate that the same method is being executed at this step
-            // This detects non-determinism where control flow takes a different path on replay
-            if inv.class_name() != class_name || inv.method_name() != method_name {
-                return Err(ExecutionError::Incompatible(format!(
-                    "Non-determinism detected at step {}: expected {}.{}, but stored invocation is {}.{}. \
-                     This typically happens when control flow depends on non-deterministic values \
-                     (like current time, random numbers, or external state) that weren't captured as steps.",
-                    step,
-                    class_name,
-                    method_name,
-                    inv.class_name(),
-                    inv.method_name()
-                )));
-            }
+            // Validate the invocation matches current execution
+            self.validate_invocation(&inv, step, class_name, method_name, current_params)?;
 
-            // Validate that the parameter values match
-            // This detects non-determinism where the same method is called with different arguments
-            // (e.g., Option<Some> vs Option<None> based on external state)
-            let current_params_bytes = serialize_value(current_params)?;
-            let current_params_hash = hash_params(&current_params_bytes);
-            if inv.params_hash() != current_params_hash {
-                // Format parameter bytes for debugging (show first 64 bytes as hex)
-                let stored_params = inv.parameters();
-                let stored_preview = format_params_preview(stored_params);
-                let current_preview = format_params_preview(&current_params_bytes);
-
-                return Err(ExecutionError::Incompatible(format!(
-                    "Non-determinism detected at step {}: {}.{} called with different parameter values.\n\
-                     Stored params:  {} (hash: 0x{:016x})\n\
-                     Current params: {} (hash: 0x{:016x})\n\
-                     This typically happens when parameter values depend on non-deterministic state \
-                     (like Option<Some> vs Option<None> based on external conditions).",
-                    step,
-                    class_name,
-                    method_name,
-                    stored_preview,
-                    inv.params_hash(),
-                    current_preview,
-                    current_params_hash
-                )));
-            }
-
+            // Return cached result if step is complete
             if inv.status() == InvocationStatus::Complete {
                 if let Some(return_bytes) = inv.return_value() {
                     let result: R = deserialize_value(return_bytes)?;
@@ -295,12 +329,12 @@ impl<S: ExecutionLog> ExecutionContext<S> {
     }
 
     /// Returns a reference to the storage backend.
-    pub fn storage(&self) -> &Arc<S> {
+    pub fn storage(&self) -> &Arc<dyn ExecutionLog> {
         &self.storage
     }
 }
 
-impl<S: ExecutionLog> Drop for ExecutionContext<S> {
+impl Drop for ExecutionContext {
     /// Clean up notifiers when the execution context is dropped.
     ///
     /// This prevents memory leaks when flows are cancelled or aborted
@@ -323,29 +357,26 @@ impl<S: ExecutionLog> Drop for ExecutionContext<S> {
 /// FlowContext encapsulates the task-local context propagation mechanism,
 /// providing a clean interface for running code within an execution context.
 /// This separates the "how" of context management from the "what" of flow execution.
-///
-/// The generic parameter `S` allows for monomorphization over concrete storage
-/// types, enabling compiler optimizations.
-pub struct FlowContext<S: ExecutionLog> {
+pub struct FlowContext {
     /// The execution context for this flow.
-    context: Arc<ExecutionContext<S>>,
+    context: Arc<ExecutionContext>,
 }
 
-impl<S: ExecutionLog + 'static> FlowContext<S> {
+impl FlowContext {
     /// Creates a new FlowContext for the given flow ID and storage backend.
-    pub fn new(id: Uuid, storage: Arc<S>) -> Self {
+    pub fn new(id: Uuid, storage: Arc<dyn ExecutionLog>) -> Self {
         Self {
             context: Arc::new(ExecutionContext::new(id, storage)),
         }
     }
 
     /// Creates a FlowContext from an existing ExecutionContext.
-    pub fn from_context(context: Arc<ExecutionContext<S>>) -> Self {
+    pub fn from_context(context: Arc<ExecutionContext>) -> Self {
         Self { context }
     }
 
     /// Returns a reference to the underlying ExecutionContext.
-    pub fn execution_context(&self) -> &Arc<ExecutionContext<S>> {
+    pub fn execution_context(&self) -> &Arc<ExecutionContext> {
         &self.context
     }
 
@@ -353,20 +384,14 @@ impl<S: ExecutionLog + 'static> FlowContext<S> {
     ///
     /// This method sets up the task-local EXECUTION_CONTEXT and CALL_TYPE,
     /// executes the provided future, and properly cleans up afterward.
-    ///
-    /// Note: Due to task-local requirements, the context is type-erased to
-    /// `Box<dyn ExecutionLog>` for storage in the task-local variable.
     pub async fn run_scoped<F, Fut, R>(&self, f: F) -> R
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = R>,
     {
-        // Create a type-erased context for the task-local
-        let erased_ctx = self.create_erased_context();
-
         EXECUTION_CONTEXT
             .scope(
-                erased_ctx,
+                Arc::clone(&self.context),
                 CALL_TYPE.scope(CallType::Run, async { f().await }),
             )
             .await
@@ -380,11 +405,9 @@ impl<S: ExecutionLog + 'static> FlowContext<S> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = R>,
     {
-        let erased_ctx = self.create_erased_context();
-
         EXECUTION_CONTEXT
             .scope(
-                erased_ctx,
+                Arc::clone(&self.context),
                 CALL_TYPE.scope(CallType::Resume, async { f().await }),
             )
             .await
@@ -409,119 +432,13 @@ impl<S: ExecutionLog + 'static> FlowContext<S> {
              Cannot use #[tokio::main] due to nested block_on restriction.",
         );
 
-        let erased_ctx = self.create_erased_context();
-
         handle.block_on(async {
             EXECUTION_CONTEXT
-                .scope(erased_ctx, CALL_TYPE.scope(CallType::Run, async { f() }))
+                .scope(
+                    Arc::clone(&self.context),
+                    CALL_TYPE.scope(CallType::Run, async { f() }),
+                )
                 .await
         })
-    }
-
-    /// Creates a type-erased execution context for the task-local.
-    ///
-    /// This is necessary because task_local! requires a concrete type,
-    /// but we want to support any storage backend `S: ExecutionLog`.
-    fn create_erased_context(&self) -> Arc<ExecutionContext<Box<dyn ExecutionLog>>> {
-        let boxed_storage: Box<dyn ExecutionLog> =
-            Box::new(StorageWrapper(Arc::clone(&self.context.storage)));
-        Arc::new(ExecutionContext::new(
-            self.context.id,
-            Arc::new(boxed_storage),
-        ))
-    }
-}
-
-/// Wrapper to allow `Arc<S>` to be used as a `Box<dyn ExecutionLog>`.
-///
-/// This wrapper delegates all `ExecutionLog` methods to the inner storage.
-struct StorageWrapper<S: ExecutionLog>(Arc<S>);
-
-#[async_trait::async_trait]
-impl<S: ExecutionLog> ExecutionLog for StorageWrapper<S> {
-    async fn log_invocation_start(
-        &self,
-        params: crate::storage::InvocationStartParams<'_>,
-    ) -> crate::storage::Result<()> {
-        self.0.log_invocation_start(params).await
-    }
-
-    async fn log_invocation_completion(
-        &self,
-        id: Uuid,
-        step: i32,
-        return_value: &[u8],
-    ) -> crate::storage::Result<crate::core::Invocation> {
-        self.0
-            .log_invocation_completion(id, step, return_value)
-            .await
-    }
-
-    async fn get_invocation(
-        &self,
-        id: Uuid,
-        step: i32,
-    ) -> crate::storage::Result<Option<crate::core::Invocation>> {
-        self.0.get_invocation(id, step).await
-    }
-
-    async fn get_latest_invocation(
-        &self,
-        id: Uuid,
-    ) -> crate::storage::Result<Option<crate::core::Invocation>> {
-        self.0.get_latest_invocation(id).await
-    }
-
-    async fn get_invocations_for_flow(
-        &self,
-        id: Uuid,
-    ) -> crate::storage::Result<Vec<crate::core::Invocation>> {
-        self.0.get_invocations_for_flow(id).await
-    }
-
-    async fn get_incomplete_flows(&self) -> crate::storage::Result<Vec<crate::core::Invocation>> {
-        self.0.get_incomplete_flows().await
-    }
-
-    async fn has_non_retryable_error(&self, flow_id: Uuid) -> crate::storage::Result<bool> {
-        self.0.has_non_retryable_error(flow_id).await
-    }
-
-    async fn update_is_retryable(
-        &self,
-        id: Uuid,
-        step: i32,
-        is_retryable: bool,
-    ) -> crate::storage::Result<()> {
-        self.0.update_is_retryable(id, step, is_retryable).await
-    }
-
-    async fn reset(&self) -> crate::storage::Result<()> {
-        self.0.reset().await
-    }
-
-    async fn close(&self) -> crate::storage::Result<()> {
-        self.0.close().await
-    }
-
-    async fn get_expired_timers(
-        &self,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> crate::storage::Result<Vec<crate::storage::TimerInfo>> {
-        self.0.get_expired_timers(now).await
-    }
-
-    async fn claim_timer(&self, flow_id: Uuid, step: i32) -> crate::storage::Result<bool> {
-        self.0.claim_timer(flow_id, step).await
-    }
-
-    async fn log_timer(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        fire_at: chrono::DateTime<chrono::Utc>,
-        timer_name: Option<&str>,
-    ) -> crate::storage::Result<()> {
-        self.0.log_timer(flow_id, step, fire_at, timer_name).await
     }
 }

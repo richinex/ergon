@@ -649,24 +649,26 @@ impl RetailETLPipeline {
 
     #[flow]
     async fn run_etl_pipeline(self: Arc<Self>) -> Result<WarehouseLoadResult, String> {
-        // Extract phase
-        self.register_extract_customer_data();
-        self.register_extract_sales_data();
-        self.register_extract_product_data();
+        dag! {
+            // Extract phase
+            self.register_extract_customer_data();
+            self.register_extract_sales_data();
+            self.register_extract_product_data();
 
-        // Transform phase - Silver layer
-        self.register_validate_customers();
-        self.register_cleanse_sales();
-        self.register_enrich_product_data();
+            // Transform phase - Silver layer
+            self.register_validate_customers();
+            self.register_cleanse_sales();
+            self.register_enrich_product_data();
 
-        // Transform phase - Gold layer
-        self.register_join_sales_with_products();
-        self.register_aggregate_by_region();
-        self.register_calculate_customer_metrics();
+            // Transform phase - Gold layer
+            self.register_join_sales_with_products();
+            self.register_aggregate_by_region();
+            self.register_calculate_customer_metrics();
 
-        // Load phase
-        self.register_generate_analytics_report();
-        self.register_persist_to_warehouse()
+            // Load phase
+            self.register_generate_analytics_report();
+            self.register_persist_to_warehouse()
+        }
     }
 }
 

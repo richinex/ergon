@@ -92,7 +92,9 @@ impl OrderWorkflow {
     #[step]
     async fn wait_for_processing(self: Arc<Self>) -> Result<(), String> {
         println!("[{}] Waiting 2 seconds before payment...", format_time());
-        schedule_timer_named(Duration::from_secs(2), "payment-delay").await;
+        schedule_timer_named(Duration::from_secs(2), "payment-delay")
+            .await
+            .map_err(|e| e.to_string())?;
         println!("[{}] Payment delay timer fired!", format_time());
         Ok(())
     }
@@ -106,7 +108,9 @@ impl OrderWorkflow {
     #[step]
     async fn wait_for_shipping(self: Arc<Self>) -> Result<(), String> {
         println!("[{}] Waiting 3 seconds before shipping...", format_time());
-        schedule_timer_named(Duration::from_secs(3), "shipping-delay").await;
+        schedule_timer_named(Duration::from_secs(3), "shipping-delay")
+            .await
+            .map_err(|e| e.to_string())?;
         println!("[{}] Shipping delay timer fired!", format_time());
         Ok(())
     }
@@ -123,7 +127,9 @@ impl OrderWorkflow {
             "[{}] Waiting 1 second before confirmation...",
             format_time()
         );
-        schedule_timer(Duration::from_secs(1)).await;
+        schedule_timer(Duration::from_secs(1))
+            .await
+            .map_err(|e| e.to_string())?;
         println!("[{}] Confirmation delay timer fired!", format_time());
         Ok(())
     }

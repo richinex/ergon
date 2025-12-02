@@ -1,14 +1,21 @@
 use super::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
-/// Compute a hash of serialized bytes for parameter comparison.
-/// Uses DefaultHasher which is fast and sufficient for non-cryptographic purposes.
+/// Compute a stable hash of serialized bytes for parameter comparison.
+///
+/// Uses SeaHash which provides:
+/// - Stable hashing across Rust compiler versions
+/// - Stable across process restarts and machines
+/// - Fast hashing for serialized parameters
+/// - Well-tested, battle-proven algorithm
+///
+/// This is critical for parameter comparison in flow replay - we need the same
+/// parameters to produce the same hash every time, regardless of Rust version.
+///
+/// Note: This is NOT cryptographically secure, but that's not needed here.
+/// We just need stable, fast hashing for equality checks.
 pub fn hash_params(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
+    seahash::hash(bytes)
 }
 
 /// Serializes a value to bytes using bincode.

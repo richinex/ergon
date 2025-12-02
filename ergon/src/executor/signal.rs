@@ -89,8 +89,10 @@ where
 /// # Panics
 /// - Panics if called outside of an execution context (i.e., not within a flow)
 /// - Panics if the step returns None in Resume mode (framework error)
-/// - Panics if awaiting the signal fails (storage or deserialization error)
-pub async fn await_external_signal<Fut, R>(step_future: StepFuture<Fut>) -> R
+///
+/// # Errors
+/// Returns an error if storage operations fail or signal parameters cannot be deserialized.
+pub async fn await_external_signal<Fut, R>(step_future: StepFuture<Fut>) -> Result<R>
 where
     Fut: std::future::Future<Output = Option<R>>,
     R: serde::Serialize + for<'de> serde::Deserialize<'de>,
@@ -115,8 +117,12 @@ where
             // We're resuming - execute the step
             let result = CALL_TYPE.scope(CallType::Resume, step_future.inner).await;
             // In Resume mode, step should return Some(value)
-            return result
-                .expect("BUG: Step returned None in Resume mode - step implementation error");
+            return result.ok_or_else(|| {
+                ExecutionError::Failed(
+                    "BUG: Step returned None in Resume mode - step implementation error"
+                        .to_string(),
+                )
+            });
         }
     }
 
@@ -130,18 +136,17 @@ where
                 None => {
                     // Step is awaiting - wait for external signal
                     ctx.await_signal().await
-                        .expect("Failed to await external signal - check storage and signal_resume parameters")
                 }
                 Some(value) => {
                     // Step completed immediately (shouldn't happen in Await mode)
-                    value
+                    Ok(value)
                 }
             }
         })
         .await
 }
 
-impl<S: crate::storage::ExecutionLog> ExecutionContext<S> {
+impl ExecutionContext {
     /// Wait for an external signal to resume flow execution.
     ///
     /// This method is called internally by `await_external_signal` to block

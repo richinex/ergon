@@ -66,7 +66,9 @@ impl RaceConditionFlow {
         );
 
         // Use 1ms timer - very likely to fire before await_timer starts waiting
-        schedule_timer(Duration::from_millis(1)).await;
+        schedule_timer(Duration::from_millis(1))
+            .await
+            .map_err(|e| e.to_string())?;
 
         println!(
             "[{}] Step {}: Timer completed (race handled correctly!)",
@@ -125,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let start = std::time::Instant::now();
             let result = instance
                 .executor()
-                .execute(|f| Arc::new(f).test_race())
+                .execute(|f| Box::pin(Arc::new(f.clone()).test_race()))
                 .await;
             let elapsed = start.elapsed();
             (i, result, elapsed)

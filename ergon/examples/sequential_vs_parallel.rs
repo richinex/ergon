@@ -50,9 +50,11 @@ impl Workflow {
 
     #[flow]
     async fn run_sequential(self: Arc<Self>) -> Result<String, String> {
-        self.register_seq_step1();
-        self.register_seq_step2(); // Waits for step1
-        self.register_seq_step3() // Waits for step2
+        dag! {
+            self.register_seq_step1();
+            self.register_seq_step2(); // Waits for step1
+            self.register_seq_step3() // Waits for step2
+        }
     }
 
     // =========================================================================
@@ -93,10 +95,12 @@ impl Workflow {
 
     #[flow]
     async fn run_parallel(self: Arc<Self>) -> Result<String, String> {
-        self.register_par_root();
-        self.register_par_branch1(); // Parallel with branch2
-        self.register_par_branch2(); // Parallel with branch1
-        self.register_par_merge() // Waits for both branches
+        dag! {
+            self.register_par_root();
+            self.register_par_branch1(); // Parallel with branch2
+            self.register_par_branch2(); // Parallel with branch1
+            self.register_par_merge() // Waits for both branches
+        }
     }
 
     // =========================================================================
@@ -130,9 +134,11 @@ impl Workflow {
 
     #[flow]
     async fn run_with_inputs(self: Arc<Self>) -> Result<String, String> {
-        self.register_fetch_data();
-        self.register_process_data();
-        self.register_save_result()
+        dag! {
+            self.register_fetch_data();
+            self.register_process_data();
+            self.register_save_result()
+        }
     }
 }
 
@@ -203,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result3 = instance3
         .executor()
         .execute(|f| Box::pin(f.clone().run_with_inputs()))
-        .await;
+        .await??;
 
     println!("\nResult: {:?}", result3);
 

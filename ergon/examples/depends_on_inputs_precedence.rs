@@ -77,9 +77,11 @@ impl PrecedenceTest {
 
     #[flow]
     async fn run_case1(self: Arc<Self>) -> Result<String, String> {
-        self.register_case1_initialize();
-        self.register_case1_fetch_config();
-        self.register_case1_start_server() // Waits for BOTH
+        dag! {
+            self.register_case1_initialize();
+            self.register_case1_fetch_config();
+            self.register_case1_start_server() // Waits for BOTH
+        }
     }
 
     // =========================================================================
@@ -109,8 +111,10 @@ impl PrecedenceTest {
 
     #[flow]
     async fn run_case2(self: Arc<Self>) -> Result<String, String> {
-        self.register_case2_fetch_data();
-        self.register_case2_process() // Should deduplicate
+        dag! {
+            self.register_case2_fetch_data();
+            self.register_case2_process() // Should deduplicate
+        }
     }
 
     // =========================================================================
@@ -138,8 +142,10 @@ impl PrecedenceTest {
 
     #[flow]
     async fn run_case3(self: Arc<Self>) -> Result<String, String> {
-        self.register_case3_step1();
-        self.register_case3_step2() // depends_on = [] prevents auto-chain, but inputs works
+        dag! {
+            self.register_case3_step1();
+            self.register_case3_step2() // depends_on = [] prevents auto-chain, but inputs works
+        }
     }
 
     // =========================================================================
@@ -177,9 +183,11 @@ impl PrecedenceTest {
 
     #[flow]
     async fn run_case4(self: Arc<Self>) -> Result<String, String> {
-        self.register_case4_extract_a();
-        self.register_case4_extract_b(); // Runs in parallel with A
-        self.register_case4_merge() // Waits for both A and B (from inputs)
+        dag! {
+            self.register_case4_extract_a();
+            self.register_case4_extract_b(); // Runs in parallel with A
+            self.register_case4_merge() // Waits for both A and B (from inputs)
+        }
     }
 
     // =========================================================================
@@ -205,8 +213,10 @@ impl PrecedenceTest {
 
     #[flow]
     async fn run_case5(self: Arc<Self>) -> Result<String, String> {
-        self.register_case5_initialize();
-        self.register_case5_start()
+        dag! {
+            self.register_case5_initialize();
+            self.register_case5_start()
+        }
     }
 
     // =========================================================================
@@ -252,10 +262,12 @@ impl PrecedenceTest {
 
     #[flow]
     async fn run_case6(self: Arc<Self>) -> Result<String, String> {
-        self.register_case6_init1();
-        self.register_case6_init2();
-        self.register_case6_data_source();
-        self.register_case6_process() // Waits for ALL THREE
+        dag! {
+            self.register_case6_init1();
+            self.register_case6_init2();
+            self.register_case6_data_source();
+            self.register_case6_process() // Waits for ALL THREE
+        }
     }
 }
 

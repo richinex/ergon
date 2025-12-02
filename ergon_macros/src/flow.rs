@@ -11,9 +11,8 @@
 
 use crate::parsing::{build_method_signature, is_result_type};
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, Block, Expr, FnArg, ItemFn, Pat, PatType, ReturnType, Stmt};
+use syn::{parse_macro_input, FnArg, ItemFn, Pat, PatType, ReturnType};
 
 /// Arguments for the #[flow] macro
 #[derive(Default)]
@@ -31,107 +30,6 @@ impl FlowArgs {
             Ok(())
         } else {
             Err(meta.error("unsupported flow attribute"))
-        }
-    }
-}
-
-/// Try to auto-wrap DAG registration calls.
-///
-/// If the block contains only `self.register_*()` method calls,
-/// automatically wrap them with:
-/// 1. Creating DeferredRegistry
-/// 2. Calling each with &mut registry
-/// 3. Executing registry
-/// 4. Resolving final handle
-///
-/// Returns the original block if pattern doesn't match.
-pub(crate) fn try_wrap_dag_registrations(
-    block: &Block,
-    _return_type: &TokenStream2,
-) -> TokenStream2 {
-    // Extract all statements from the block
-    let stmts = &block.stmts;
-
-    if stmts.is_empty() {
-        return quote! { #block };
-    }
-
-    // Check if all statements are expression statements with register_* calls
-    let mut register_calls = Vec::new();
-
-    for stmt in stmts {
-        // Extract the expression from the statement
-        let expr = match stmt {
-            Stmt::Expr(expr, _) => expr,
-            Stmt::Macro(_) => {
-                // Don't handle macro calls
-                return quote! { #block };
-            }
-            _ => {
-                // Other statement types, return original block
-                return quote! { #block };
-            }
-        };
-
-        // Check if this is a method call starting with "register_"
-        if let Expr::MethodCall(method_call) = expr {
-            let method_name = method_call.method.to_string();
-            if method_name.starts_with("register_") {
-                register_calls.push(expr.clone());
-                continue;
-            }
-        }
-        // If we hit a non-register call, return original block
-        return quote! { #block };
-    }
-
-    // If we found no register calls, return original
-    if register_calls.is_empty() {
-        return quote! { #block };
-    }
-
-    // We have a pure registration block! Auto-wrap it
-    // Transform each call: self.register_foo() becomes self.register_foo(&mut registry)
-    let mut transformed_calls = Vec::new();
-
-    for call_expr in &register_calls {
-        if let Expr::MethodCall(method_call) = call_expr {
-            // Clone the method call and add &mut registry as first argument
-            let receiver = &method_call.receiver;
-            let method = &method_call.method;
-            let args: Vec<_> = method_call.args.iter().collect();
-            let turbofish = &method_call.turbofish;
-
-            // Build new call with &mut __registry prepended to args
-            let transformed = if args.is_empty() {
-                quote! {
-                    #receiver.#method #turbofish(&mut __registry)
-                }
-            } else {
-                quote! {
-                    #receiver.#method #turbofish(&mut __registry, #(#args),*)
-                }
-            };
-            transformed_calls.push(transformed);
-        }
-    }
-
-    if transformed_calls.is_empty() {
-        return quote! { #block };
-    }
-
-    let last_call = transformed_calls
-        .last()
-        .expect("transformed_calls not empty after check");
-    let intermediate_calls = &transformed_calls[..transformed_calls.len() - 1];
-
-    quote! {
-        {
-            let mut __registry = ergon::DeferredRegistry::new();
-            #(#intermediate_calls;)*
-            let __final_handle = #last_call;
-            __registry.execute().await.map_err(|e| format!("DAG execution failed: {:?}", e))?;
-            __final_handle.resolve().await.map_err(|e| format!("Failed to resolve result: {:?}", e))?
         }
     }
 }
@@ -227,9 +125,9 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // Try to detect if this is a simple DAG registration pattern
-    // If the block contains only register_* calls, auto-wrap them
-    let wrapped_block = try_wrap_dag_registrations(block, &return_type);
+    // Users should use the explicit dag! macro instead of relying on
+    // silent auto-wrapping of register_* calls
+    let wrapped_block = quote! { #block };
 
     // Generate completion logging code
     let log_completion_code = if !returns_result {
@@ -265,7 +163,9 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 Ok(__ctx) => {
                     // Instrumented execution with context
                     let __step = __ctx.next_step();
-                    let __class_name = std::any::type_name::<Self>();
+                    // Use stable type_id from FlowType trait instead of std::any::type_name
+                    // which is explicitly unstable across compiler versions
+                    let __class_name = <Self as ergon::core::FlowType>::type_id();
 
                     // Serialize parameters
                     let __params = ( #(&#param_names,)* );

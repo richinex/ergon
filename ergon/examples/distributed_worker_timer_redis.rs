@@ -92,7 +92,8 @@ impl TimedOrderProcessor {
             Duration::from_secs(2),
             &format!("fraud-check-{}", self.order_id),
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
         println!("[{}] Fraud check complete", self.order_id);
         Ok(())
     }
@@ -110,7 +111,8 @@ impl TimedOrderProcessor {
             Duration::from_secs(3),
             &format!("warehouse-{}", self.order_id),
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
         println!("[{}] Warehouse processing complete", self.order_id);
         Ok(())
     }
@@ -162,7 +164,8 @@ impl TrialExpiryNotification {
             Duration::from_secs(5),
             &format!("trial-expiry-{}", self.user_id),
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
         println!("[Trial {}] Trial period expired", self.user_id);
         Ok(())
     }

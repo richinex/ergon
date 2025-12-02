@@ -83,7 +83,9 @@ impl RaceConditionFlow {
         );
 
         // Use 1ms timer - very likely to fire before await_timer starts waiting
-        schedule_timer(Duration::from_millis(1)).await;
+        schedule_timer(Duration::from_millis(1))
+            .await
+            .map_err(|e| e.to_string())?;
 
         println!(
             "[{}] Step {}: Timer completed (race handled correctly!)",

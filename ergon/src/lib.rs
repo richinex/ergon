@@ -109,7 +109,7 @@ pub use storage::SqliteExecutionLog;
 pub use storage::RedisExecutionLog;
 
 // Re-export proc-macros
-pub use ergon_macros::{flow, step};
+pub use ergon_macros::{dag, flow, step};
 
 // Re-export dependencies used in public API
 // This ensures users don't have version mismatch errors (Effective Rust Item 24)
@@ -150,7 +150,7 @@ pub mod prelude {
     #[cfg(feature = "redis")]
     pub use crate::storage::RedisExecutionLog;
 
-    pub use ergon_macros::{flow, step, FlowType};
+    pub use ergon_macros::{dag, flow, step, FlowType};
 
     // Re-export commonly used external types
     pub use serde::{Deserialize, Serialize};

@@ -159,10 +159,12 @@ impl DataPipeline {
 
     #[flow]
     async fn process_pipeline(self: Arc<Self>) -> Result<String, String> {
-        self.register_fetch_raw_data();
-        self.register_transform_data();
-        self.register_validate_data();
-        self.register_save_result()
+        dag! {
+            self.register_fetch_raw_data();
+            self.register_transform_data();
+            self.register_validate_data();
+            self.register_save_result()
+        }
     }
 }
 
@@ -249,10 +251,12 @@ impl EnrichmentPipeline {
 
     #[flow]
     async fn process(self: Arc<Self>) -> Result<String, String> {
-        self.register_fetch_profile();
-        self.register_fetch_preferences();
-        self.register_fetch_analytics();
-        self.register_enrich_profile()
+        dag! {
+            self.register_fetch_profile();
+            self.register_fetch_preferences();
+            self.register_fetch_analytics();
+            self.register_enrich_profile()
+        }
     }
 }
 

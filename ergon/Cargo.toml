@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 bincode = { workspace = true }
+seahash = { workspace = true }
 
 # Storage dependencies
 async-trait = { workspace = true }
