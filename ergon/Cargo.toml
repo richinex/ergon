@@ -76,6 +76,10 @@ name = "distributed_worker_timer_redis"
 required-features = ["redis"]
 
 [[example]]
+name = "distributed_worker_timer_tracing_redis"
+required-features = ["redis"]
+
+[[example]]
 name = "timer_race_condition_redis"
 required-features = ["redis"]
 

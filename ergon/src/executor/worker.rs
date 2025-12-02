@@ -15,10 +15,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, Instrument};
 use uuid::Uuid;
 
 use super::timer::TIMER_NOTIFIERS;
+
+// ============================================================================
+// Timer Typestates
+// ============================================================================
 
 /// Typestate: Worker without timer processing
 pub struct WithoutTimers;
@@ -28,6 +32,30 @@ pub struct WithTimers {
     pub timer_poll_interval: Duration,
 }
 
+// ============================================================================
+// Tracing Typestates
+// ============================================================================
+
+/// Typestate: Worker without structured tracing (uses basic log-style tracing only).
+///
+/// This is the default state, providing zero-cost abstraction when detailed
+/// observability is not needed. Basic `info!`, `debug!`, `warn!`, and `error!`
+/// calls are still used, but no spans are created.
+#[derive(Clone, Copy)]
+pub struct WithoutStructuredTracing;
+
+/// Typestate: Worker with structured tracing enabled.
+///
+/// Enables creation of detailed tracing spans with structured fields for
+/// comprehensive observability. Spans track temporal context and provide
+/// rich debugging information in production.
+#[derive(Clone, Copy)]
+pub struct WithStructuredTracing;
+
+// ============================================================================
+// Timer Processing Trait
+// ============================================================================
+
 /// Trait that defines timer processing behavior based on type state.
 ///
 /// This trait uses the typestate pattern to provide different behaviors
@@ -35,6 +63,34 @@ pub struct WithTimers {
 #[async_trait::async_trait]
 pub trait TimerProcessing: Send + Sync {
     async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
+}
+
+// ============================================================================
+// Tracing Behavior Trait
+// ============================================================================
+
+/// Trait that defines tracing behavior based on type state.
+///
+/// This trait uses the typestate pattern to provide different tracing behaviors:
+/// - `WithoutStructuredTracing`: No span creation (zero cost)
+/// - `WithStructuredTracing`: Creates detailed spans with structured fields
+pub trait TracingBehavior: Send + Sync {
+    /// Creates a span for the worker loop iteration.
+    ///
+    /// Returns `None` for `WithoutStructuredTracing`, a span for `WithStructuredTracing`.
+    fn worker_loop_span(&self, worker_id: &str) -> Option<tracing::Span>;
+
+    /// Creates a span for flow execution.
+    fn flow_execution_span(
+        &self,
+        worker_id: &str,
+        flow_id: Uuid,
+        flow_type: &str,
+        task_id: Uuid,
+    ) -> Option<tracing::Span>;
+
+    /// Creates a span for timer processing.
+    fn timer_processing_span(&self, worker_id: &str) -> Option<tracing::Span>;
 }
 
 #[async_trait::async_trait]
@@ -90,6 +146,73 @@ impl TimerProcessing for WithTimers {
                 warn!("Failed to fetch expired timers: {}", e);
             }
         }
+    }
+}
+
+// ============================================================================
+// Tracing Behavior Implementations
+// ============================================================================
+
+impl TracingBehavior for WithoutStructuredTracing {
+    fn worker_loop_span(&self, _worker_id: &str) -> Option<tracing::Span> {
+        // No-op: structured tracing disabled, returns None for zero cost
+        None
+    }
+
+    fn flow_execution_span(
+        &self,
+        _worker_id: &str,
+        _flow_id: Uuid,
+        _flow_type: &str,
+        _task_id: Uuid,
+    ) -> Option<tracing::Span> {
+        // No-op: structured tracing disabled
+        None
+    }
+
+    fn timer_processing_span(&self, _worker_id: &str) -> Option<tracing::Span> {
+        // No-op: structured tracing disabled
+        None
+    }
+}
+
+impl TracingBehavior for WithStructuredTracing {
+    fn worker_loop_span(&self, worker_id: &str) -> Option<tracing::Span> {
+        // Create a span for each worker loop iteration with worker context
+        Some(tracing::debug_span!(
+            "worker_loop",
+            worker.id = worker_id,
+            iteration = tracing::field::Empty, // Can be recorded later
+        ))
+    }
+
+    fn flow_execution_span(
+        &self,
+        worker_id: &str,
+        flow_id: Uuid,
+        flow_type: &str,
+        task_id: Uuid,
+    ) -> Option<tracing::Span> {
+        // Create a detailed span for flow execution with all key identifiers
+        Some(tracing::info_span!(
+            "flow_execution",
+            worker.id = worker_id,
+            flow.id = %flow_id,
+            flow.type = flow_type,
+            task.id = %task_id,
+            result = tracing::field::Empty,
+            duration_ms = tracing::field::Empty,
+        ))
+    }
+
+    fn timer_processing_span(&self, worker_id: &str) -> Option<tracing::Span> {
+        // Create a span for timer processing operations
+        Some(tracing::debug_span!(
+            "timer_processing",
+            worker.id = worker_id,
+            timers.found = tracing::field::Empty,
+            timers.claimed = tracing::field::Empty,
+        ))
     }
 }
 
@@ -248,6 +371,12 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 /// The `FlowWorker` polls a storage backend's task queue for pending flows,
 /// executes them using registered flow executors, and marks them as complete.
 ///
+/// Uses the typestate pattern to optionally enable:
+/// - Timer processing (`WithTimers`)
+/// - Structured tracing with spans (`WithStructuredTracing`)
+///
+/// Both features default to disabled for zero-cost abstraction.
+///
 /// # Example
 ///
 /// ```no_run
@@ -255,6 +384,7 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 /// use ergon::storage::SqliteExecutionLog;
 /// use serde::{Serialize, Deserialize};
 /// use std::sync::Arc;
+/// use std::time::Duration;
 ///
 /// #[derive(Serialize, Deserialize, Clone)]
 /// struct MyFlow {
@@ -269,9 +399,17 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
-/// let mut worker = FlowWorker::new(storage, "worker-1");
 ///
-/// worker.register(|flow: Arc<MyFlow>| flow.run());
+/// // Basic worker (no timers, no structured tracing)
+/// let worker = FlowWorker::new(storage.clone(), "worker-1");
+///
+/// // Worker with timers and structured tracing
+/// let worker_advanced = FlowWorker::new(storage.clone(), "worker-2")
+///     .with_timers()
+///     .with_timer_interval(Duration::from_millis(100))
+///     .with_structured_tracing();
+///
+/// worker.register(|flow: Arc<MyFlow>| flow.run()).await;
 ///
 /// let handle = worker.start().await;
 /// // Worker is now running in the background...
@@ -281,31 +419,16 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 /// # Ok(())
 /// # }
 /// ```
-pub struct FlowWorker<S: ExecutionLog + 'static, T = WithoutTimers> {
+pub struct FlowWorker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStructuredTracing> {
     storage: Arc<S>,
     worker_id: String,
     registry: Arc<RwLock<FlowRegistry<S>>>,
     poll_interval: Duration,
     timer_state: T,
+    tracing_state: Tr,
 }
 
-impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers> {
-    /// Creates a new flow worker without timer processing.
-    ///
-    /// # Arguments
-    ///
-    /// * `storage` - Storage backend that implements the queue operations
-    /// * `worker_id` - Unique identifier for this worker
-    pub fn new(storage: Arc<S>, worker_id: impl Into<String>) -> Self {
-        Self {
-            storage,
-            worker_id: worker_id.into(),
-            registry: Arc::new(RwLock::new(FlowRegistry::new())),
-            poll_interval: Duration::from_secs(1),
-            timer_state: WithoutTimers,
-        }
-    }
-
+impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithoutTimers, Tr> {
     /// Enables timer processing for this worker.
     ///
     /// Returns a worker in the `WithTimers` state, which allows configuring
@@ -321,7 +444,7 @@ impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers> {
     ///     .with_timers()
     ///     .with_timer_interval(Duration::from_millis(100));
     /// ```
-    pub fn with_timers(self) -> FlowWorker<S, WithTimers> {
+    pub fn with_timers(self) -> FlowWorker<S, WithTimers, Tr> {
         FlowWorker {
             storage: self.storage,
             worker_id: self.worker_id,
@@ -330,11 +453,46 @@ impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers> {
             timer_state: WithTimers {
                 timer_poll_interval: Duration::from_secs(1),
             },
+            tracing_state: self.tracing_state,
         }
     }
 }
 
-impl<S: ExecutionLog + 'static> FlowWorker<S, WithTimers> {
+impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers, WithoutStructuredTracing> {
+    /// Creates a new flow worker without timer processing or structured tracing.
+    ///
+    /// This is the default state providing zero-cost abstraction.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - Storage backend that implements the queue operations
+    /// * `worker_id` - Unique identifier for this worker
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use ergon::executor::FlowWorker;
+    /// # use ergon::storage::SqliteExecutionLog;
+    /// # use std::sync::Arc;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
+    /// let worker = FlowWorker::new(storage, "worker-1");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn new(storage: Arc<S>, worker_id: impl Into<String>) -> Self {
+        Self {
+            storage,
+            worker_id: worker_id.into(),
+            registry: Arc::new(RwLock::new(FlowRegistry::new())),
+            poll_interval: Duration::from_secs(1),
+            timer_state: WithoutTimers,
+            tracing_state: WithoutStructuredTracing,
+        }
+    }
+}
+
+impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithTimers, Tr> {
     /// Sets the interval for checking expired timers.
     ///
     /// Only available when timer processing is enabled.
@@ -355,8 +513,42 @@ impl<S: ExecutionLog + 'static> FlowWorker<S, WithTimers> {
     }
 }
 
-// Methods available for both WithTimers and WithoutTimers states
-impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
+// State transition methods for tracing
+impl<S: ExecutionLog + 'static, T> FlowWorker<S, T, WithoutStructuredTracing> {
+    /// Enables structured tracing for this worker.
+    ///
+    /// Returns a worker in the `WithStructuredTracing` state, which creates
+    /// detailed spans with structured fields for all operations.
+    ///
+    /// When enabled, the worker will emit:
+    /// - `worker_loop` spans for each iteration
+    /// - `flow_execution` spans with flow_id, flow_type, task_id
+    /// - `timer_processing` spans when checking timers
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let worker = FlowWorker::new(storage, "worker-1")
+    ///     .with_structured_tracing()
+    ///     .start()
+    ///     .await;
+    /// ```
+    pub fn with_structured_tracing(self) -> FlowWorker<S, T, WithStructuredTracing> {
+        FlowWorker {
+            storage: self.storage,
+            worker_id: self.worker_id,
+            registry: self.registry,
+            poll_interval: self.poll_interval,
+            timer_state: self.timer_state,
+            tracing_state: WithStructuredTracing,
+        }
+    }
+}
+
+// Methods available for all timer and tracing state combinations
+impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavior + 'static>
+    FlowWorker<S, T, Tr>
+{
     /// Sets the poll interval for checking the queue.
     ///
     /// Default is 1 second.
@@ -385,7 +577,10 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
     /// Starts the worker in the background.
     ///
     /// Returns a [`WorkerHandle`] that can be used to control the worker.
-    pub async fn start(self) -> WorkerHandle {
+    pub async fn start(self) -> WorkerHandle
+    where
+        Tr: Clone,
+    {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let worker_id_for_handle = self.worker_id.clone();
 
@@ -393,16 +588,25 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
 
         let handle = tokio::spawn(async move {
             loop {
+                // Create worker loop span (no-op for WithoutStructuredTracing)
+                let loop_span = self.tracing_state.worker_loop_span(&self.worker_id);
+                let _loop_guard = loop_span.as_ref().map(|span| span.enter());
+
                 // Check for shutdown signal
                 if shutdown_rx.try_recv().is_ok() {
                     info!("Worker {} received shutdown signal", self.worker_id);
                     break;
                 }
 
-                // Process expired timers (no-op for WithoutTimers, real work for WithTimers)
-                self.timer_state
-                    .process_timers(&self.storage, &self.worker_id)
-                    .await;
+                // Process expired timers with optional span
+                {
+                    let timer_span = self.tracing_state.timer_processing_span(&self.worker_id);
+                    let _timer_guard = timer_span.as_ref().map(|span| span.enter());
+
+                    self.timer_state
+                        .process_timers(&self.storage, &self.worker_id)
+                        .await;
+                }
 
                 // Poll for a flow
                 match self.storage.dequeue_flow(&self.worker_id).await {
@@ -417,8 +621,20 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
                         let storage = self.storage.clone();
                         let worker_id = self.worker_id.clone();
                         let flow_task_id = flow.task_id;
+                        let flow_id = flow.flow_id;
+                        let flow_type = flow.flow_type.clone();
+                        let tracing_state = self.tracing_state.clone(); // Clone the zero-sized tracing state
 
-                        tokio::spawn(async move {
+                        // Create flow execution span (returns Option<Span>)
+                        let flow_span = tracing_state.flow_execution_span(
+                            &worker_id,
+                            flow_id,
+                            &flow_type,
+                            flow_task_id,
+                        );
+
+                        // Instrument the spawned task with the span (proper async way)
+                        let task = async move {
                             info!(
                                 "Worker {} executing flow: task_id={}",
                                 worker_id, flow_task_id
@@ -567,7 +783,14 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
                                     }
                                 }
                             }
-                        });
+                        };
+
+                        // Spawn with proper instrumentation (avoids Span::enter() across await points)
+                        if let Some(span) = flow_span {
+                            tokio::spawn(task.instrument(span));
+                        } else {
+                            tokio::spawn(task);
+                        }
                     }
                     Ok(None) => {
                         // No work available - sleep before next poll
