@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// Global counters to track execution attempts per flow
 static EXECUTION_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -36,10 +35,7 @@ impl CriticalTask {
             self.task_id, attempt
         );
 
-        // Step 1: Perform critical operation
         let result = self.clone().perform_critical_operation().await?;
-
-        // Step 2: Verify and commit
         let verified = self.clone().verify_and_commit(result).await?;
 
         println!("  [COMPLETED] Task {} finished", self.task_id);
@@ -54,7 +50,6 @@ impl CriticalTask {
             self.operation
         );
 
-        // Simulate work
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         Ok(OperationResult {
@@ -102,14 +97,12 @@ struct TaskResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║     Race Condition Prevention - Exactly-Once Demo       ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\nRace Condition Prevention - Exactly-Once Demo");
+    println!("==============================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = FlowScheduler::new(storage.clone());
 
-    // Schedule 3 critical tasks
     let tasks = vec![
         ("TASK-001", "Transfer $10,000 to Account B"),
         ("TASK-002", "Deduct 100 items from inventory"),
@@ -118,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut flow_ids = Vec::new();
 
-    println!("📋 Scheduling {} critical tasks:\n", tasks.len());
+    println!("Scheduling {} critical tasks:\n", tasks.len());
     for (task_id, operation) in &tasks {
         let task = CriticalTask {
             task_id: task_id.to_string(),
@@ -128,25 +121,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scheduler.schedule(task, flow_id).await?;
         flow_ids.push(flow_id);
 
-        println!("  • {} - {}", task_id, operation);
+        println!("  - {} - {}", task_id, operation);
     }
 
-    println!("\n⚠️  SCENARIO: 5 workers racing to process these 3 tasks");
-    println!("    Without proper locking: Each task could run 5 times!");
-    println!("    Expected behavior: Each task runs exactly once\n");
+    println!("\nScenario: 5 workers racing to process these 3 tasks");
+    println!("Expected: Each task runs exactly once\n");
 
-    // ========================================================================
-    // Launch 5 workers simultaneously to create race condition
-    // ========================================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  Starting 5 workers simultaneously...                      ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("Starting 5 workers simultaneously...\n");
 
     let start = Instant::now();
     let mut worker_handles = Vec::new();
 
-    // Track which worker processes which flow
     let worker_assignments: Arc<tokio::sync::Mutex<HashMap<String, String>>> =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
@@ -156,27 +141,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let assignments = worker_assignments.clone();
 
         let handle = tokio::spawn(async move {
-            println!("🚀 {} started (racing for work...)", worker_name);
+            println!("[START] {} racing for work", worker_name);
 
             let worker = FlowWorker::new(storage_clone.clone(), &worker_name)
                 .with_poll_interval(Duration::from_millis(10));
 
-            // Keep a copy for later use
             let worker_name_final = worker_name.clone();
 
-            // Custom registration with assignment tracking
             worker
                 .register(move |flow: Arc<CriticalTask>| {
                     let assignments = assignments.clone();
                     let worker_name = worker_name.clone();
                     async move {
-                        // Track which worker got this task
                         {
                             let mut map = assignments.lock().await;
                             map.insert(flow.task_id.clone(), worker_name.clone());
                         }
 
-                        println!("🎯 {} claimed {}", worker_name, flow.task_id);
+                        println!("[CLAIM] {} claimed {}", worker_name, flow.task_id);
                         flow.execute().await
                     }
                 })
@@ -184,7 +166,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let handle = worker.start().await;
 
-            // Wait for work to complete
             loop {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 if let Ok(incomplete) = storage_clone.get_incomplete_flows().await {
@@ -194,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            println!("🏁 {} finished", worker_name_final);
+            println!("[FINISH] {} finished", worker_name_final);
             handle.shutdown().await;
         });
 
@@ -208,34 +189,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let duration = start.elapsed();
 
-    // ========================================================================
-    // Analyze Results
-    // ========================================================================
-
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                    RESULTS ANALYSIS                        ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nResults Analysis");
+    println!("================\n");
 
     let assignments = worker_assignments.lock().await;
     let total_attempts = EXECUTION_ATTEMPTS.load(Ordering::SeqCst);
 
-    println!("⏱️  Total execution time: {:?}", duration);
-    println!("📊 Total execution attempts: {}", total_attempts);
-    println!("🎯 Tasks scheduled: {}", tasks.len());
-    println!("\n📋 Task Assignment:");
+    println!("Total execution time: {:?}", duration);
+    println!("Total execution attempts: {}", total_attempts);
+    println!("Tasks scheduled: {}", tasks.len());
+    println!("\nTask Assignment:");
 
     let mut tasks_processed = 0;
     for (task_id, _) in &tasks {
         if let Some(worker) = assignments.get(&task_id.to_string()) {
-            println!("  ✓ {} → processed by {}", task_id, worker);
+            println!("  {} -> processed by {}", task_id, worker);
             tasks_processed += 1;
         } else {
-            println!("  ✗ {} → NOT PROCESSED", task_id);
+            println!("  {} -> NOT PROCESSED", task_id);
         }
     }
 
-    // Verify each flow ran exactly once
-    println!("\n🔍 Verification:");
+    println!("\nVerification:");
     let mut all_good = true;
 
     for flow_id in &flow_ids {
@@ -248,68 +223,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .count();
 
         if step_count == 2 && completed_count == 2 {
-            println!("  ✓ Flow {} - 2/2 steps completed", flow_id);
+            println!("  Flow {} - 2/2 steps completed", flow_id);
         } else {
             println!(
-                "  ✗ Flow {} - {}/{} steps completed (UNEXPECTED)",
+                "  Flow {} - {}/{} steps completed (UNEXPECTED)",
                 flow_id, completed_count, step_count
             );
             all_good = false;
         }
     }
 
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                   EXACTLY-ONCE PROOF                       ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nExactly-Once Proof");
+    println!("==================\n");
 
     if total_attempts == tasks.len() as u32 && tasks_processed == tasks.len() && all_good {
-        println!("✅ SUCCESS: Exactly-once execution verified!");
-        println!("\n   • {} tasks scheduled", tasks.len());
-        println!(
-            "   • {} execution attempts (no duplicates!)",
-            total_attempts
-        );
-        println!("   • 5 workers racing for work");
-        println!("   • Each task processed exactly once");
-        println!("\n🔒 Pessimistic Locking Protected Against:");
-        println!("   • Race conditions between workers");
-        println!("   • Duplicate execution");
-        println!("   • Lost work (all tasks completed)");
+        println!("SUCCESS: Exactly-once execution verified!");
+        println!("  - {} tasks scheduled", tasks.len());
+        println!("  - {} execution attempts (no duplicates)", total_attempts);
+        println!("  - 5 workers racing for work");
+        println!("  - Each task processed exactly once");
     } else {
-        println!("❌ UNEXPECTED: Execution count mismatch");
-        println!("   Expected: {} attempts", tasks.len());
-        println!("   Actual:   {} attempts", total_attempts);
+        println!("UNEXPECTED: Execution count mismatch");
+        println!("  Expected: {} attempts", tasks.len());
+        println!("  Actual:   {} attempts", total_attempts);
     }
-
-    println!("\n💡 With Regular Queues:");
-    println!("   ✗ Multiple workers could pop same task (visibility timeout race)");
-    println!(
-        "   ✗ $10,000 transferred {} times to Account B",
-        if total_attempts > 1 {
-            total_attempts
-        } else {
-            2
-        }
-    );
-    println!(
-        "   ✗ Inventory deducted {} times (oversold!)",
-        if total_attempts > 1 {
-            total_attempts
-        } else {
-            2
-        }
-    );
-    println!("   ✗ Need Redis-based distributed locks manually");
-
-    println!("\n💡 With Ergon:");
-    println!("   ✓ BLPOP is atomic - only one worker gets each flow");
-    println!("   ✓ Built-in pessimistic locking");
-    println!("   ✓ No race conditions possible");
-    println!("   ✓ Zero manual lock management\n");
 
     Ok(())
 }

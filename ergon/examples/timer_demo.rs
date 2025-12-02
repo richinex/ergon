@@ -1,13 +1,39 @@
-//! Durable Timer Demo
+//! Durable timer demo
 //!
 //! This example demonstrates:
-//! - Basic timer usage with `schedule_timer()`
-//! - Named timers for debugging
-//! - Timer survival across process restarts
-//! - Timer processor running in background
-//! - Multiple timers in a single flow
+//! - Basic timer usage with `schedule_timer()` and `schedule_timer_named()`
+//! - Named timers for debugging and visibility
+//! - Timer survival across process restarts (durability)
+//! - Timer processor running in background with workers
+//! - Multiple timers in a single flow (sequential delays)
+//! - Worker configuration with `.with_timers()` method
 //!
-//! Run: cargo run --example timer_demo --features=sqlite
+//! ## Scenario
+//! Order processing workflow with timed delays:
+//! - Create order immediately
+//! - Wait 2 seconds (fraud check/validation period)
+//! - Process payment
+//! - Wait 3 seconds (warehouse processing)
+//! - Ship order
+//! - Wait 1 second (confirmation delay)
+//! - Send confirmation email
+//! - Total execution time: ~6 seconds with timers
+//!
+//! ## Key Takeaways
+//! - Timers are durable and survive process restarts
+//! - Workers need `.with_timers()` to process timer events
+//! - Named timers help with debugging and observability
+//! - Timers fire asynchronously in background
+//! - Multiple timers can be used in a single flow
+//! - Framework handles timer scheduling and firing automatically
+//!
+//! ## Prerequisites
+//! None - uses in-memory storage by default
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example timer_demo
+//! ```
 
 use chrono::Utc;
 use ergon::executor::{schedule_timer, schedule_timer_named, FlowWorker};

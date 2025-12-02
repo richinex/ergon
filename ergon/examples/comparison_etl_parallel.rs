@@ -3,7 +3,7 @@
 //! This example demonstrates a real-world ETL (Extract, Transform, Load) pipeline
 //! for retail sales analytics using the DAG flow system.
 //!
-//! Pipeline Architecture (Medallion-inspired):
+//! ## Pipeline Architecture (Medallion-inspired)
 //!
 //! EXTRACT (Bronze Layer - Raw Data):
 //!   - extract_customer_data: Simulates reading from CSV files
@@ -24,14 +24,31 @@
 //!   - generate_analytics_report: Final consolidated report
 //!   - persist_to_warehouse: Simulate loading to data warehouse
 //!
-//! This example demonstrates:
-//! - Multi-source data extraction
-//! - Data validation and quality checks
-//! - Data cleansing and deduplication
-//! - Data enrichment and transformation
-//! - Aggregation and business metrics
-//! - Complex DAG with multiple dependencies
-//! - Type-safe data flow between steps
+//! ## Scenario
+//! - Process retail sales data from 3 sources: customers (CSV), sales (API), products (DB)
+//! - 4 customers including 1 invalid record (empty name, bad email)
+//! - 5 sales records including 1 duplicate transaction
+//! - 3 products across Electronics and Accessories categories
+//! - Extract phase: 3 steps run in parallel (Bronze layer)
+//! - Transform-Silver: 3 validation/cleansing steps run in parallel
+//! - Transform-Gold: Join sales+products, aggregate by region, calculate customer metrics
+//! - Load phase: Generate analytics report and persist to warehouse
+//! - Final report includes revenue, regional breakdown, top customers, and quality score
+//!
+//! ## Key Takeaways
+//! - DAG flow enables complex multi-stage pipelines with clear dependencies
+//! - Parallel execution at each layer (Extract, Silver, Gold) via depends_on = []
+//! - Type-safe data flow between steps using inputs attribute
+//! - Automatic deduplication detects duplicate transactions
+//! - Data quality scoring based on validation results
+//! - JSON report exported to workflow_parallel.json
+//! - Parallelism analysis shows which steps ran simultaneously
+//! - Medallion architecture (Bronze->Silver->Gold) implemented natively
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example comparison_etl_parallel
+//! ```
 
 use ergon::Ergon;
 use ergon::{deserialize_value, flow, step};

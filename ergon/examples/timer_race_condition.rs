@@ -26,14 +26,28 @@
 //! - UPDATE with WHERE clause for optimistic concurrency
 //! - Single worker coordinates timer firing
 //!
-//! ## Test Configuration
+//! ## Scenario
+//! - 3 concurrent flows running simultaneously (flow-1, flow-2, flow-3)
+//! - Each flow schedules 5 VERY short timers (1ms duration)
+//! - Total: 15 timers competing for execution
+//! - Worker polls timers every 10ms (aggressive polling)
+//! - Timer often fires BEFORE await_timer() starts waiting
+//! - Ergon's database check prevents deadlock from lost notifications
+//! - All 15 timers complete successfully without hanging
 //!
-//! - 3 concurrent flows running simultaneously
-//! - Each flow schedules 5 VERY short timers (1ms each)
-//! - Aggressive polling (10ms) creates ideal race conditions
-//! - 15 total timers must complete without deadlocks
+//! ## Key Takeaways
+//! - Race condition: Timer fires between log_timer() and await_timer()
+//! - Notification lost but flow doesn't deadlock
+//! - await_timer() checks database status after creating notifier
+//! - If status=Complete, returns immediately (no wait needed)
+//! - Indexed queries on fire_at enable efficient timer lookups
+//! - Optimistic concurrency via UPDATE WHERE clause prevents duplicates
+//! - Works reliably even with aggressive polling and short timers
 //!
-//! Run: cargo run --example timer_race_condition --features=sqlite
+//! ## Run with
+//! ```bash
+//! cargo run --example timer_race_condition --features=sqlite
+//! ```
 
 use chrono::Utc;
 use ergon::executor::{schedule_timer, FlowWorker};

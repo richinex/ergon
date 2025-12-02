@@ -1,14 +1,34 @@
-//! Nested Flows and Composition Example
+//! Nested flows and composition example
 //!
 //! This example demonstrates:
-//! 1. Flows that schedule other flows (nested/sub-workflows)
-//! 2. Steps that call helper methods (composition without tracking)
-//! 3. Hierarchical workflow orchestration
+//! - Flows that schedule other flows (nested/sub-workflows)
+//! - Steps that call helper methods (composition without tracking)
+//! - Hierarchical workflow orchestration
+//! - Parent-child flow relationships
+//! - Helper methods vs steps (what gets tracked)
 //!
-//! Use case: A parent order processing flow that triggers
-//! separate child flows for inventory, payment, and shipping.
+//! ## Scenario
+//! - Parent flow: OrderProcessor orchestrates the entire order
+//!   - Step 1: Validate order (uses helper methods for validation)
+//!   - Step 2: Process payment (conceptually schedules child payment flow)
+//!   - Step 3: Reserve inventory (conceptually schedules child inventory flow)
+//!   - Step 4: Finalize order
+//! - Child flow: PaymentFlow processes payment independently
+//!   - Authorize -> Capture -> Confirm
+//! - Child flow: InventoryFlow manages inventory independently
+//!   - Check stock -> Reserve items -> Confirm reservation
 //!
-//! Run: cargo run --example nested_flows
+//! ## Key Takeaways
+//! - Parent flows can orchestrate multiple child flows
+//! - Helper methods provide composition without creating tracked steps
+//! - Child flows run independently and can be scheduled dynamically
+//! - The `inputs` attribute enables data flow between steps in any flow
+//! - One worker can handle multiple flow types simultaneously
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example nested_flows
+//! ```
 
 use ergon::prelude::*;
 use std::sync::Arc;
@@ -375,9 +395,8 @@ struct InventoryResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║         Nested Flows & Composition Example              ║");
-    println!("╚══════════════════════════════════════════════════════════╝");
+    println!("\nNested Flows & Composition Example");
+    println!("===================================");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = FlowScheduler::new(storage.clone());
@@ -435,9 +454,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker_handle.shutdown().await;
 
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║              All Flows Completed!                        ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\nAll Flows Completed!");
+    println!("====================\n");
 
     println!("Key Patterns Demonstrated:");
     println!("  1. Parent flow orchestrating multiple child flows");

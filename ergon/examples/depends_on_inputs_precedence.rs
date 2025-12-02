@@ -1,16 +1,31 @@
 //! Testing Precedence: depends_on vs inputs
 //!
-//! This example tests what happens when you combine depends_on and inputs:
-//! 1. Control + Data Dependencies (normal combination)
-//! 2. Overlapping Dependencies (same step in both)
-//! 3. depends_on = [] with inputs (critical edge case)
-//! 4. Multiple inputs with depends_on = []
-//! 5. Empty inputs with depends_on
+//! This example demonstrates:
+//! - How depends_on and inputs interact when combined
+//! - Control dependencies vs data dependencies
+//! - UNION behavior: step waits for ALL dependencies from BOTH
+//! - depends_on = [] only disables auto-chain, not inputs
+//! - Deduplication when same step appears in both
+//! - Fine-grained control over step execution order
 //!
-//! KEY FINDING: The framework takes the UNION of both.
-//! - depends_on provides control dependencies
-//! - inputs provides data dependencies
-//! - A step waits for ALL dependencies from BOTH
+//! ## Scenario
+//! Six test cases explore different combinations of depends_on and inputs:
+//! Case 1: Control + Data Dependencies, Case 2: Overlapping Dependencies,
+//! Case 3: depends_on = [] with inputs, Case 4: Multiple inputs with depends_on = [],
+//! Case 5: Empty inputs with depends_on, Case 6: Complex union test.
+//!
+//! ## Key Takeaways
+//! - Framework takes UNION of depends_on and inputs dependencies
+//! - depends_on provides control dependencies (sequencing)
+//! - inputs provides data dependencies (with autowiring)
+//! - depends_on = [] only disables auto-chain, inputs still work
+//! - Same step in both lists is deduplicated
+//! - Use control+data for complex DAG orchestration
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example depends_on_inputs_precedence
+//! ```
 
 use ergon::Ergon;
 use ergon::{flow, step};
@@ -248,19 +263,18 @@ impl PrecedenceTest {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Testing Precedence: depends_on vs inputs               ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
+    println!("\nTesting Precedence: depends_on vs inputs");
+    println!("=========================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
 
     // =========================================================================
     // CASE 1: Control + Data Dependencies
     // =========================================================================
-    println!("┌───────────────────────────────────────────────────────────┐");
+    println!("----------------------------------------------------------");
     println!("│ CASE 1: Control + Data Dependencies                      │");
     println!("│ Question: Does it wait for BOTH?                         │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
     println!("Code:");
     println!("  #[step(");
@@ -287,7 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n┌───────────────────────────────────────────────────────────┐");
     println!("│ CASE 2: Overlapping Dependencies (Redundant)             │");
     println!("│ Question: What happens when same step in both?           │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
     println!("Code:");
     println!("  #[step(");
@@ -315,7 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n┌───────────────────────────────────────────────────────────┐");
     println!("│ CASE 3: depends_on = [] with inputs (Critical)           │");
     println!("│ Question: Does depends_on = [] override inputs?          │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
     println!("Code:");
     println!("  #[step]");
@@ -343,7 +357,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n┌───────────────────────────────────────────────────────────┐");
     println!("│ CASE 4: Multiple inputs with depends_on = []             │");
     println!("│ Question: Can inputs create fan-in with depends_on = []? │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
     println!("Code:");
     println!("  #[step]");
@@ -378,7 +392,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n┌───────────────────────────────────────────────────────────┐");
     println!("│ CASE 5: Empty inputs with depends_on (Control Only)      │");
     println!("│ Question: Can we have control dep without data?          │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
     println!("Code:");
     println!("  #[step(depends_on = \"initialize\")]  // No inputs!");
@@ -403,7 +417,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n┌───────────────────────────────────────────────────────────┐");
     println!("│ CASE 6: Complex Union Test                               │");
     println!("│ Question: Multiple deps in each - full union?            │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
     println!("Code:");
     println!("  #[step(");
@@ -428,28 +442,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // FINAL SUMMARY
     // =========================================================================
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  FINAL VERDICT: Precedence Rules                         ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
+    println!("\nFINAL VERDICT: Precedence Rules");
+    println!("================================\n");
 
-    println!("┌───────────────────────────────────────────────────────────┐");
+    println!("----------------------------------------------------------");
     println!("│ Rule 1: UNION                                             │");
     println!("│ A step waits for ALL dependencies from BOTH depends_on   │");
     println!("│ and inputs. There is no precedence - it's a union!       │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
-    println!("┌───────────────────────────────────────────────────────────┐");
+    println!("----------------------------------------------------------");
     println!("│ Rule 2: DEDUPLICATION                                     │");
     println!("│ If same step appears in both, it's deduplicated          │");
     println!("│ (But this is redundant - autowiring makes it unnecessary)│");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
-    println!("┌───────────────────────────────────────────────────────────┐");
+    println!("----------------------------------------------------------");
     println!("│ Rule 3: depends_on = [] ONLY DISABLES AUTO-CHAIN          │");
     println!("│ It does NOT override explicit inputs dependencies        │");
     println!("│ inputs always create dependencies, regardless of         │");
     println!("│ depends_on = []                                           │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("----------------------------------------------------------\n");
 
     println!("Use Cases:");
     println!("  • Control + Data: depends_on for sequencing, inputs for data");

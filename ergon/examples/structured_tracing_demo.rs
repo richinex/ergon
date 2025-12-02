@@ -1,14 +1,30 @@
 //! Structured Tracing Demo with Typestate Pattern
 //!
 //! This example demonstrates:
-//! - Zero-cost tracing abstraction with typestate pattern
-//! - Enabling structured tracing with `.with_structured_tracing()`
-//! - Span hierarchy for flow execution
+//! - Zero-cost tracing abstraction using the typestate pattern
+//! - Enabling structured tracing with .with_structured_tracing()
+//! - Automatic span hierarchy for flow and step execution
 //! - Structured fields for debugging production issues
 //! - Combining tracing with timer processing
+//! - Compile-time enforcement of tracing configuration
 //!
-//! Run with different tracing configurations:
-//! ```
+//! ## Scenario
+//! An order processing flow with three steps (validate, process payment, fulfill).
+//! We demonstrate three tracing modes: basic (no structured spans), structured
+//! (with span hierarchy), and full spans (with entry/exit events). The typestate
+//! pattern ensures tracing configuration is known at compile time.
+//!
+//! ## Key Takeaways
+//! - Typestate pattern provides zero-cost abstraction for tracing
+//! - with_structured_tracing() enables automatic span creation
+//! - Each flow and step gets its own span with structured fields
+//! - Span hierarchy shows parent-child relationships in traces
+//! - Structured fields include flow_id, step_name, class_name
+//! - Configuration is compile-time checked via type system
+//! - No runtime overhead when tracing is disabled
+//!
+//! ## Run with
+//! ```bash
 //! # Basic (no structured spans)
 //! cargo run --example structured_tracing_demo
 //!

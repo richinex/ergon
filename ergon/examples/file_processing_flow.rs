@@ -1,13 +1,30 @@
 //! File Processing Flow Example
 //!
-//! Demonstrates reading and processing files within flows.
-//! This example shows:
+//! This example demonstrates:
 //! - Reading CSV files in a flow step
 //! - Parsing and validating data
-//! - Multi-step data transformation with `inputs`
+//! - Multi-step data transformation with `inputs` attribute
 //! - Writing processed results to output files
+//! - Sequential data pipeline with step dependencies
 //!
-//! Run: cargo run --example file_processing_flow
+//! ## Scenario
+//! - Process 3 quarterly sales CSV files (Q1, Q2, Q3)
+//! - Each file contains transaction records with ID, amount, and category
+//! - 4-step pipeline: read CSV → validate/clean → compute statistics → write report
+//! - Invalid records (negative amounts, empty categories) are filtered out
+//! - Final reports include statistics and category breakdowns
+//!
+//! ## Key Takeaways
+//! - The `inputs` attribute automatically wires step outputs to inputs
+//! - Each step depends on the previous step's output (sequential pipeline)
+//! - File I/O operations work seamlessly within flow steps
+//! - Invalid data is gracefully handled and filtered during validation
+//! - Reports are written to disk with detailed statistics and record details
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example file_processing_flow
+//! ```
 
 use ergon::prelude::*;
 use std::path::Path;

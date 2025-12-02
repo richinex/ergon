@@ -1,9 +1,29 @@
 //! SQLite Storage Benchmark
 //!
-//! Processes 20 data analysis flows with 4 sequential steps each.
-//! Uses `inputs` attribute to pass data between steps with complex aggregations.
+//! This example demonstrates:
+//! - Benchmarking SQLite backend performance with complex workflows
+//! - 20 parallel data analysis flows with 4 sequential steps each
+//! - Data passing between steps using the inputs attribute
+//! - Statistical computations and transformations
+//! - Worker pool coordinating concurrent flow execution
 //!
-//! Run: cargo run --example benchmark_sqlite
+//! ## Scenario
+//! Each flow generates synthetic datasets, computes statistics (mean, std dev, min, max),
+//! transforms the data (coefficient of variation, range ratios), and aggregates final scores.
+//! 4 workers process 20 flows in parallel, demonstrating SQLite's performance under concurrent load.
+//!
+//! ## Key Takeaways
+//! - SQLite provides durable storage with good performance for moderate workloads
+//! - Multiple workers can safely process flows concurrently with SQLite backend
+//! - Complex data transformations benefit from step-level caching
+//! - Each step receives outputs from previous steps via the inputs attribute
+//! - Workers coordinate via shared SQLite database
+//! - Temporary database file cleaned up automatically after benchmarking
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example benchmark_sqlite
+//! ```
 
 use ergon::prelude::*;
 use std::sync::Arc;
@@ -155,9 +175,8 @@ struct AnalysisResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║         SQLite Storage Benchmark                        ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\nSQLite Storage Benchmark");
+    println!("========================\n");
 
     let db_path = "/tmp/ergon_benchmark_sqlite.db";
     let _ = std::fs::remove_file(db_path);

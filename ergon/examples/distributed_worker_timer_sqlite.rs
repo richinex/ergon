@@ -26,7 +26,10 @@
 //! With work-stealing, SQLite now achieves similar fairness to Redis!
 //! The local queue acts as a buffer, allowing peers to steal before storage polling.
 //!
-//! Run with: cargo run --example distributed_worker_timer_sqlite --features=sqlite
+//! ## Run with
+//! ```bash
+//! cargo run --example distributed_worker_timer_sqlite --features=sqlite
+//! ```
 
 use ergon::executor::{schedule_timer_named, FlowScheduler};
 use ergon::prelude::*;

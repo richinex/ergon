@@ -1,12 +1,38 @@
 //! Three Dependency Modes: A Comprehensive Demonstration
 //!
-//! This example clearly demonstrates the three ways to control dependencies:
+//! This example demonstrates:
+//! - Three ways to control step dependencies in Ergon
+//! - Auto-chaining behavior with no attributes
+//! - Autowiring with inputs attribute
+//! - Explicit control with depends_on attribute
+//! - Parallel vs sequential execution patterns
+//! - Fan-out and fan-in DAG patterns
 //!
-//! | Attribute          | Behavior                             | Use Case                              |
-//! |--------------------|--------------------------------------|---------------------------------------|
-//! | No depends_on      | Auto-chains to previous step         | Simple sequential pipelines           |
-//! | inputs(...)        | Auto-depends on input sources        | Data transformations with parallelism |
-//! | depends_on = "..." | Explicit dependencies, no auto-chain | Fine-grained control, complex DAGs    |
+//! ## Scenario
+//! Three demonstrations show different dependency modes: Mode 1 (auto-chain for sequential),
+//! Mode 2 (inputs for data-driven parallelism), Mode 3 (depends_on for explicit DAG control).
+//! Each mode enables different execution patterns and use cases.
+//!
+//! ## Dependency Mode Summary
+//!
+//! | Attribute           | Depends On                          |
+//! |---------------------|-------------------------------------|
+//! | (none)              | Previous registered step            |
+//! | inputs(...)         | Input source steps ONLY             |
+//! | depends_on = "..."  | Explicitly named steps ONLY         |
+//!
+//! ## Key Takeaways
+//! - No attributes: Auto-chains to previous step (safe sequential default)
+//! - inputs: Auto-depends on data sources only (enables parallelism)
+//! - depends_on: Explicit dependencies only (fine-grained DAG control)
+//! - inputs breaks auto-chain by providing explicit dependencies
+//! - Multiple steps with same parent via depends_on run in parallel
+//! - All three modes can be combined for complex workflows
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example three_dependency_modes
+//! ```
 
 use ergon::Ergon;
 use ergon::{flow, step};
@@ -26,10 +52,6 @@ impl ThreeModes {
         Self { id }
     }
 
-    // =========================================================================
-    // MODE 1: No Attributes (Auto-Chain to Previous)
-    // =========================================================================
-
     #[step]
     async fn mode1_step1(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 1] Step 1: No dependencies → runs first");
@@ -37,14 +59,14 @@ impl ThreeModes {
         Ok(1)
     }
 
-    #[step] // No attributes → auto-chains to mode1_step1
+    #[step]
     async fn mode1_step2(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 1] Step 2: Auto-chains → waits for step 1");
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(2)
     }
 
-    #[step] // No attributes → auto-chains to mode1_step2
+    #[step]
     async fn mode1_step3(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 1] Step 3: Auto-chains → waits for step 2");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -54,13 +76,9 @@ impl ThreeModes {
     #[flow]
     async fn demo_mode1(self: Arc<Self>) -> Result<i32, String> {
         self.register_mode1_step1();
-        self.register_mode1_step2(); // Auto-chains to step1
-        self.register_mode1_step3() // Auto-chains to step2
+        self.register_mode1_step2();
+        self.register_mode1_step3()
     }
-
-    // =========================================================================
-    // MODE 2: inputs(...) Only (Auto-Depend on Input Sources)
-    // =========================================================================
 
     #[step]
     async fn mode2_root(self: Arc<Self>) -> Result<i32, String> {
@@ -69,7 +87,6 @@ impl ThreeModes {
         Ok(10)
     }
 
-    // Uses inputs → depends ONLY on mode2_root (NOT on previous step!)
     #[step(inputs(value = "mode2_root"))]
     async fn mode2_branch1(self: Arc<Self>, value: i32) -> Result<i32, String> {
         println!("[Mode 2] Branch 1: inputs(root) → depends on root ONLY");
@@ -77,8 +94,6 @@ impl ThreeModes {
         Ok(value + 1)
     }
 
-    // Also uses inputs → ALSO depends only on mode2_root
-    // This means branch1 and branch2 run IN PARALLEL!
     #[step(inputs(value = "mode2_root"))]
     async fn mode2_branch2(self: Arc<Self>, value: i32) -> Result<i32, String> {
         println!("[Mode 2] Branch 2: inputs(root) → depends on root ONLY (parallel!)");
@@ -86,7 +101,6 @@ impl ThreeModes {
         Ok(value * 2)
     }
 
-    // Depends on BOTH branches (fan-in merge)
     #[step(inputs(a = "mode2_branch1", b = "mode2_branch2"))]
     async fn mode2_merge(self: Arc<Self>, a: i32, b: i32) -> Result<i32, String> {
         println!("[Mode 2] Merge: inputs(branch1, branch2) → waits for both");
@@ -97,14 +111,10 @@ impl ThreeModes {
     #[flow]
     async fn demo_mode2(self: Arc<Self>) -> Result<i32, String> {
         self.register_mode2_root();
-        self.register_mode2_branch1(); // Depends on root (via inputs)
-        self.register_mode2_branch2(); // Also depends on root → PARALLEL!
-        self.register_mode2_merge() // Depends on both branches
+        self.register_mode2_branch1();
+        self.register_mode2_branch2();
+        self.register_mode2_merge()
     }
-
-    // =========================================================================
-    // MODE 3: depends_on Explicit (No Auto-Chain)
-    // =========================================================================
 
     #[step]
     async fn mode3_init(self: Arc<Self>) -> Result<(), String> {
@@ -113,7 +123,6 @@ impl ThreeModes {
         Ok(())
     }
 
-    // Explicit depends_on → does NOT auto-chain to previous
     #[step(depends_on = "mode3_init")]
     async fn mode3_task1(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 3] Task 1: depends_on(init) → waits for init");
@@ -121,7 +130,6 @@ impl ThreeModes {
         Ok(1)
     }
 
-    // Also explicit depends_on init → runs in PARALLEL with task1
     #[step(depends_on = "mode3_init")]
     async fn mode3_task2(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 3] Task 2: depends_on(init) → waits for init (parallel!)");
@@ -129,7 +137,6 @@ impl ThreeModes {
         Ok(2)
     }
 
-    // Explicit depends on BOTH tasks
     #[step(depends_on = ["mode3_task1", "mode3_task2"])]
     async fn mode3_finalize(self: Arc<Self>) -> Result<i32, String> {
         println!("[Mode 3] Finalize: depends_on(task1, task2) → waits for both");
@@ -140,14 +147,10 @@ impl ThreeModes {
     #[flow]
     async fn demo_mode3(self: Arc<Self>) -> Result<i32, String> {
         self.register_mode3_init();
-        self.register_mode3_task1(); // Explicit: depends on init
-        self.register_mode3_task2(); // Explicit: also depends on init → PARALLEL
-        self.register_mode3_finalize() // Explicit: depends on both tasks
+        self.register_mode3_task1();
+        self.register_mode3_task2();
+        self.register_mode3_finalize()
     }
-
-    // =========================================================================
-    // COMPARISON: Demonstrating the Key Difference
-    // =========================================================================
 
     #[step]
     async fn comparison_step1(self: Arc<Self>) -> Result<i32, String> {
@@ -156,15 +159,13 @@ impl ThreeModes {
         Ok(100)
     }
 
-    #[step] // No attributes → auto-chains to step1
+    #[step]
     async fn comparison_step2(self: Arc<Self>) -> Result<i32, String> {
         println!("[Comparison] Step 2: Auto-chains to step1");
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(200)
     }
 
-    // inputs(step1) → depends ONLY on step1, NOT on step2!
-    // This means step2 and step3 can run IN PARALLEL
     #[step(inputs(value = "comparison_step1"))]
     async fn comparison_step3(self: Arc<Self>, value: i32) -> Result<i32, String> {
         println!("[Comparison] Step 3: inputs(step1) → depends on step1 ONLY");
@@ -176,23 +177,19 @@ impl ThreeModes {
     #[flow]
     async fn demo_comparison(self: Arc<Self>) -> Result<i32, String> {
         self.register_comparison_step1();
-        self.register_comparison_step2(); // Auto-chains to step1
-        self.register_comparison_step3() // Depends on step1 (NOT step2!) → PARALLEL!
+        self.register_comparison_step2();
+        self.register_comparison_step3()
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║  Three Dependency Modes Demonstration                     ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nThree Dependency Modes Demonstration");
+    println!("====================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
 
-    // =========================================================================
-    // MODE 1: Auto-Chain (No Attributes)
-    // =========================================================================
-    println!("┌────────────────────────────────────────────────────────────┐");
+    println!("-----------------------------------------------------------");
     println!("│ MODE 1: No Attributes → Auto-Chain to Previous            │");
     println!("└────────────────────────────────────────────────────────────┘");
 
@@ -203,10 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nResult: {:?}", result1);
     println!("Execution: step1 → step2 → step3 (sequential)\n");
 
-    // =========================================================================
-    // MODE 2: inputs(...) → Auto-Depend on Input Sources
-    // =========================================================================
-    println!("┌────────────────────────────────────────────────────────────┐");
+    println!("-----------------------------------------------------------");
     println!("│ MODE 2: inputs(...) → Auto-Depend on Input Sources        │");
     println!("└────────────────────────────────────────────────────────────┘");
 
@@ -217,10 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nResult: {:?}", result2);
     println!("Execution: root → (branch1 || branch2) → merge\n");
 
-    // =========================================================================
-    // MODE 3: depends_on → Explicit Dependencies
-    // =========================================================================
-    println!("┌────────────────────────────────────────────────────────────┐");
+    println!("-----------------------------------------------------------");
     println!("│ MODE 3: depends_on → Explicit Dependencies                │");
     println!("└────────────────────────────────────────────────────────────┘");
 
@@ -231,10 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nResult: {:?}", result3);
     println!("Execution: init → (task1 || task2) → finalize\n");
 
-    // =========================================================================
-    // KEY INSIGHT: inputs vs Auto-Chain
-    // =========================================================================
-    println!("┌────────────────────────────────────────────────────────────┐");
+    println!("-----------------------------------------------------------");
     println!("│ KEY INSIGHT: inputs(...) Does NOT Auto-Chain!             │");
     println!("└────────────────────────────────────────────────────────────┘");
 
@@ -248,28 +236,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result4 = instance4.execute(|f| f.demo_comparison()).await;
     println!("\nResult: {:?}", result4);
     println!("Execution: step1 → (step2 || step3) [parallel!]\n");
-    println!("Why? step2 auto-chains to step1, step3 uses inputs(step1)");
-    println!("Both depend on step1, NOT on each other → parallel!\n");
-
-    // =========================================================================
-    // SUMMARY TABLE
-    // =========================================================================
-    println!("┌────────────────────────────────────────────────────────────┐");
-    println!("│ SUMMARY: Three Dependency Modes                           │");
-    println!("└────────────────────────────────────────────────────────────┘\n");
-    println!("┌─────────────────────┬─────────────────────────────────────┐");
-    println!("│ Attribute           │ Depends On                          │");
-    println!("├─────────────────────┼─────────────────────────────────────┤");
-    println!("│ (none)              │ Previous registered step            │");
-    println!("│ inputs(...)         │ Input source steps ONLY             │");
-    println!("│ depends_on = \"...\"  │ Explicitly named steps ONLY         │");
-    println!("└─────────────────────┴─────────────────────────────────────┘\n");
-
-    println!("Key Points:");
-    println!("• No attributes → Sequential (safe default)");
-    println!("• inputs → Depends on data sources (enables parallelism)");
-    println!("• depends_on → Explicit control (fine-grained DAGs)");
-    println!("• All three can be combined for complex workflows!\n");
 
     Ok(())
 }

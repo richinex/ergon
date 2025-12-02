@@ -1,37 +1,31 @@
 //! Custom Error Types Example
 //!
-//! This example demonstrates how to use custom error types in ergon flows
-//! instead of generic String errors. Shows automatic retry based on error type.
+//! This example demonstrates:
+//! - Using custom error types instead of generic String errors
+//! - Implementing RetryableError trait for fine-grained retry control
+//! - Automatic retry for transient errors only (NetworkTimeout, GatewayUnavailable)
+//! - Permanent errors that should not retry (InsufficientFunds, OutOfStock, InvalidEmail)
+//! - Type-safe error handling with rich context
+//! - Compile-time guarantees for error handling
 //!
-//! ## Benefits
+//! ## Scenario
+//! An order processing flow with three main steps (inventory check, payment, notification).
+//! Each step can fail with specific error types. Some errors are retryable (network issues),
+//! while others are permanent (insufficient funds, out of stock). The framework automatically
+//! retries only the retryable errors.
 //!
-//! - Type-safe error handling
-//! - Rich error context (not just strings)
-//! - Fine-grained retry control via RetryableError trait
-//! - Better debugging and error reporting
-//! - Compile-time guarantees
-//! - Automatic retry for transient errors only
+//! ## Key Takeaways
+//! - Custom error types provide rich context beyond simple strings
+//! - RetryableError trait gives fine-grained control over which errors retry
+//! - Transient errors (network timeouts, service unavailable) are retryable
+//! - Permanent errors (business logic failures) should not retry
+//! - Each error type must implement Display, Error, From<T> for String, and RetryableError
+//! - The framework respects is_retryable() and only retries when appropriate
 //!
-//! ## Error Categories
-//!
-//! - PaymentError: Card issues, funds, gateway problems
-//! - InventoryError: Stock, product availability
-//! - NotificationError: Email, SMTP, rate limits
-//!
-//! ## Retryable vs Permanent
-//!
-//! - Retryable: NetworkTimeout, GatewayUnavailable, SmtpConnectionFailed
-//! - Permanent: InsufficientFunds, OutOfStock, InvalidEmail
-//!
-//! ## Implementation
-//!
-//! Each error type must implement:
-//! - Display trait for error messages
-//! - Error trait (std::error::Error)
-//! - From<ErrorType> for String (for ? operator)
-//! - RetryableError trait (for retry control)
-//!
-//! Run: cargo run --example custom_error_types --features=sqlite
+//! ## Run with
+//! ```bash
+//! cargo run --example custom_error_types --features=sqlite
+//! ```
 
 use ergon::core::{InvocationStatus, RetryPolicy};
 use ergon::executor::{FlowScheduler, FlowWorker};

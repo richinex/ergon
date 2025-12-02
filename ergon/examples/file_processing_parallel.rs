@@ -1,13 +1,30 @@
 //! Parallel File Processing Flow Example
 //!
-//! Demonstrates concurrent file processing with multiple workers.
-//! This example shows:
-//! - 3 workers processing 3 files in parallel
-//! - Each worker independently processing flows from the queue
-//! - Concurrent CSV processing with `inputs` between steps
+//! This example demonstrates:
+//! - Concurrent file processing with multiple workers
+//! - 3 workers processing 3 CSV files in parallel
+//! - Each worker independently picking up flows from the queue
+//! - Data passing between steps using the inputs attribute
+//! - CSV parsing, validation, statistics computation, and report generation
 //! - Output showing interleaved execution from different workers
 //!
-//! Run: cargo run --example file_processing_parallel
+//! ## Scenario
+//! Three CSV files (sales data for Q1, Q2, Q3) are processed concurrently by 3 workers.
+//! Each flow: reads CSV, validates and cleans data, computes statistics, writes report.
+//! Workers show interleaved output demonstrating true parallelism.
+//!
+//! ## Key Takeaways
+//! - Multiple workers process different flows simultaneously
+//! - Each flow progresses through 4 sequential steps with inputs attribute
+//! - Data validation removes invalid records before statistics
+//! - Results written to output directory with formatted reports
+//! - Interleaved console output proves concurrent execution
+//! - InMemory storage enables fast testing without database
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example file_processing_parallel
+//! ```
 
 use ergon::prelude::*;
 use std::path::Path;
@@ -257,9 +274,8 @@ struct ProcessingReport {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║      Parallel File Processing Flow Example              ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\nParallel File Processing Flow Example");
+    println!("======================================\n");
 
     // Create sample input files
     setup_sample_files().await?;
@@ -329,9 +345,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let duration = start.elapsed();
 
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║              Processing Complete!                        ║");
-    println!("╚══════════════════════════════════════════════════════════╝");
+    println!("\nProcessing Complete!");
+    println!("====================");
     println!("\nResults:");
     println!("  Files processed: 3");
     println!("  Workers used:    3");

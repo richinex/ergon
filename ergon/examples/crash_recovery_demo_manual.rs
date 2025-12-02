@@ -1,18 +1,31 @@
-//! Crash Recovery and Step-Level Resumability Demo
+//! Crash recovery and step-level resumability demo
 //!
 //! This example demonstrates:
-//! - Step-level resumability: Worker crashes after payment, another resumes at next step
-//! - Payment runs exactly once despite worker crash
+//! - Step-level resumability: Worker crashes mid-flow, another worker resumes at next step
+//! - Exactly-once execution: Payment runs exactly once despite worker crash
 //! - No manual idempotency checks required
 //! - Manual re-scheduling to demonstrate crash recovery
+//! - Automatic state loading from storage for resumed steps
 //!
-//! Flow: validate → charge_payment → reserve_inventory → send_confirmation
-//! Scenario: Worker crashes after charge_payment completes
-//! Expected: New worker resumes at reserve_inventory, payment NOT re-run
+//! ## Scenario
+//! - Order processing flow: validate -> charge_payment -> reserve_inventory -> send_confirmation
+//! - Phase 1: Worker-1 starts processing, completes validate and charge_payment
+//! - Crash: Worker dies during reserve_inventory step
+//! - Phase 2: Flow is manually re-scheduled, Worker-2 picks it up
+//! - Recovery: Worker-2 resumes at reserve_inventory (payment NOT re-run)
+//! - Result: Payment charged exactly once, no duplicate charges
 //!
-//! For automatic retry with exponential backoff, see: retry_recovery_demo.rs
+//! ## Key Takeaways
+//! - Framework provides automatic step-level resumability
+//! - Completed steps are never re-executed (exactly-once semantics)
+//! - Step inputs automatically loaded from storage on resume
+//! - No manual idempotency checks or state management needed
+//! - For automatic retry with exponential backoff, see: retry_recovery_demo.rs
 //!
-//! Run: cargo run --example crash_recovery_demo
+//! ## Run with
+//! ```bash
+//! cargo run --example crash_recovery_demo_manual
+//! ```
 
 use ergon::core::InvocationStatus;
 use ergon::prelude::*;
@@ -79,7 +92,7 @@ impl OrderProcessor {
         let count = PAYMENT_CHARGE_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
 
         println!(
-            "    💳 CHARGING ${:.2} to customer {} (charge attempt #{})",
+            "    CHARGING ${:.2} to customer {} (charge attempt #{})",
             self.amount, self.customer_id, count
         );
 
@@ -87,7 +100,7 @@ impl OrderProcessor {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         println!(
-            "    ✓ Payment successful! Transaction ID: TXN-{}",
+            "    Payment successful! Transaction ID: TXN-{}",
             self.order_id
         );
 
@@ -120,14 +133,14 @@ impl OrderProcessor {
             Ordering::SeqCst,
         );
         if should_fail > 0 {
-            println!("    ✗ CRASH: Worker died during inventory reservation!");
+            println!("    CRASH: Worker died during inventory reservation!");
             tokio::time::sleep(Duration::from_millis(50)).await;
             return Err("Worker crashed during inventory reservation".to_string());
         }
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        println!("    ✓ Inventory reserved successfully");
+        println!("    Inventory reserved successfully");
 
         Ok(InventoryResult {
             reservation_id: format!("RES-{}", self.order_id),
@@ -184,9 +197,8 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║       Crash Recovery & Step Resumability Demo           ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\nCrash Recovery & Step Resumability Demo");
+    println!("========================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = FlowScheduler::new(storage.clone());
@@ -207,9 +219,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // PHASE 1: First worker processes until crash
     // ========================================================================
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  PHASE 1: Worker-1 starts processing (will crash)         ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("PHASE 1: Worker-1 starts processing (will crash)");
+    println!("=================================================\n");
 
     let storage_clone = storage.clone();
     let worker1 = tokio::spawn(async move {
@@ -234,9 +245,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check what happened
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  STATUS CHECK: What happened after crash?                 ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("STATUS CHECK: What happened after crash?");
+    println!("=========================================\n");
 
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
 
@@ -247,10 +257,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Skip flow itself (step 0)
             match inv.status() {
                 InvocationStatus::Complete => {
-                    println!("  ✓ {} (completed)", inv.method_name());
+                    println!("  {} (completed)", inv.method_name());
                 }
                 InvocationStatus::Pending => {
-                    println!("  ⏸ {} (pending)", inv.method_name());
+                    println!("  {} (pending)", inv.method_name());
                 }
                 _ => {}
             }
@@ -258,21 +268,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
-    println!("\n💳 Payment charged: {} time(s)", payment_count);
+    println!("\nPayment charged: {} time(s)", payment_count);
 
     if payment_count == 1 {
-        println!("   ✓ Good! Customer charged exactly once");
+        println!("   Good! Customer charged exactly once");
     } else {
-        println!("   ✗ ERROR! Duplicate charge detected!");
+        println!("   ERROR! Duplicate charge detected!");
     }
 
     // ========================================================================
     // PHASE 2: Demonstrate manual retry/recovery (in production: automatic)
     // ========================================================================
 
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║  PHASE 2: Recovery - Retry the failed flow                ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nPHASE 2: Recovery - Retry the failed flow");
+    println!("==========================================\n");
 
     println!("Note: For automatic retry with exponential backoff, see retry_recovery_demo.rs");
     println!("This demo shows manual re-scheduling to demonstrate crash recovery\n");
@@ -307,9 +316,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // FINAL RESULTS
     // ========================================================================
 
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                     FINAL RESULTS                          ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nFINAL RESULTS");
+    println!("=============\n");
 
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
     let flow_invocation = invocations.iter().find(|i| i.step() == 0);
@@ -321,44 +329,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nAll Steps:");
     for inv in &invocations {
         if inv.step() > 0 {
-            println!("  ✓ {} (completed)", inv.method_name());
+            println!("  {} (completed)", inv.method_name());
         }
     }
 
     let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
     let inventory_count = INVENTORY_RESERVE_COUNT.load(Ordering::SeqCst);
 
-    println!("\n📊 Execution Statistics:");
+    println!("\nExecution Statistics:");
     println!("  Payment charged:     {} time(s)", payment_count);
     println!("  Inventory reserved:  {} time(s)", inventory_count);
 
-    println!("\n🎯 Key Takeaways:");
+    println!("\nKey Takeaways:");
 
     if payment_count == 1 {
-        println!("  ✓ Payment step ran exactly ONCE despite worker crash");
-        println!("  ✓ Worker-2 resumed at 'reserve_inventory' step");
-        println!("  ✓ Payment data automatically loaded from storage");
-        println!("  ✓ No duplicate charges - customer billed correctly");
+        println!("  - Payment step ran exactly ONCE despite worker crash");
+        println!("  - Worker-2 resumed at 'reserve_inventory' step");
+        println!("  - Payment data automatically loaded from storage");
+        println!("  - No duplicate charges - customer billed correctly");
     } else {
         println!(
-            "  ✗ Payment step ran {} times - duplicate charge!",
+            "  - Payment step ran {} times - duplicate charge!",
             payment_count
         );
     }
 
-    println!("\n💡 With Regular Queues:");
-    println!("  ✗ Entire task would retry from step 1");
+    println!("\nWith Regular Queues:");
+    println!("  - Entire task would retry from step 1");
     println!(
-        "  ✗ Customer would be charged {} times",
+        "  - Customer would be charged {} times",
         if payment_count == 1 { 2 } else { payment_count }
     );
-    println!("  ✗ Need 50+ lines of manual idempotency checks");
+    println!("  - Need 50+ lines of manual idempotency checks");
 
-    println!("\n💡 With Ergon:");
-    println!("  ✓ Automatic step-level resumability");
-    println!("  ✓ Zero boilerplate idempotency code");
-    println!("  ✓ Exactly-once execution guaranteed");
-    println!("  ✓ For automatic retry with backoff, see: retry_recovery_demo.rs\n");
+    println!("\nWith Ergon:");
+    println!("  - Automatic step-level resumability");
+    println!("  - Zero boilerplate idempotency code");
+    println!("  - Exactly-once execution guaranteed");
+    println!("  - For automatic retry with backoff, see: retry_recovery_demo.rs\n");
 
     Ok(())
 }

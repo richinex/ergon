@@ -1,20 +1,36 @@
-//! Sequential Execution with Input Data Wiring
+//! Sequential execution with input data wiring
 //!
-//! This example demonstrates how to use the `inputs` attribute to wire data
-//! between steps. The `inputs` attribute automatically adds the referenced
-//! steps to the dependencies list.
+//! This example demonstrates:
+//! - Using the `inputs` attribute to wire data between steps
+//! - Automatic dependency creation from inputs
+//! - Type-safe data flow with automatic serialization/deserialization
+//! - Multi-branch pipelines with input merging
+//! - Fan-in patterns where multiple steps converge
 //!
-//! Pattern: fetch -> transform -> validate -> save
+//! ## Scenario
+//! Example 1: Linear Pipeline
+//! - Step 1: Fetch raw data from source
+//! - Step 2: Transform data (receives raw data via inputs)
+//! - Step 3: Validate transformed data (receives transformed data via inputs)
+//! - Step 4: Save result (receives validation result via inputs)
 //!
-//! Key Points:
-//! - `inputs` attribute automatically creates dependencies (no depends_on needed!)
-//! - Type-safe data flow: inputs are deserialized and type-checked
+//! Example 2: Parallel Branches with Merge
+//! - Root: Fetch user profile
+//! - Branch 1: Fetch preferences (parallel execution)
+//! - Branch 2: Fetch analytics (parallel execution)
+//! - Merge: Enrich profile with all data from three inputs
+//!
+//! ## Key Takeaways
+//! - `inputs` attribute automatically adds referenced steps to dependencies (no depends_on needed)
+//! - Type-safe data wiring prevents runtime serialization errors
 //! - Can reference any earlier step, not just the previous one
-//! - Multiple inputs create parallel fan-in (merge pattern)
+//! - Multiple inputs create fan-in merge patterns naturally
+//! - Parallel branches can converge at a merge point using multiple inputs
 //!
-//! Example:
-//!   #[step(inputs(value = "step1"))]  // Auto-depends on step1
-//!   async fn step2(value: i32) -> i32 { value * 2 }
+//! ## Run with
+//! ```bash
+//! cargo run --example sequential_inputs
+//! ```
 
 use ergon::Ergon;
 use ergon::{flow, step};
@@ -55,8 +71,6 @@ impl DataPipeline {
         Self { source }
     }
 
-    // Step 1: Fetch raw data from source
-    // No depends_on - this is the first step
     #[step]
     async fn fetch_raw_data(self: Arc<Self>) -> Result<RawData, String> {
         println!("\n[1/4] Fetching raw data from source: {}", self.source);
@@ -72,8 +86,6 @@ impl DataPipeline {
         Ok(data)
     }
 
-    // Step 2: Transform the raw data
-    // inputs automatically adds fetch_raw_data to dependencies (no need for depends_on!)
     #[step(inputs(raw = "fetch_raw_data"))]
     async fn transform_data(self: Arc<Self>, raw: RawData) -> Result<TransformedData, String> {
         println!("\n[2/4] Transforming data: {}", raw.id);
@@ -95,8 +107,6 @@ impl DataPipeline {
         Ok(transformed)
     }
 
-    // Step 3: Validate the transformed data
-    // inputs automatically adds transform_data to dependencies
     #[step(inputs(data = "transform_data"))]
     async fn validate_data(
         self: Arc<Self>,
@@ -129,8 +139,6 @@ impl DataPipeline {
         })
     }
 
-    // Step 4: Save the validated result
-    // inputs automatically adds validate_data to dependencies
     #[step(inputs(result = "validate_data"))]
     async fn save_result(self: Arc<Self>, result: ValidationResult) -> Result<String, String> {
         println!("\n[4/4] Saving result for: {}", result.data.id);
@@ -151,11 +159,8 @@ impl DataPipeline {
         Ok(save_path)
     }
 
-    // Flow orchestrator: register all steps
     #[flow]
     async fn process_pipeline(self: Arc<Self>) -> Result<String, String> {
-        // Steps execute sequentially in registration order
-        // Data flows through inputs automatically
         self.register_fetch_raw_data();
         self.register_transform_data();
         self.register_validate_data();
@@ -163,7 +168,6 @@ impl DataPipeline {
     }
 }
 
-// Example 2: Multi-branch pipeline with inputs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EnrichmentPipeline {
     user_id: String,
@@ -187,7 +191,6 @@ impl EnrichmentPipeline {
         Self { user_id }
     }
 
-    // Root: Fetch user profile
     #[step]
     async fn fetch_profile(self: Arc<Self>) -> Result<UserProfile, String> {
         println!("\n[Branch] Fetching profile for user: {}", self.user_id);
@@ -200,7 +203,6 @@ impl EnrichmentPipeline {
         })
     }
 
-    // Branch 1: Fetch preferences (depends on profile)
     #[step(depends_on = "fetch_profile")]
     async fn fetch_preferences(self: Arc<Self>) -> Result<Preferences, String> {
         println!("[Branch] Fetching preferences (parallel with analytics)");
@@ -212,7 +214,6 @@ impl EnrichmentPipeline {
         })
     }
 
-    // Branch 2: Fetch analytics (also depends on profile - runs in PARALLEL)
     #[step(depends_on = "fetch_profile")]
     async fn fetch_analytics(self: Arc<Self>) -> Result<i32, String> {
         println!("[Branch] Fetching analytics (parallel with preferences)");
@@ -221,8 +222,6 @@ impl EnrichmentPipeline {
         Ok(42) // Activity score
     }
 
-    // Merge: Combine all data using inputs
-    // inputs automatically adds all three steps to dependencies (no depends_on needed!)
     #[step(inputs(
         profile = "fetch_profile",
         prefs = "fetch_preferences",
@@ -253,17 +252,16 @@ impl EnrichmentPipeline {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<String, String> {
         self.register_fetch_profile();
-        self.register_fetch_preferences(); // Parallel with analytics
-        self.register_fetch_analytics(); // Parallel with preferences
-        self.register_enrich_profile() // Merges all three
+        self.register_fetch_preferences();
+        self.register_fetch_analytics();
+        self.register_enrich_profile()
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n=== EXAMPLE 1: Linear Sequential Pipeline with Inputs ===");
-    println!("Pattern: Fetch -> Transform -> Validate -> Save");
-    println!("Each step receives data from previous step via inputs attribute\n");
+    println!("\nEXAMPLE 1: Linear Sequential Pipeline with Inputs");
+    println!("===================================================");
 
     let storage1 = Arc::new(InMemoryExecutionLog::new());
     storage1.reset().await?;
@@ -274,12 +272,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance1 = Ergon::new_flow(Arc::clone(&pipeline), flow_id1, Arc::clone(&storage1));
     let result1 = instance1.execute(|f| f.process_pipeline()).await;
 
-    println!("\n=== Result ===");
+    println!("\nResult:");
     println!("{:?}", result1);
 
-    println!("\n\n=== EXAMPLE 2: Parallel Branches with Input Merging ===");
-    println!("Pattern: Root -> (Branch1 || Branch2) -> Merge");
-    println!("Merge step receives data from all branches via inputs\n");
+    println!("\n\nEXAMPLE 2: Parallel Branches with Input Merging");
+    println!("================================================");
 
     let storage2 = Arc::new(InMemoryExecutionLog::new());
     storage2.reset().await?;
@@ -290,15 +287,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance2 = Ergon::new_flow(Arc::clone(&enrichment), flow_id2, Arc::clone(&storage2));
     let result2 = instance2.execute(|f| f.process()).await;
 
-    println!("\n=== Result ===");
+    println!("\nResult:");
     println!("{:?}", result2);
-
-    println!("\n\n=== Key Takeaways ===");
-    println!("1. inputs automatically adds referenced steps to dependencies");
-    println!("2. No need to duplicate step names in depends_on and inputs");
-    println!("3. Type-safe data wiring with automatic serialization/deserialization");
-    println!("4. Can reference any earlier step (not just the previous one)");
-    println!("5. Multiple inputs create fan-in merge patterns naturally");
 
     Ok(())
 }

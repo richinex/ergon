@@ -18,19 +18,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-// Global counters to track execution
 static PAYMENT_CHARGE_COUNT: AtomicU32 = AtomicU32::new(0);
 static INVENTORY_ATTEMPT_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Custom error type with retry logic
 #[derive(Debug, Serialize, Deserialize)]
 enum InventoryError {
-    // Transient errors - should retry
     NetworkTimeout,
     ServiceUnavailable,
     TemporaryOutOfStock,
-
-    // Permanent errors - should NOT retry
     ProductNotFound,
     InsufficientStock,
     InvalidWarehouse,
@@ -76,27 +71,13 @@ struct OrderProcessor {
 }
 
 impl OrderProcessor {
-    /// Process order with automatic retry at flow level.
-    ///
-    /// The retry policy is set on the flow, not individual steps.
-    /// When any step fails with a transient error, the worker will:
-    /// 1. Retry the entire flow (with exponential backoff)
-    /// 2. Due to step caching, the flow resumes from the failed step
-    /// 3. Previous steps (like payment) are NOT re-executed
     #[flow(retry = RetryPolicy::STANDARD)]
     async fn process_order(self: Arc<Self>) -> Result<OrderResult, String> {
         println!("[FLOW] Processing order {}", self.order_id);
 
-        // Step 1: Validate order
         let validation = Arc::clone(&self).validate_order().await?;
-
-        // Step 2: Charge payment (CRITICAL - must run exactly once!)
         let payment = Arc::clone(&self).charge_payment(validation).await?;
-
-        // Step 3: Reserve inventory (may fail with transient error)
         let inventory = Arc::clone(&self).reserve_inventory(payment).await?;
-
-        // Step 4: Send confirmation
         let result = Arc::clone(&self).send_confirmation(inventory).await?;
 
         println!("[FLOW] Order {} completed successfully", self.order_id);
@@ -125,19 +106,17 @@ impl OrderProcessor {
             validation.order_id
         );
 
-        // THIS IS THE CRITICAL STEP - We track how many times it runs
         let count = PAYMENT_CHARGE_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
 
         println!(
-            "    💳 CHARGING ${:.2} to customer {} (charge attempt #{})",
+            "    Charging ${:.2} to customer {} (charge attempt #{})",
             self.amount, self.customer_id, count
         );
 
-        // Simulate payment processing
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         println!(
-            "    ✓ Payment successful! Transaction ID: TXN-{}",
+            "    Payment successful! Transaction ID: TXN-{}",
             self.order_id
         );
 
@@ -148,10 +127,6 @@ impl OrderProcessor {
         })
     }
 
-    /// Reserve inventory - may fail with transient error.
-    ///
-    /// Retry is handled at the flow level, not here.
-    /// The worker will retry the entire flow if this step fails.
     #[step(inputs(payment = "charge_payment"))]
     async fn reserve_inventory(
         self: Arc<Self>,
@@ -167,18 +142,16 @@ impl OrderProcessor {
             "    Payment data loaded from storage: ${:.2} charged at timestamp {}",
             payment.amount_charged, payment.charged_at
         );
-        println!("    🔄 Inventory reservation attempt {}", count);
+        println!("    Inventory reservation attempt {}", count);
 
-        // Simulate transient failures on first 2 attempts
         if count < 3 {
-            println!("    ⚠️  Service temporarily unavailable (simulated transient error)");
+            println!("    Service temporarily unavailable (simulated transient error)");
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             return Err("Service temporarily unavailable".to_string());
         }
 
-        // Success on 3rd attempt
         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-        println!("    ✓ Inventory reserved successfully on attempt {}", count);
+        println!("    Inventory reserved successfully on attempt {}", count);
 
         Ok(InventoryResult {
             reservation_id: format!("RES-{}", self.order_id),
@@ -235,14 +208,12 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║     Retry Policy with Crash Recovery Demo               ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\nRetry Policy with Crash Recovery Demo");
+    println!("======================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = FlowScheduler::new(storage.clone());
 
-    // Schedule an order
     let order = OrderProcessor {
         order_id: "ORD-67890".to_string(),
         amount: 499.99,
@@ -251,17 +222,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id = Uuid::new_v4();
     scheduler.schedule(order.clone(), flow_id).await?;
 
-    println!("📋 Scheduled order: {}", order.order_id);
-    println!("💰 Amount to charge: ${:.2}", order.amount);
-    println!("🔄 Retry Policy: STANDARD (3 attempts, exponential backoff)\n");
+    println!("Scheduled order: {}", order.order_id);
+    println!("Amount to charge: ${:.2}", order.amount);
+    println!("Retry Policy: STANDARD (3 attempts, exponential backoff)\n");
 
-    // ========================================================================
-    // Execute the workflow with automatic retry
-    // ========================================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  Processing Order with Automatic Retry                    ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("Processing Order with Automatic Retry");
+    println!("======================================\n");
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {
@@ -273,7 +239,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         let handle = worker.start().await;
 
-        // Wait for workflow to complete (including retries)
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         handle.shutdown().await;
@@ -281,23 +246,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker.await?;
 
-    // ========================================================================
-    // FINAL RESULTS
-    // ========================================================================
-
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                     FINAL RESULTS                          ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nFinal Results");
+    println!("=============\n");
 
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
 
-    // Check flow status (step 0)
     let flow_inv = invocations.iter().find(|i| i.step() == 0);
     if let Some(flow) = flow_inv {
         println!("Flow Status: {:?}", flow.status());
         if let Some(result) = flow.return_value() {
             println!("Flow Result bytes: {} bytes", result.len());
-            // Try to deserialize to see if it's Ok or Err
             match ergon::core::deserialize_value::<Result<OrderResult, String>>(result) {
                 Ok(Ok(order_result)) => println!("Flow returned Ok: {:?}", order_result),
                 Ok(Err(error)) => println!("Flow returned Err: {}", error),
@@ -311,7 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nAll Steps:");
     for inv in &invocations {
         if inv.step() > 0 {
-            println!("  ✓ {} (status: {:?})", inv.method_name(), inv.status());
+            println!("  {} (status: {:?})", inv.method_name(), inv.status());
             if let Some(policy) = inv.retry_policy() {
                 println!(
                     "    Retry Policy: max_attempts={}, backoff={}x",
@@ -324,43 +282,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
     let inventory_attempts = INVENTORY_ATTEMPT_COUNT.load(Ordering::SeqCst);
 
-    println!("\n📊 Execution Statistics:");
+    println!("\nExecution Statistics:");
     println!("  Payment charged:     {} time(s)", payment_count);
     println!("  Inventory attempts:  {} time(s)", inventory_attempts);
-
-    println!("\n🎯 Key Takeaways:");
-
-    if payment_count == 1 {
-        println!("  ✓ Payment step ran exactly ONCE (no retries on non-retryable step)");
-    } else {
-        println!("  ✗ Payment step ran {} times - unexpected!", payment_count);
-    }
-
-    if inventory_attempts == 3 {
-        println!(
-            "  ✓ Inventory step retried {} times with exponential backoff",
-            inventory_attempts
-        );
-        println!("  ✓ RetryableError trait identified transient failures");
-        println!("  ✓ Succeeded on attempt 3 after automatic retries");
-    } else {
-        println!(
-            "  ⚠️  Inventory attempts: {} (expected 3)",
-            inventory_attempts
-        );
-    }
-
-    println!("\n💡 Retry Policy Benefits:");
-    println!("  ✓ Automatic retry with exponential backoff");
-    println!("  ✓ RetryableError distinguishes transient vs permanent errors");
-    println!("  ✓ No manual retry logic needed");
-    println!("  ✓ Configurable retry strategies (NONE, STANDARD, AGGRESSIVE, custom)");
-
-    println!("\n💡 Combined with Durable Execution:");
-    println!("  ✓ Step-level resumability + automatic retry = resilient workflows");
-    println!("  ✓ Payment runs once, inventory retries on transient errors");
-    println!("  ✓ Worker crashes handled by resumability");
-    println!("  ✓ Transient errors handled by retry policy\n");
 
     Ok(())
 }

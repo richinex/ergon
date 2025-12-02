@@ -5,12 +5,32 @@
 //! - Step-level resumability: Flow resumes from failed step after crash
 //! - Payment runs exactly once despite multiple retry attempts
 //! - No manual idempotency checks or re-scheduling required
+//! - Exactly-once semantics for critical payment operations
 //!
-//! Flow: validate → charge_payment → reserve_inventory → send_confirmation
-//! Scenario: Worker crashes during reserve_inventory
-//! Expected: Worker automatically retries, resumes at reserve_inventory, payment NOT re-run
+//! ## Scenario
+//! - Order processing flow: validate → charge_payment → reserve_inventory → send_confirmation
+//! - Worker processes order ORD-12345 for $299.99
+//! - Payment step succeeds (charges customer)
+//! - Inventory reservation fails twice with "Service temporarily unavailable"
+//! - Worker automatically retries flow with exponential backoff (RetryPolicy::STANDARD)
+//! - On retry: Flow resumes at reserve_inventory step (payment NOT re-executed)
+//! - Inventory succeeds on 3rd attempt, order completes successfully
 //!
-//! Run: cargo run --example crash_recovery_demo
+//! ## Key Takeaways
+//! - Payment charged exactly ONCE despite 3 inventory reservation attempts
+//! - Flow automatically resumes from failed step (not from beginning)
+//! - Payment data loaded from storage on retry (automatic step caching)
+//! - Zero manual idempotency code required
+//! - Retry policy handles exponential backoff automatically
+//! - Contrast with regular queues: Would retry entire flow, charging customer 3 times!
+//!
+//! ## Prerequisites
+//! SQLite database created at /tmp/ergon_benchmark_sqlite.db
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example crash_recovery_demo_sqlite --features=sqlite
+//! ```
 
 use ergon::core::RetryPolicy;
 use ergon::prelude::*;

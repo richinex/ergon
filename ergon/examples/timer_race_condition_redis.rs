@@ -1,39 +1,36 @@
 //! Timer Race Condition Example (Redis)
 //!
-//! This example demonstrates how ergon handles the race condition where
-//! a timer fires BETWEEN log_timer() and await_timer() calls with Redis storage.
+//! This example demonstrates:
+//! - Handling timer race conditions with Redis backend
+//! - Very short timers (1ms) that fire before await starts
+//! - Multiple concurrent flows with aggressive timer polling
+//! - Redis sorted sets for efficient timer expiry queries
+//! - Lua scripts for atomic timer claiming
+//! - Deadlock prevention via status checking
 //!
-//! ## The Race Condition Scenario
+//! ## Scenario
+//! Three flows run concurrently, each scheduling 5 very short timers (1ms).
+//! With aggressive 10ms polling, timers often fire BEFORE await_timer starts waiting.
+//! Ergon prevents deadlock by checking timer status after creating the notifier.
 //!
-//! 1. Flow calls schedule_timer(Duration::from_millis(1))
-//! 2. Timer is logged to Redis with fire_at = now + 1ms
-//! 3. Timer processor polls and finds the expired timer
-//! 4. Timer processor fires the timer and notifies
-//! 5. Flow hasn't started waiting yet - notification is lost!
-//!
-//! ## How Ergon Handles It
-//!
-//! 1. schedule_timer() logs timer to Redis sorted set
-//! 2. Timer processor might fire it immediately via Lua script
-//! 3. await_timer() checks Redis after creating notifier
-//! 4. If status=Complete, returns immediately (no wait)
-//! 5. This prevents deadlock from lost notifications
-//!
-//! ## Redis Implementation Details
-//!
-//! - Sorted set (ZSET) for efficient expiry queries by timestamp
-//! - Lua script for atomic timer claiming (prevents duplicate firing)
-//! - Hash (HASH) for timer metadata storage
+//! ## Key Takeaways
+//! - schedule_timer logs timer to Redis sorted set with fire_at timestamp
+//! - Timer processor might fire timer immediately via Lua script
+//! - await_timer checks Redis after creating notifier to prevent deadlock
+//! - If timer already Complete, returns immediately without waiting
 //! - Multiple workers coordinate via Redis atomic operations
+//! - 15 total timers complete without deadlocks despite race conditions
 //!
-//! ## Test Configuration
+//! ## Prerequisites
+//! Start Redis:
+//! ```bash
+//! docker run -d -p 6379:6379 redis:latest
+//! ```
 //!
-//! - 3 concurrent flows running simultaneously
-//! - Each flow schedules 5 VERY short timers (1ms each)
-//! - Aggressive polling (10ms) creates ideal race conditions
-//! - 15 total timers must complete without deadlocks
-//!
-//! Run: cargo run --example timer_race_condition_redis --features=redis
+//! ## Run with
+//! ```bash
+//! cargo run --example timer_race_condition_redis --features redis
+//! ```
 
 use chrono::Utc;
 use ergon::executor::{schedule_timer, FlowWorker};

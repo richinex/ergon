@@ -1,28 +1,34 @@
 //! Distributed Worker Failover Demo with RetryableError
 //!
-//! This example demonstrates Ergon's distributed retry system with multiple workers.
+//! This example demonstrates:
+//! - Distributed execution with multiple workers polling the same queue
+//! - Automatic failover when a worker crashes mid-execution
+//! - Step-level resumability ensuring completed steps are not re-executed
+//! - RetryableError trait for distinguishing transient vs permanent errors
+//! - Durable retry state that survives worker crashes
+//! - Zero duplicate operations (payment not re-charged after failover)
 //!
-//! ## Scenario:
-//! 1. Three workers (Worker-A, Worker-B, Worker-C) polling the same queue
-//! 2. Worker-A picks up the flow and starts processing
-//! 3. Worker-A completes Steps 1-2 (validate, charge payment)
-//! 4. Worker-A CRASHES during Step 3 (reserve inventory)
-//! 5. Flow is automatically retried and re-queued
-//! 6. Worker-B picks up the flow
-//! 7. Worker-B skips Steps 1-2 (loaded from cache)
-//! 8. Worker-B completes Step 3 successfully
+//! ## Scenario
+//! Three workers (Worker-A, Worker-B, Worker-C) poll the same queue. Worker-A picks up
+//! a flow and completes steps 1-2 (validate, charge payment). Worker-A then CRASHES during
+//! step 3 (reserve inventory). The flow is automatically retried and re-queued. Worker-B
+//! picks up the flow, skips steps 1-2 (loaded from cache), and completes step 3 successfully.
+//! The payment is never re-charged, demonstrating step-level resumability.
 //!
-//! ## Key Demonstrations:
-//! - Distributed execution with multiple workers
-//! - Automatic failover when a worker crashes
-//! - Step-level resumability (payment NOT re-charged)
-//! - RetryableError trait for smart error handling
-//! - Transient vs Permanent error distinction
-//! - Durable retry state (survives worker crashes)
-//! - Exponential backoff between retries
-//! - Zero duplicate operations
+//! ## Key Takeaways
+//! - Multiple workers can safely process from the same queue
+//! - Worker crashes don't lose progress - completed steps stay completed
+//! - RetryableError trait controls which errors trigger retry
+//! - Transient errors (crashes, network timeouts) are automatically retried
+//! - Permanent errors (validation failures) fail immediately without retry
+//! - Exponential backoff prevents thundering herd during retries
+//! - Framework guarantees exactly-once semantics for each step
+//! - Failover is automatic and requires no manual intervention
 //!
-//! Run: cargo run --example distributed_worker_failover
+//! ## Run with
+//! ```bash
+//! cargo run --example distributed_worker_failover
+//! ```
 
 use ergon::core::RetryPolicy;
 use ergon::prelude::*;

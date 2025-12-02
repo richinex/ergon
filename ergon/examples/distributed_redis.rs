@@ -1,49 +1,55 @@
 //! Redis distributed worker example
 //!
-//! This example demonstrates TRUE multi-machine distributed execution using Redis.
-//! Unlike SQLite which requires shared filesystem access, Redis workers can run
-//! on completely separate machines across the network.
+//! This example demonstrates:
+//! - TRUE multi-machine distributed execution using Redis
+//! - Workers can run on completely separate machines across the network
+//! - Unlike SQLite which requires shared filesystem, Redis works over the network
+//! - Separate scheduler and worker processes
+//! - Multiple workers processing jobs in parallel across machines
 //!
-//! # Setup
+//! ## Scenario
+//! - Machine A: Scheduler schedules 5 batch jobs and 3 email notifications
+//! - Machine B: Worker-1 polls Redis and processes available jobs
+//! - Machine C: Worker-2 polls Redis and processes available jobs
+//! - Workers coordinate via Redis to avoid duplicate processing
+//! - Each job is processed exactly once by one of the workers
 //!
-//! 1. Start Redis server:
-//!    ```bash
-//!    docker run -d -p 6379:6379 redis:latest
-//!    # or
-//!    redis-server
-//!    ```
+//! ## Key Takeaways
+//! - Redis enables true distributed execution across network-connected machines
+//! - Scheduler and workers are separate processes that can run anywhere
+//! - Workers coordinate automatically via Redis (no duplicate processing)
+//! - Optimistic concurrency control prevents race conditions
+//! - Workers can be added/removed dynamically
 //!
-//! 2. Run scheduler (can be on Machine A):
-//!    ```bash
-//!    cargo run --example distributed_redis --features redis -- --mode scheduler
-//!    ```
-//!
-//! 3. Run workers (can be on Machine B, C, D...):
-//!    ```bash
-//!    cargo run --example distributed_redis --features redis -- --mode worker --id worker-1
-//!    cargo run --example distributed_redis --features redis -- --mode worker --id worker-2
-//!    ```
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌─────────────────┐
-//! │  Machine A      │
-//! │  Scheduler      │ ──┐
-//! └─────────────────┘   │
-//!                       ├──→ Redis Server (any machine)
-//! ┌─────────────────┐   │    - ergon:queue:pending (LIST)
-//! │  Machine B      │   │    - ergon:flow:{id} (HASH)
-//! │  Worker 1       │ ──┤    - ergon:running (ZSET)
-//! └─────────────────┘   │
-//!                       │
-//! ┌─────────────────┐   │
-//! │  Machine C      │   │
-//! │  Worker 2       │ ──┘
-//! └─────────────────┘
+//! ## Prerequisites
+//! Start Redis server:
+//! ```bash
+//! docker run -d -p 6379:6379 redis:latest
+//! # or
+//! redis-server
 //! ```
 //!
-//! Run with: cargo run --example distributed_redis --features redis
+//! ## Run with
+//! Scheduler (Machine A):
+//! ```bash
+//! cargo run --example distributed_redis --features redis -- --mode scheduler
+//! ```
+//!
+//! Workers (Machines B, C, D...):
+//! ```bash
+//! cargo run --example distributed_redis --features redis -- --mode worker --id worker-1
+//! cargo run --example distributed_redis --features redis -- --mode worker --id worker-2
+//! ```
+//!
+//! ## Architecture
+//! ```text
+//! Machine A (Scheduler) --+
+//!                         |
+//! Machine B (Worker 1) ---+--> Redis Server (any machine)
+//!                         |      - ergon:queue:pending (LIST)
+//! Machine C (Worker 2) ---+      - ergon:flow:{id} (HASH)
+//!                                - ergon:running (ZSET)
+//! ```
 
 use ergon::prelude::*;
 use std::env;
@@ -160,7 +166,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
         let flow_id = Uuid::new_v4();
         let task_id = scheduler.schedule(job, flow_id).await?;
         println!(
-            "   ✓ Scheduled JOB-{:03} (task_id: {})",
+            "   Scheduled JOB-{:03} (task_id: {})",
             i,
             task_id.to_string().split('-').next().unwrap_or("")
         );
@@ -177,7 +183,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
         let flow_id = Uuid::new_v4();
         let task_id = scheduler.schedule(email, flow_id).await?;
         println!(
-            "   ✓ Scheduled email to user{} (task_id: {})",
+            "   Scheduled email to user{} (task_id: {})",
             i,
             task_id.to_string().split('-').next().unwrap_or("")
         );
@@ -225,7 +231,7 @@ async fn run_worker(redis_url: &str, worker_id: &str) -> Result<(), Box<dyn std:
     println!("\n4. Shutting down worker...");
     handle.shutdown().await;
 
-    println!("   ✓ Worker stopped gracefully\n");
+    println!("   Worker stopped gracefully\n");
 
     // Show final status
     let incomplete = storage.get_incomplete_flows().await?;
@@ -284,9 +290,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n");
-    println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║         Ergon Redis Distributed Execution               ║");
-    println!("╚══════════════════════════════════════════════════════════╝");
+    println!("\nErgon Redis Distributed Execution");
+    println!("==================================");
     println!();
 
     match mode {

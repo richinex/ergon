@@ -1,15 +1,30 @@
 //! Built-in Observability Demo
 //!
 //! This example demonstrates:
-//! - Zero-boilerplate observability - no manual logging needed
-//! - Query incomplete flows and see exactly where they're stuck
-//! - Inspect flow execution history without instrumentation
-//! - Compare with regular queues (no visibility)
+//! - Zero-boilerplate observability with no manual logging needed
+//! - Querying incomplete flows to see exactly where they are stuck
+//! - Inspecting flow execution history without instrumentation
+//! - Step-level visibility and progress tracking out of the box
+//! - Comparing Ergon's built-in observability vs regular queues
 //!
-//! Scenario: Mix of flows - some complete, some stuck, some in progress
-//! Goal: Show how easy it is to inspect flow state
+//! ## Scenario
+//! Five payment processing orders are scheduled: three will complete successfully,
+//! two will fail at the card authorization step. We then query the execution log
+//! to inspect the state of each flow, show step-by-step progress, and identify
+//! where failed flows are stuck.
 //!
-//! Run: cargo run --example observability_demo
+//! ## Key Takeaways
+//! - No manual logging code required - execution is automatically tracked
+//! - Query incomplete flows with simple API: storage.get_incomplete_flows()
+//! - Inspect step-by-step progress for any flow with get_invocations_for_flow()
+//! - Know exactly which step a flow is stuck at without custom instrumentation
+//! - Compare with regular queues where you'd need 100+ lines of boilerplate
+//! - Production-ready monitoring and debugging built into the framework
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example observability_demo
+//! ```
 
 use ergon::core::InvocationStatus;
 use ergon::prelude::*;
@@ -60,7 +75,7 @@ impl PaymentProcessor {
 
         // Some orders fail at authorization (stuck here)
         if self.should_fail {
-            println!("    ✗ Authorization failed for order {}", self.order_id);
+            println!("    Authorization failed for order {}", self.order_id);
             return Err(format!("Card declined for order {}", self.order_id));
         }
 
@@ -127,9 +142,9 @@ struct PaymentResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║         Built-in Observability Demo                     ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\n==============================================================");
+    println!("         Built-in Observability Demo");
+    println!("==============================================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = FlowScheduler::new(storage.clone());
@@ -143,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("ORD-005", 79.99, false),  // Will complete
     ];
 
-    println!("📋 Scheduling {} payment orders:\n", orders.len());
+    println!("Scheduling {} payment orders:\n", orders.len());
     let mut flow_ids = Vec::new();
 
     for (order_id, amount, should_fail) in &orders {
@@ -161,16 +176,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "(will succeed)"
         };
-        println!("  • {} - ${:.2} {}", order_id, amount, status);
+        println!("  - {} - ${:.2} {}", order_id, amount, status);
     }
 
     // ========================================================================
     // Process orders with a single worker
     // ========================================================================
 
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║  Processing orders...                                      ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\n==============================================================");
+    println!("  Processing orders...");
+    println!("==============================================================\n");
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {
@@ -194,11 +209,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // OBSERVABILITY: Query and inspect flow states
     // ========================================================================
 
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║    OBSERVABILITY: Zero-Boilerplate Flow Inspection        ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\n==============================================================");
+    println!("    OBSERVABILITY: Zero-Boilerplate Flow Inspection");
+    println!("==============================================================\n");
 
-    println!("🔍 Query 1: Get ALL incomplete flows\n");
+    println!("Query 1: Get ALL incomplete flows\n");
 
     let incomplete = storage.get_incomplete_flows().await?;
     println!("   Found {} incomplete flows:", incomplete.len());
@@ -207,11 +222,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   (All flows completed or none were stuck)");
     } else {
         for inv in &incomplete {
-            println!("     • Flow {} - {}", inv.id(), inv.class_name());
+            println!("     - Flow {} - {}", inv.id(), inv.class_name());
         }
     }
 
-    println!("\n🔍 Query 2: Detailed inspection of each order\n");
+    println!("\nQuery 2: Detailed inspection of each order\n");
 
     for (flow_id, order_id, _should_fail) in &flow_ids {
         let invocations = storage.get_invocations_for_flow(*flow_id).await?;
@@ -230,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .count();
 
         println!(
-            "  📦 Order: {} (${:.2})",
+            "  Order: {} (${:.2})",
             order_id,
             flow_ids
                 .iter()
@@ -251,10 +266,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("     Progress:");
             for step in &steps {
                 let status_icon = match step.status() {
-                    InvocationStatus::Complete => "✓",
-                    InvocationStatus::Pending => "⏸",
-                    InvocationStatus::WaitingForSignal => "⏳",
-                    InvocationStatus::WaitingForTimer => "⏲",
+                    InvocationStatus::Complete => "[DONE]",
+                    InvocationStatus::Pending => "[PEND]",
+                    InvocationStatus::WaitingForSignal => "[WAIT]",
+                    InvocationStatus::WaitingForTimer => "[TIME]",
                 };
                 println!(
                     "       {} {} (step {})",
@@ -274,12 +289,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(step) = last_completed {
                 println!(
-                    "     🔴 STUCK after: {} (step {})",
+                    "     STUCK after: {} (step {})",
                     step.method_name(),
                     step.step()
                 );
             } else {
-                println!("     🔴 STUCK at: First step");
+                println!("     STUCK at: First step");
             }
         }
 
@@ -290,25 +305,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Comparison with Regular Queues
     // ========================================================================
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║              WITH REGULAR QUEUES (No Ergon)                ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("==============================================================");
+    println!("              WITH REGULAR QUEUES (No Ergon)");
+    println!("==============================================================\n");
 
-    println!("❌ Query 1: \"Show me all stuck orders\"");
+    println!("Query 1: \"Show me all stuck orders\"");
     println!("   Error: No built-in API. You must:");
     println!("     1. Manually log every step to external DB");
     println!("     2. Write custom query logic");
     println!("     3. Maintain sync between queue and DB");
     println!("     4. Handle stale data");
 
-    println!("\n❌ Query 2: \"Which step did ORD-002 fail at?\"");
+    println!("\nQuery 2: \"Which step did ORD-002 fail at?\"");
     println!("   Error: No execution history. You must:");
     println!("     1. Check application logs (if they exist)");
     println!("     2. grep through log files");
     println!("     3. Hope someone logged the right info");
     println!("     4. No structured data to query");
 
-    println!("\n❌ Query 3: \"How many orders are stuck at authorization?\"");
+    println!("\nQuery 3: \"How many orders are stuck at authorization?\"");
     println!("   Error: Impossible without custom instrumentation");
     println!("     1. No step-level tracking");
     println!("     2. No queryable state");
@@ -318,15 +333,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // With Ergon - Built-in Observability
     // ========================================================================
 
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║               WITH ERGON (Zero Boilerplate)                ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\n==============================================================");
+    println!("               WITH ERGON (Zero Boilerplate)");
+    println!("==============================================================\n");
 
-    println!("✅ Query 1: \"Show me all stuck orders\"");
+    println!("Query 1: \"Show me all stuck orders\"");
     println!("   let incomplete = storage.get_incomplete_flows().await?;");
     println!("   → Returns: {} flows", incomplete.len());
 
-    println!("\n✅ Query 2: \"Which step did ORD-002 fail at?\"");
+    println!("\nQuery 2: \"Which step did ORD-002 fail at?\"");
     let ord002_flow = flow_ids
         .iter()
         .find(|(_, id, _)| id == "ORD-002")
@@ -349,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n✅ Query 3: \"How many orders are stuck at authorization?\"");
+    println!("\nQuery 3: \"How many orders are stuck at authorization?\"");
     let mut stuck_at_auth = 0;
     for (flow_id, _, _) in &flow_ids {
         let invocations = storage.get_invocations_for_flow(*flow_id).await?;
@@ -377,35 +392,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Summary
     // ========================================================================
 
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                        SUMMARY                             ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\n==============================================================");
+    println!("                        SUMMARY");
+    println!("==============================================================\n");
 
     let complete_count = flow_ids.len() - incomplete.len();
 
-    println!("📊 Execution Results:");
+    println!("Execution Results:");
     println!("   Total orders:     {}", flow_ids.len());
     println!("   Completed:        {}", complete_count);
     println!("   Failed/Stuck:     {}", incomplete.len());
 
-    println!("\n🎯 Key Takeaways:");
-    println!("   ✓ Zero manual logging code written");
-    println!("   ✓ Complete execution history automatically tracked");
-    println!("   ✓ Query flow state with simple API calls");
-    println!("   ✓ Step-level visibility out of the box");
-    println!("   ✓ Know exactly where each flow is stuck");
+    println!("\nKey Takeaways:");
+    println!("   - Zero manual logging code written");
+    println!("   - Complete execution history automatically tracked");
+    println!("   - Query flow state with simple API calls");
+    println!("   - Step-level visibility out of the box");
+    println!("   - Know exactly where each flow is stuck");
 
-    println!("\n💡 With Regular Queues:");
-    println!("   ✗ Must manually log every step");
-    println!("   ✗ Build custom tracking infrastructure");
-    println!("   ✗ Maintain separate observability system");
-    println!("   ✗ 100+ lines of boilerplate per workflow");
+    println!("\nWith Regular Queues:");
+    println!("   - Must manually log every step");
+    println!("   - Build custom tracking infrastructure");
+    println!("   - Maintain separate observability system");
+    println!("   - 100+ lines of boilerplate per workflow");
 
-    println!("\n💡 With Ergon:");
-    println!("   ✓ Automatic execution tracking");
-    println!("   ✓ Built-in queryable state");
-    println!("   ✓ Zero boilerplate observability");
-    println!("   ✓ Production-ready monitoring\n");
+    println!("\nWith Ergon:");
+    println!("   - Automatic execution tracking");
+    println!("   - Built-in queryable state");
+    println!("   - Zero boilerplate observability");
+    println!("   - Production-ready monitoring\n");
 
     Ok(())
 }

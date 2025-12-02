@@ -1,32 +1,32 @@
 //! RetryableError Trait - Proof of Concept
 //!
-//! This example provides CONCRETE EVIDENCE that the RetryableError trait works
-//! by demonstrating DIFFERENTIAL BEHAVIOR between retryable and non-retryable errors.
+//! This example demonstrates:
+//! - Concrete evidence that RetryableError trait controls retry behavior
+//! - Differential behavior between retryable and non-retryable errors
+//! - Execution counters proving retry logic respects is_retryable()
+//! - Retryable errors are automatically retried (ApiTimeout)
+//! - Non-retryable errors fail immediately without retry (ItemNotFound)
 //!
-//! ## Two Scenarios:
+//! ## Scenario
+//! Two parallel test cases run simultaneously: Scenario A returns a retryable error
+//! (ApiTimeout with is_retryable() = true), which causes the step to execute 3 times
+//! before succeeding. Scenario B returns a non-retryable error (ItemNotFound with
+//! is_retryable() = false), which causes the step to execute only 1 time and fail
+//! immediately without retry.
 //!
-//! ### Scenario A: RETRYABLE Error (ApiTimeout)
-//! - Error returns is_retryable() = true
-//! - Step executes 3 times (with retry)
-//! - Flow eventually succeeds
-//! - Evidence: STEP_A_EXECUTIONS = 3
+//! ## Key Takeaways
+//! - Execution counters provide concrete evidence of retry behavior
+//! - Retryable errors (STEP_A_EXECUTIONS = 3) are retried automatically
+//! - Non-retryable errors (STEP_B_EXECUTIONS = 1) fail immediately
+//! - The is_retryable() method controls whether an error triggers retry
+//! - RetryPolicy configuration respects the RetryableError trait
+//! - Framework distinguishes transient failures from permanent failures
+//! - This proves the trait is not just documentation but enforced behavior
 //!
-//! ### Scenario B: NON-RETRYABLE Error (ItemNotFound)
-//! - Error returns is_retryable() = false
-//! - Step executes ONLY 1 time (no retry)
-//! - Flow fails immediately
-//! - Evidence: STEP_B_EXECUTIONS = 1
-//!
-//! ## Key Evidence:
-//! If RetryableError is working correctly:
-//! - STEP_A_EXECUTIONS = 3 (retryable error retried)
-//! - STEP_B_EXECUTIONS = 1 (non-retryable error NOT retried)
-//!
-//! If RetryableError is NOT working:
-//! - Both would execute 3 times (ignoring is_retryable)
-//! - Both would execute 1 time (always failing immediately)
-//!
-//! Run: cargo run --example retryable_error_proof
+//! ## Run with
+//! ```bash
+//! cargo run --example retryable_error_proof
+//! ```
 
 use ergon::core::RetryPolicy;
 use ergon::prelude::*;

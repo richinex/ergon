@@ -120,7 +120,7 @@ impl OrderProcessor {
         // Simulate transient failures on first 2 attempts
         // The worker will automatically retry the flow when this returns an error
         if count < 3 {
-            println!("    ⚠️  Service temporarily unavailable (simulating transient error)");
+            println!("    Service temporarily unavailable (simulating transient error)");
             tokio::time::sleep(Duration::from_millis(50)).await;
             return Err("Service temporarily unavailable".to_string());
         }
@@ -184,9 +184,8 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║       Crash Recovery & Step Resumability Demo           ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\nCrash Recovery & Step Resumability Demo");
+    println!("========================================\n");
 
     // let storage = Arc::new(InMemoryExecutionLog::new());
     let redis_url = "redis://127.0.0.1:6379";
@@ -213,9 +212,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Worker with Automatic Retry
     // ========================================================================
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  Processing Order with Automatic Retry & Crash Recovery  ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("Processing Order with Automatic Retry & Crash Recovery");
+    println!("======================================================\n");
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {
@@ -239,9 +237,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // FINAL RESULTS
     // ========================================================================
 
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                     FINAL RESULTS                          ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("\nFINAL RESULTS");
+    println!("=============\n");
 
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
     let flow_invocation = invocations.iter().find(|i| i.step() == 0);
@@ -264,7 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Payment charged:     {} time(s)", payment_count);
     println!("  Inventory reserved:  {} time(s)", inventory_count);
 
-    println!("\n🎯 Key Takeaways:");
+    println!("\nKey Takeaways:");
 
     if payment_count == 1 {
         println!(
@@ -289,15 +286,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         println!("  ✓ Succeeded on attempt 3 after automatic retries");
     } else {
-        println!("  ⚠️  Inventory attempts: {} (expected 3)", inventory_count);
+        println!("  Inventory attempts: {} (expected 3)", inventory_count);
     }
 
-    println!("\n💡 With Regular Queues:");
+    println!("\nWith Regular Queues:");
     println!("  ✗ Entire task would retry from step 1");
     println!("  ✗ Customer would be charged {} times", inventory_count);
     println!("  ✗ Need 50+ lines of manual idempotency checks");
 
-    println!("\n💡 With Ergon:");
+    println!("\nWith Ergon:");
     println!("  ✓ Automatic worker-level retry with exponential backoff");
     println!("  ✓ Step-level resumability - flow resumes from failed step");
     println!("  ✓ Zero boilerplate idempotency code");

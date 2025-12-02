@@ -1,9 +1,35 @@
 //! InMemory Storage Benchmark
 //!
-//! Processes 20 data analysis flows with 4 sequential steps each.
-//! Uses `inputs` attribute to pass data between steps with complex aggregations.
+//! This example demonstrates:
+//! - InMemory storage backend performance characteristics
+//! - Multi-worker parallel flow processing
+//! - Sequential data analysis pipeline with 4 steps
+//! - Complex aggregations with inputs attribute
+//! - Throughput measurement and performance metrics
 //!
-//! Run: cargo run --example benchmark_inmemory
+//! ## Scenario
+//! - Process 20 data analysis flows concurrently
+//! - Each flow: generate_dataset → compute_statistics → transform_data → aggregate_results
+//! - 4 workers processing flows in parallel (5 flows per worker average)
+//! - Dataset: 1000 random values per flow
+//! - Statistics: mean, std_dev, min, max computed
+//! - Transformations: coefficient of variation, range ratio, IQR, normalized mean
+//! - Final score: weighted aggregation of all metrics
+//! - Workers poll every 50ms for new flows
+//!
+//! ## Key Takeaways
+//! - InMemory storage provides fastest performance (no I/O overhead)
+//! - 4 workers achieve near-linear parallel speedup
+//! - Each flow takes ~30ms total (5ms + 10ms + 8ms + 7ms per step)
+//! - Sequential steps ensure data dependencies are respected
+//! - inputs attribute automatically passes data between steps
+//! - Throughput reported in flows/sec for performance comparison
+//! - Best choice for development, testing, and single-process deployments
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example benchmark_inmemory
+//! ```
 
 use ergon::prelude::*;
 use std::sync::Arc;
@@ -155,9 +181,9 @@ struct AnalysisResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║        InMemory Storage Benchmark                       ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("\n========================================");
+    println!("    InMemory Storage Benchmark");
+    println!("========================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
     let start = Instant::now();

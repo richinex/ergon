@@ -2,10 +2,30 @@
 //!
 //! This example demonstrates:
 //! - Scheduling flows for distributed execution
-//! - Running workers that pick up and execute flows
-//! - Multiple workers processing flows in parallel
+//! - Running multiple workers that poll and execute flows
+//! - Parallel processing of flows across workers
+//! - Worker coordination and load distribution
+//! - Graceful worker shutdown
 //!
-//! Run with: cargo run --example distributed_worker
+//! ## Scenario
+//! Five order processing flows are scheduled to a shared queue. Two workers
+//! (worker-1 and worker-2) poll the queue and process flows in parallel.
+//! Each worker picks up flows independently, processes them, and reports
+//! completion. The system tracks which worker processed which flow.
+//!
+//! ## Key Takeaways
+//! - FlowScheduler enqueues flows for distributed execution
+//! - Multiple FlowWorker instances poll the same queue
+//! - Workers coordinate via optimistic concurrency control
+//! - Each flow is processed by exactly one worker
+//! - Workers can be started and stopped independently
+//! - Load is automatically distributed across available workers
+//! - Framework handles worker coordination transparently
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example distributed_worker
+//! ```
 
 use ergon::prelude::*;
 use std::sync::Arc;

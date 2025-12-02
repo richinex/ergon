@@ -1,13 +1,34 @@
-//! Sequential vs Parallel with Autowiring
+//! Sequential vs parallel execution with autowiring
 //!
-//! This example demonstrates how `inputs` autowiring creates cleaner,
-//! more maintainable code compared to explicit `depends_on` declarations.
+//! This example demonstrates:
+//! - How `inputs` autowiring creates cleaner, more maintainable code
+//! - Comparison between explicit `depends_on` and automatic dependency inference
+//! - DRY principle: avoiding duplication of step names
+//! - Natural parallelism when multiple steps depend on the same parent
+//! - Type-safe data flow with automatic dependency tracking
 //!
-//! Autowiring Benefits:
-//! - No duplication between depends_on and inputs
-//! - Dependencies automatically match data flow
-//! - Refactoring is easier (rename step in one place)
-//! - More readable: see data dependencies directly in function signature
+//! ## Scenario
+//! Order processing flow with both approaches:
+//! - Old way: Explicit depends_on + inputs (verbose, duplicated step names)
+//! - New way: Autowiring with inputs only (clean, DRY principle)
+//!
+//! Flow structure:
+//! - fetch_customer (root)
+//! - validate_credit + fetch_product (parallel - both depend on fetch_customer)
+//! - authorize_payment (depends on validate_credit + fetch_product)
+//! - finalize_order (depends on customer + product + auth)
+//!
+//! ## Key Takeaways
+//! - `inputs` automatically adds referenced steps to dependencies (no depends_on duplication)
+//! - Steps with same parent dependency execute in parallel naturally
+//! - Autowiring makes refactoring easier (rename step in one place)
+//! - Type safety prevents mismatched dependencies and data flow
+//! - Code is 28% shorter and 50% fewer step name references with autowiring
+//!
+//! ## Run with
+//! ```bash
+//! cargo run --example sequential_vs_parallel_autowiring
+//! ```
 
 use ergon::Ergon;
 use ergon::{flow, step};
@@ -16,10 +37,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-
-// ============================================================================
-// Data Types
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Customer {
@@ -50,10 +67,6 @@ struct OrderResult {
     total_price: f64,
 }
 
-// ============================================================================
-// BEFORE: Without Autowiring (Verbose)
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OrderFlowOld {
     customer_id: String,
@@ -79,7 +92,6 @@ impl OrderFlowOld {
         })
     }
 
-    // VERBOSE: Must specify both depends_on AND inputs
     #[step(depends_on = "fetch_customer", inputs(customer = "fetch_customer"))]
     async fn validate_credit(self: Arc<Self>, customer: Customer) -> Result<bool, String> {
         println!("[OLD] Validating credit for: {}", customer.name);
@@ -99,7 +111,6 @@ impl OrderFlowOld {
         })
     }
 
-    // VERBOSE: Long depends_on list AND inputs list
     #[step(
         depends_on = ["validate_credit", "fetch_product"],
         inputs(credit_ok = "validate_credit", product = "fetch_product")
@@ -117,7 +128,6 @@ impl OrderFlowOld {
         })
     }
 
-    // VERBOSE: Three dependencies duplicated in depends_on AND inputs
     #[step(
         depends_on = ["fetch_customer", "fetch_product", "authorize_payment"],
         inputs(
@@ -157,10 +167,6 @@ impl OrderFlowOld {
     }
 }
 
-// ============================================================================
-// AFTER: With Autowiring (Clean!)
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OrderFlowNew {
     customer_id: String,
@@ -186,7 +192,6 @@ impl OrderFlowNew {
         })
     }
 
-    // CLEAN: Only inputs needed! Auto-depends on fetch_customer
     #[step(inputs(customer = "fetch_customer"))]
     async fn validate_credit(self: Arc<Self>, customer: Customer) -> Result<bool, String> {
         println!("[NEW] Validating credit for: {}", customer.name);
@@ -194,8 +199,6 @@ impl OrderFlowNew {
         Ok(customer.credit_score > 600)
     }
 
-    // PARALLEL: Also depends on fetch_customer (via explicit depends_on)
-    // Runs in parallel with validate_credit!
     #[step(depends_on = "fetch_customer")]
     async fn fetch_product(self: Arc<Self>) -> Result<Product, String> {
         println!("[NEW] Fetching product: {} (parallel!)", self.product_id);
@@ -208,7 +211,6 @@ impl OrderFlowNew {
         })
     }
 
-    // CLEAN: Just inputs! Auto-depends on validate_credit AND fetch_product
     #[step(inputs(credit_ok = "validate_credit", product = "fetch_product"))]
     async fn authorize_payment(
         self: Arc<Self>,
@@ -223,7 +225,6 @@ impl OrderFlowNew {
         })
     }
 
-    // CLEAN: Just inputs! Auto-depends on ALL three steps
     #[step(inputs(
         customer = "fetch_customer",
         product = "fetch_product",
@@ -253,27 +254,22 @@ impl OrderFlowNew {
     #[flow]
     async fn process_new(self: Arc<Self>) -> Result<OrderResult, String> {
         self.register_fetch_customer();
-        self.register_validate_credit(); // Auto-depends on fetch_customer
-        self.register_fetch_product(); // Parallel with validate_credit
-        self.register_authorize_payment(); // Auto-depends on both above
-        self.register_finalize_order() // Auto-depends on all three
+        self.register_validate_credit();
+        self.register_fetch_product();
+        self.register_authorize_payment();
+        self.register_finalize_order()
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Sequential vs Parallel with Autowiring                  ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
+    println!("\nSequential vs Parallel with Autowiring");
+    println!("=======================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
 
-    // =========================================================================
-    // OLD WAY: Verbose with Duplicated Dependencies
-    // =========================================================================
-    println!("┌───────────────────────────────────────────────────────────┐");
-    println!("│ OLD WAY: Explicit depends_on + inputs (Verbose)          │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("OLD WAY: Explicit depends_on + inputs (Verbose)");
+    println!("================================================\n");
 
     storage.reset().await?;
     let old_flow = Arc::new(OrderFlowOld::new(
@@ -284,17 +280,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result1 = instance1.execute(|f| f.process_old()).await;
 
     println!("\nResult: {:?}\n", result1);
-    println!("Code Example:");
-    println!("  #[step(depends_on = \"fetch_customer\", inputs(customer = \"fetch_customer\"))]");
-    println!("  async fn validate_credit(customer: Customer) -> Result<bool>");
-    println!("\n  Problem: 'fetch_customer' appears TWICE! 💢\n");
 
-    // =========================================================================
-    // NEW WAY: Clean with Autowiring
-    // =========================================================================
-    println!("┌───────────────────────────────────────────────────────────┐");
-    println!("│ NEW WAY: Autowiring with inputs (Clean!)                 │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
+    println!("NEW WAY: Autowiring with inputs (Clean!)");
+    println!("=========================================\n");
 
     storage.reset().await?;
     let new_flow = Arc::new(OrderFlowNew::new(
@@ -305,69 +293,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result2 = instance2.execute(|f| f.process_new()).await;
 
     println!("\nResult: {:?}\n", result2);
-    println!("Code Example:");
-    println!("  #[step(inputs(customer = \"fetch_customer\"))]");
-    println!("  async fn validate_credit(customer: Customer) -> Result<bool>");
-    println!("\n  Benefit: 'fetch_customer' appears ONCE! ✓\n");
-
-    // =========================================================================
-    // COMPARISON
-    // =========================================================================
-    println!("┌───────────────────────────────────────────────────────────┐");
-    println!("│ COMPARISON: Lines of Code Saved                          │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
-
-    println!("OLD (finalize_order):");
-    println!("  #[step(");
-    println!("      depends_on = [\"fetch_customer\", \"fetch_product\", \"authorize_payment\"],");
-    println!("      inputs(");
-    println!("          customer = \"fetch_customer\",");
-    println!("          product = \"fetch_product\",");
-    println!("          auth = \"authorize_payment\"");
-    println!("      )");
-    println!("  )]");
-    println!("  Total: 7 lines, 6 step name references\n");
-
-    println!("NEW (finalize_order):");
-    println!("  #[step(inputs(");
-    println!("      customer = \"fetch_customer\",");
-    println!("      product = \"fetch_product\",");
-    println!("      auth = \"authorize_payment\"");
-    println!("  ))]");
-    println!("  Total: 5 lines, 3 step name references\n");
-
-    println!("Savings: 28% fewer lines, 50% fewer step name references!\n");
-
-    // =========================================================================
-    // KEY BENEFITS
-    // =========================================================================
-    println!("┌───────────────────────────────────────────────────────────┐");
-    println!("│ KEY BENEFITS OF AUTOWIRING                                │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
-
-    println!("✓ DRY Principle: Step names appear only once");
-    println!("✓ Type Safety: Dependencies match data flow");
-    println!("✓ Easier Refactoring: Rename step in one place");
-    println!("✓ More Readable: See data deps in function signature");
-    println!("✓ Less Error-Prone: Can't forget to update depends_on");
-    println!("✓ Natural Parallelism: Same parent = parallel execution\n");
-
-    println!("┌───────────────────────────────────────────────────────────┐");
-    println!("│ EXECUTION GRAPH                                           │");
-    println!("└───────────────────────────────────────────────────────────┘\n");
-
-    println!("  fetch_customer");
-    println!("       ├─────────────┬──────────────┐");
-    println!("       │             │              │");
-    println!("  validate_credit  fetch_product   │ (parallel)");
-    println!("       └──────┬──────┘              │");
-    println!("              │                     │");
-    println!("       authorize_payment ───────────┘");
-    println!("              │");
-    println!("       finalize_order\n");
-
-    println!("Note: validate_credit and fetch_product run in PARALLEL");
-    println!("      because they both depend on fetch_customer!\n");
 
     Ok(())
 }

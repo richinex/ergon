@@ -1,29 +1,35 @@
 //! Axum + Ergon: Durable Order Processing API
 //!
-//! This example demonstrates how to integrate ergon with Axum to build a
-//! fault-tolerant order processing API. The workflow survives server restarts
-//! and automatically resumes incomplete orders.
+//! This example demonstrates:
+//! - Integrating Ergon with Axum web framework
+//! - Using SQLite as durable backend storage
+//! - Building REST API endpoints for flow management
+//! - Flows surviving server restarts and resuming automatically
+//! - Querying flow status and results via HTTP
+//! - Retrying failed flows through API
 //!
-//! # Features
-//! - POST /orders - Submit a new order (returns immediately with flow_id)
-//! - GET /orders/:id - Get order status and results
-//! - POST /orders/:id/retry - Retry a failed order
+//! ## Scenario
+//! A REST API exposes three endpoints: POST /orders (submit order), GET /orders/:id
+//! (check status), and POST /orders/:id/retry (retry failed order). Each order goes
+//! through a 4-step flow: validate, charge payment, fulfill, notify. If the server
+//! crashes mid-flow, the flow automatically resumes from the last completed step on
+//! restart thanks to SQLite persistence.
 //!
-//! # Order Processing Flow
-//! 1. Validate order (check inventory, pricing)
-//! 2. Charge payment (simulated payment gateway)
-//! 3. Fulfill order (simulated warehouse)
-//! 4. Send notification (email confirmation)
+//! ## Key Takeaways
+//! - Ergon integrates seamlessly with Axum using shared Arc state
+//! - FlowScheduler enqueues flows, FlowWorker processes them asynchronously
+//! - SQLite backend provides durability across server restarts
+//! - API returns immediately with flow_id while processing continues in background
+//! - get_invocations_for_flow enables status querying
+//! - Manual retry endpoint demonstrates programmatic flow restart
+//! - Each step is idempotent and crash-safe
 //!
-//! Each step is durable - if the server crashes, the flow resumes from the last
-//! completed step when it restarts.
-//!
-//! # Running
+//! ## Run with
 //! ```bash
 //! cargo run --example axum_order_processing --features sqlite
 //! ```
 //!
-//! # Testing
+//! ## Testing
 //! ```bash
 //! # Submit an order
 //! curl -X POST http://localhost:3000/orders \
