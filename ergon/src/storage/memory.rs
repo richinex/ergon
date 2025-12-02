@@ -275,7 +275,10 @@ impl ExecutionLog for InMemoryExecutionLog {
         }
     }
 
-    async fn get_expired_timers(&self, now: chrono::DateTime<Utc>) -> Result<Vec<super::TimerInfo>> {
+    async fn get_expired_timers(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<super::TimerInfo>> {
         let mut timers = Vec::new();
 
         for entry in self.invocations.iter() {
@@ -315,8 +318,7 @@ impl ExecutionLog for InMemoryExecutionLog {
                 // Claim it by marking as complete
                 entry.set_status(InvocationStatus::Complete);
                 entry.set_return_value(
-                    crate::core::serialize_value(&())
-                        .map_err(|_| StorageError::Serialization)?,
+                    crate::core::serialize_value(&()).map_err(|_| StorageError::Serialization)?,
                 );
                 return Ok(true);
             }

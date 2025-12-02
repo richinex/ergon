@@ -35,11 +35,11 @@
 //!
 //! Run: cargo run --example timer_race_condition --features=sqlite
 
-use ergon::prelude::*;
+use chrono::Utc;
 use ergon::executor::{schedule_timer, FlowWorker};
+use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::Utc;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct RaceConditionFlow {
@@ -62,12 +62,20 @@ impl RaceConditionFlow {
 
     #[step]
     async fn short_timer(self: Arc<Self>, iteration: i32) -> Result<(), String> {
-        println!("[{}] Step {}: Scheduling VERY short timer (1ms)...", format_time(), iteration);
+        println!(
+            "[{}] Step {}: Scheduling VERY short timer (1ms)...",
+            format_time(),
+            iteration
+        );
 
         // Use 1ms timer - very likely to fire before await_timer starts waiting
         schedule_timer(Duration::from_millis(1)).await;
 
-        println!("[{}] Step {}: Timer completed (race handled correctly!)", format_time(), iteration);
+        println!(
+            "[{}] Step {}: Timer completed (race handled correctly!)",
+            format_time(),
+            iteration
+        );
         Ok(())
     }
 }

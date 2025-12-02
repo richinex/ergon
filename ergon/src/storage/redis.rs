@@ -523,14 +523,21 @@ impl ExecutionLog for RedisExecutionLog {
             .hset(&inv_key, "timer_fire_at", fire_at_millis)
             .hset(&inv_key, "timer_name", timer_name.unwrap_or(""))
             // Add to sorted set for efficient expiry queries (score = fire_at_millis)
-            .zadd("ergon:timers:pending", format!("{}:{}", flow_id, step), fire_at_millis)
+            .zadd(
+                "ergon:timers:pending",
+                format!("{}:{}", flow_id, step),
+                fire_at_millis,
+            )
             .query(&mut *conn)
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(())
     }
 
-    async fn get_expired_timers(&self, now: chrono::DateTime<Utc>) -> Result<Vec<super::TimerInfo>> {
+    async fn get_expired_timers(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<super::TimerInfo>> {
         let mut conn = self.get_connection()?;
         let now_millis = now.timestamp_millis();
 

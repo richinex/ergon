@@ -6,11 +6,11 @@
 //! 3. Timer processor can detect and fire expired timers
 //! 4. Optimistic concurrency prevents duplicate firing
 
+use chrono::Utc;
 use ergon::prelude::*;
 use ergon::storage::InMemoryExecutionLog;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::Utc;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -21,18 +21,21 @@ async fn test_timer_storage_and_expiration() {
     let step = 1;
 
     // First, create an invocation (timer needs an existing invocation)
-    use ergon::storage::InvocationStartParams;
     use ergon::core::InvocationStatus;
-    storage.log_invocation_start(InvocationStartParams {
-        id: flow_id,
-        step,
-        class_name: "TestFlow",
-        method_name: "wait_step",
-        delay: None,
-        status: InvocationStatus::Pending,
-        parameters: &[],
-        retry_policy: None,
-    }).await.unwrap();
+    use ergon::storage::InvocationStartParams;
+    storage
+        .log_invocation_start(InvocationStartParams {
+            id: flow_id,
+            step,
+            class_name: "TestFlow",
+            method_name: "wait_step",
+            delay: None,
+            status: InvocationStatus::Pending,
+            parameters: &[],
+            retry_policy: None,
+        })
+        .await
+        .unwrap();
 
     // Schedule a timer that expires in 100ms
     let fire_at = Utc::now() + chrono::Duration::milliseconds(100);
@@ -64,18 +67,21 @@ async fn test_timer_optimistic_concurrency() {
     let step = 1;
 
     // First, create an invocation
-    use ergon::storage::InvocationStartParams;
     use ergon::core::InvocationStatus;
-    storage.log_invocation_start(InvocationStartParams {
-        id: flow_id,
-        step,
-        class_name: "TestFlow",
-        method_name: "wait_step",
-        delay: None,
-        status: InvocationStatus::Pending,
-        parameters: &[],
-        retry_policy: None,
-    }).await.unwrap();
+    use ergon::storage::InvocationStartParams;
+    storage
+        .log_invocation_start(InvocationStartParams {
+            id: flow_id,
+            step,
+            class_name: "TestFlow",
+            method_name: "wait_step",
+            delay: None,
+            status: InvocationStatus::Pending,
+            parameters: &[],
+            retry_policy: None,
+        })
+        .await
+        .unwrap();
 
     // Schedule a timer that's already expired
     let fire_at = Utc::now() - chrono::Duration::seconds(1);
@@ -96,8 +102,8 @@ async fn test_timer_optimistic_concurrency() {
 #[tokio::test]
 async fn test_multiple_timers() {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    use ergon::storage::InvocationStartParams;
     use ergon::core::InvocationStatus;
+    use ergon::storage::InvocationStartParams;
 
     // Schedule 3 timers
     let flow_id1 = Uuid::new_v4();
@@ -106,22 +112,49 @@ async fn test_multiple_timers() {
 
     // Create invocations first
     for flow_id in [flow_id1, flow_id2, flow_id3] {
-        storage.log_invocation_start(InvocationStartParams {
-            id: flow_id,
-            step: 1,
-            class_name: "TestFlow",
-            method_name: "wait_step",
-            delay: None,
-            status: InvocationStatus::Pending,
-            parameters: &[],
-            retry_policy: None,
-        }).await.unwrap();
+        storage
+            .log_invocation_start(InvocationStartParams {
+                id: flow_id,
+                step: 1,
+                class_name: "TestFlow",
+                method_name: "wait_step",
+                delay: None,
+                status: InvocationStatus::Pending,
+                parameters: &[],
+                retry_policy: None,
+            })
+            .await
+            .unwrap();
     }
 
     let now = Utc::now();
-    storage.log_timer(flow_id1, 1, now - chrono::Duration::seconds(10), Some("timer1")).await.unwrap();
-    storage.log_timer(flow_id2, 1, now - chrono::Duration::seconds(5), Some("timer2")).await.unwrap();
-    storage.log_timer(flow_id3, 1, now + chrono::Duration::seconds(10), Some("timer3")).await.unwrap();
+    storage
+        .log_timer(
+            flow_id1,
+            1,
+            now - chrono::Duration::seconds(10),
+            Some("timer1"),
+        )
+        .await
+        .unwrap();
+    storage
+        .log_timer(
+            flow_id2,
+            1,
+            now - chrono::Duration::seconds(5),
+            Some("timer2"),
+        )
+        .await
+        .unwrap();
+    storage
+        .log_timer(
+            flow_id3,
+            1,
+            now + chrono::Duration::seconds(10),
+            Some("timer3"),
+        )
+        .await
+        .unwrap();
 
     // Get expired timers
     let expired = storage.get_expired_timers(now).await.unwrap();

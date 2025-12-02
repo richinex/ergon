@@ -60,7 +60,9 @@ impl TimerProcessing for WithTimers {
                         Ok(true) => {
                             // Successfully claimed - fire the timer
                             let key = (timer.flow_id, timer.step);
-                            if let Some(notifier) = TIMER_NOTIFIERS.lock().unwrap().get(&key).cloned() {
+                            if let Some(notifier) =
+                                TIMER_NOTIFIERS.lock().unwrap().get(&key).cloned()
+                            {
                                 notifier.notify_one();
                             }
                             info!(
@@ -398,7 +400,9 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
                 }
 
                 // Process expired timers (no-op for WithoutTimers, real work for WithTimers)
-                self.timer_state.process_timers(&self.storage, &self.worker_id).await;
+                self.timer_state
+                    .process_timers(&self.storage, &self.worker_id)
+                    .await;
 
                 // Poll for a flow
                 match self.storage.dequeue_flow(&self.worker_id).await {
@@ -478,7 +482,9 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
                                                 if let Some(policy) = invocation.retry_policy() {
                                                     let next_attempt = flow.retry_count + 1;
 
-                                                    if let Some(delay) = policy.delay_for_attempt(next_attempt) {
+                                                    if let Some(delay) =
+                                                        policy.delay_for_attempt(next_attempt)
+                                                    {
                                                         debug!(
                                                             "Flow {} will retry (attempt {}/{}) after {:?}",
                                                             flow.flow_id, next_attempt, policy.max_attempts, delay
@@ -492,12 +498,18 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static> FlowWorker<S, T> {
                                                         Ok(None)
                                                     }
                                                 } else {
-                                                    debug!("Flow {} has no retry policy", flow.flow_id);
+                                                    debug!(
+                                                        "Flow {} has no retry policy",
+                                                        flow.flow_id
+                                                    );
                                                     Ok(None)
                                                 }
                                             }
                                             Ok(None) => {
-                                                warn!("No invocation found for flow {}", flow.flow_id);
+                                                warn!(
+                                                    "No invocation found for flow {}",
+                                                    flow.flow_id
+                                                );
                                                 Ok(None)
                                             }
                                             Err(e) => {

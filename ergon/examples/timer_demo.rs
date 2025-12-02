@@ -9,11 +9,11 @@
 //!
 //! Run: cargo run --example timer_demo --features=sqlite
 
-use ergon::prelude::*;
+use chrono::Utc;
 use ergon::executor::{schedule_timer, schedule_timer_named, FlowWorker};
+use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::Utc;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct OrderWorkflow {
@@ -36,7 +36,11 @@ impl OrderWorkflow {
         // Step 1: Wait before processing (simulates order validation period)
         self.clone().wait_for_processing().await?;
 
-        println!("[{}] Processing payment for {}", format_time(), self.order_id);
+        println!(
+            "[{}] Processing payment for {}",
+            format_time(),
+            self.order_id
+        );
         self.clone().process_payment().await?;
 
         // Step 2: Wait before shipping (simulates warehouse processing)
@@ -48,7 +52,11 @@ impl OrderWorkflow {
         // Step 3: Wait before confirmation (simulates delivery tracking)
         self.clone().wait_for_confirmation().await?;
 
-        println!("[{}] Sending confirmation to {}", format_time(), self.customer_email);
+        println!(
+            "[{}] Sending confirmation to {}",
+            format_time(),
+            self.customer_email
+        );
         self.clone().send_confirmation().await?;
 
         println!("[{}] Order {} completed!", format_time(), self.order_id);
@@ -85,7 +93,10 @@ impl OrderWorkflow {
 
     #[step]
     async fn wait_for_confirmation(self: Arc<Self>) -> Result<(), String> {
-        println!("[{}] Waiting 1 second before confirmation...", format_time());
+        println!(
+            "[{}] Waiting 1 second before confirmation...",
+            format_time()
+        );
         schedule_timer(Duration::from_secs(1)).await;
         println!("[{}] Confirmation delay timer fired!", format_time());
         Ok(())
@@ -117,9 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Fire exactly once via optimistic concurrency\n");
 
     // Create SQLite storage for durability
-    let storage = Arc::new(
-        SqliteExecutionLog::new("timer_demo.db")?
-    );
+    let storage = Arc::new(SqliteExecutionLog::new("timer_demo.db")?);
 
     // Start worker with timer processing (polls every 100ms for demo responsiveness)
     let worker = FlowWorker::new(storage.clone(), "timer-demo-worker")

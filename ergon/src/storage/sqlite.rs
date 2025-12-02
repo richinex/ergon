@@ -193,10 +193,7 @@ impl SqliteExecutionLog {
 
         // Add timer_name column if it doesn't exist (migration for existing databases)
         // Optional name for debugging and observability
-        let _ = conn.execute(
-            "ALTER TABLE execution_log ADD COLUMN timer_name TEXT",
-            [],
-        );
+        let _ = conn.execute("ALTER TABLE execution_log ADD COLUMN timer_name TEXT", []);
 
         // Create index for efficient flow lookups
         conn.execute(
@@ -824,7 +821,10 @@ impl ExecutionLog for SqliteExecutionLog {
         .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
     }
 
-    async fn get_expired_timers(&self, now: chrono::DateTime<Utc>) -> Result<Vec<super::TimerInfo>> {
+    async fn get_expired_timers(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<super::TimerInfo>> {
         let conn = self.get_connection()?;
         let now_millis = now.timestamp_millis();
 
@@ -836,7 +836,7 @@ impl ExecutionLog for SqliteExecutionLog {
                    AND timer_fire_at IS NOT NULL
                    AND timer_fire_at <= ?
                  ORDER BY timer_fire_at ASC
-                 LIMIT 100"
+                 LIMIT 100",
             )?;
 
             let timers = stmt
@@ -849,7 +849,9 @@ impl ExecutionLog for SqliteExecutionLog {
 
                     let fire_at_millis: i64 = row.get(2)?;
                     let fire_at = chrono::DateTime::from_timestamp_millis(fire_at_millis)
-                        .ok_or_else(|| rusqlite::Error::InvalidParameterName("Invalid timestamp".to_string()))?;
+                        .ok_or_else(|| {
+                            rusqlite::Error::InvalidParameterName("Invalid timestamp".to_string())
+                        })?;
 
                     let timer_name: Option<String> = row.get(3)?;
 

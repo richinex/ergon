@@ -62,7 +62,10 @@ enum PaymentError {
 impl fmt::Display for PaymentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PaymentError::InsufficientFunds { required, available } => {
+            PaymentError::InsufficientFunds {
+                required,
+                available,
+            } => {
                 write!(
                     f,
                     "Insufficient funds: need ${:.2}, have ${:.2}",
@@ -75,8 +78,12 @@ impl fmt::Display for PaymentError {
             PaymentError::InvalidCardNumber { last_four } => {
                 write!(f, "Invalid card number ending in {}", last_four)
             }
-            PaymentError::NetworkTimeout => write!(f, "Network timeout connecting to payment gateway"),
-            PaymentError::GatewayUnavailable => write!(f, "Payment gateway temporarily unavailable"),
+            PaymentError::NetworkTimeout => {
+                write!(f, "Network timeout connecting to payment gateway")
+            }
+            PaymentError::GatewayUnavailable => {
+                write!(f, "Payment gateway temporarily unavailable")
+            }
         }
     }
 }
@@ -108,9 +115,17 @@ impl RetryableError for PaymentError {
 /// Inventory management errors
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum InventoryError {
-    ProductNotFound { product_id: String },
-    OutOfStock { product_id: String, requested: u32, available: u32 },
-    WarehouseUnavailable { warehouse_id: String },
+    ProductNotFound {
+        product_id: String,
+    },
+    OutOfStock {
+        product_id: String,
+        requested: u32,
+        available: u32,
+    },
+    WarehouseUnavailable {
+        warehouse_id: String,
+    },
     DatabaseConnectionFailed,
 }
 
@@ -120,7 +135,11 @@ impl fmt::Display for InventoryError {
             InventoryError::ProductNotFound { product_id } => {
                 write!(f, "Product not found: {}", product_id)
             }
-            InventoryError::OutOfStock { product_id, requested, available } => {
+            InventoryError::OutOfStock {
+                product_id,
+                requested,
+                available,
+            } => {
                 write!(
                     f,
                     "Product {} out of stock: requested {}, available {}",
@@ -176,8 +195,14 @@ impl fmt::Display for NotificationError {
             NotificationError::SmtpConnectionFailed => {
                 write!(f, "Failed to connect to SMTP server")
             }
-            NotificationError::RateLimitExceeded { retry_after_seconds } => {
-                write!(f, "Rate limit exceeded, retry after {} seconds", retry_after_seconds)
+            NotificationError::RateLimitExceeded {
+                retry_after_seconds,
+            } => {
+                write!(
+                    f,
+                    "Rate limit exceeded, retry after {} seconds",
+                    retry_after_seconds
+                )
             }
         }
     }
@@ -246,7 +271,10 @@ impl OrderFlow {
 
     #[step]
     async fn check_inventory(self: Arc<Self>) -> Result<(), InventoryError> {
-        println!("[Order {}] Checking inventory for product {}", self.order_id, self.product_id);
+        println!(
+            "[Order {}] Checking inventory for product {}",
+            self.order_id, self.product_id
+        );
 
         // Simulate various inventory errors
         if let Some(ref error_type) = self.simulate_error {
@@ -282,7 +310,10 @@ impl OrderFlow {
     #[step]
     async fn process_payment(self: Arc<Self>) -> Result<String, PaymentError> {
         let attempt = PAYMENT_ATTEMPT_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-        println!("[Order {}] Processing payment of ${} (attempt #{})", self.order_id, self.amount, attempt);
+        println!(
+            "[Order {}] Processing payment of ${} (attempt #{})",
+            self.order_id, self.amount, attempt
+        );
 
         // Simulate various payment errors
         if let Some(ref error_type) = self.simulate_error {
@@ -306,10 +337,16 @@ impl OrderFlow {
                 "network_timeout" => {
                     // Fail first 2 attempts, succeed on 3rd to demonstrate retry
                     if attempt <= 2 {
-                        println!("[Order {}] Network timeout (retryable) - will retry", self.order_id);
+                        println!(
+                            "[Order {}] Network timeout (retryable) - will retry",
+                            self.order_id
+                        );
                         return Err(PaymentError::NetworkTimeout);
                     }
-                    println!("[Order {}] Network recovered on attempt #{}", self.order_id, attempt);
+                    println!(
+                        "[Order {}] Network recovered on attempt #{}",
+                        self.order_id, attempt
+                    );
                 }
                 "gateway_unavailable" => {
                     return Err(PaymentError::GatewayUnavailable);
@@ -319,13 +356,19 @@ impl OrderFlow {
         }
 
         let transaction_id = format!("TXN-{}", uuid::Uuid::new_v4());
-        println!("[Order {}] Payment processed: {}", self.order_id, transaction_id);
+        println!(
+            "[Order {}] Payment processed: {}",
+            self.order_id, transaction_id
+        );
         Ok(transaction_id)
     }
 
     #[step]
     async fn send_notification(self: Arc<Self>) -> Result<(), NotificationError> {
-        println!("[Order {}] Sending confirmation email to {}", self.order_id, self.customer_email);
+        println!(
+            "[Order {}] Sending confirmation email to {}",
+            self.order_id, self.customer_email
+        );
 
         // Simulate notification errors
         if let Some(ref error_type) = self.simulate_error {
@@ -482,8 +525,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(flow) = flow_invocation {
         match flow.status() {
             InvocationStatus::Complete => {
-                println!("\nResult: ORD-004 - Completed after {} payment attempts!",
-                    PAYMENT_ATTEMPT_COUNT.load(Ordering::SeqCst));
+                println!(
+                    "\nResult: ORD-004 - Completed after {} payment attempts!",
+                    PAYMENT_ATTEMPT_COUNT.load(Ordering::SeqCst)
+                );
                 println!("Automatic retry successfully recovered from transient network errors");
             }
             _ => {
