@@ -74,6 +74,9 @@
 //! - **Clarity**: Explicit over implicit, readable over clever
 //! - **Safety**: Hard to misuse, defaults prevent common mistakes
 
+// Allow the derive macro to reference ::ergon from within this crate
+extern crate self as ergon;
+
 pub mod core;
 pub mod executor;
 pub mod graph;
