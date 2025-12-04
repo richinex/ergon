@@ -171,7 +171,7 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
             .storage
             .get_latest_invocation(self.id)
             .await
-            .map_err(ExecutionError::Storage)?;
+            .map_err(ExecutionError::from)?;
 
         if let Some(inv) = latest {
             if inv.status() != InvocationStatus::WaitingForSignal {

@@ -295,6 +295,29 @@ pub trait ExecutionLog: Send + Sync {
         ))
     }
 
+    /// Re-enqueue a suspended flow back to the pending queue.
+    ///
+    /// Called when a timer fires or signal arrives to resume a suspended flow.
+    /// The flow's task should be found and re-enqueued to the pending queue.
+    ///
+    /// # Arguments
+    ///
+    /// * `flow_id` - The flow ID to resume
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok if the flow was re-enqueued, or an error if the flow wasn't found.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+        let _ = flow_id;
+        Err(StorageError::Unsupported(
+            "flow resume not implemented for this storage backend".to_string(),
+        ))
+    }
+
     // ===== External Signal Operations =====
     // These methods support durable external signals that survive crashes.
 
@@ -519,6 +542,10 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         timer_name: Option<&str>,
     ) -> Result<()> {
         (**self).log_timer(flow_id, step, fire_at, timer_name).await
+    }
+
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+        (**self).resume_flow(flow_id).await
     }
 
     async fn store_signal_params(

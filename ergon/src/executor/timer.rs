@@ -8,25 +8,11 @@
 //! Following the same pattern as signal.rs, this module provides
 //! a simple API for scheduling durable timers that survive crashes.
 
-use super::context::{ExecutionContext, EXECUTION_CONTEXT};
-use super::error::Result;
+use super::context::EXECUTION_CONTEXT;
+use super::error::{ExecutionError, Result, SuspendReason};
 use crate::core::InvocationStatus;
 use chrono::{Duration as ChronoDuration, Utc};
-use dashmap::DashMap;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
-use uuid::Uuid;
-
-lazy_static::lazy_static! {
-    /// Notifiers for timers that have fired.
-    /// Maps (flow_id, step) -> Notify for waking waiting flows.
-    ///
-    /// SAFETY: DashMap references must not be held across .await points or during
-    /// iteration with modification. Always clone the Arc<Notify> before awaiting.
-    /// See: https://github.com/xacrimon/dashmap/issues/74
-    pub(super) static ref TIMER_NOTIFIERS: DashMap<(Uuid, i32), Arc<Notify>> = DashMap::new();
-}
 
 /// Schedules a durable timer that pauses workflow execution.
 ///
@@ -88,7 +74,7 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
         .storage
         .get_invocation(ctx.id, current_step)
         .await
-        .map_err(super::error::ExecutionError::Storage)?;
+        .map_err(ExecutionError::from)?;
 
     if let Some(inv) = existing_inv {
         if inv.status() == InvocationStatus::Complete {
@@ -99,14 +85,16 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
         if inv.status() == InvocationStatus::WaitingForTimer {
             // We're waiting for this timer - check if it's fired
             if inv.is_timer_expired() {
-                // Timer fired while worker was down - mark it complete explicitly
-                ctx.complete_timer(current_step).await?;
+                // Timer fired - just return Ok and let step macro log completion
+                // with the correct Result<(), ExecutionError> type
                 return Ok(());
             }
 
-            // Timer not fired yet - wait for notification
-            ctx.await_timer(current_step).await?;
-            return Ok(());
+            // Timer not fired yet - suspend the flow
+            return Err(ExecutionError::Suspend(SuspendReason::Timer {
+                flow_id: ctx.id,
+                step: current_step,
+            }));
         }
     }
 
@@ -118,61 +106,11 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
     ctx.storage
         .log_timer(ctx.id, current_step, fire_at, name)
         .await
-        .map_err(super::error::ExecutionError::Storage)?;
+        .map_err(ExecutionError::from)?;
 
-    // Wait for timer to fire
-    // Note: There's a potential race condition here - the timer might fire between
-    // logging and awaiting. The await_timer method handles this by checking the database.
-    ctx.await_timer(current_step).await
-}
-
-impl ExecutionContext {
-    /// Complete a timer that has already fired.
-    ///
-    /// This is called when replaying a step that was waiting for a timer
-    /// that fired while the worker was down. It explicitly marks the timer
-    /// step as complete to ensure proper state transitions.
-    pub(super) async fn complete_timer(&self, step: i32) -> Result<()> {
-        self.storage
-            .log_invocation_completion(self.id, step, &crate::core::serialize_value(&())?)
-            .await
-            .map(|_| ())
-            .map_err(super::error::ExecutionError::Storage)
-    }
-
-    /// Wait for a timer to fire.
-    ///
-    /// This method blocks until the timer processor fires the timer
-    /// and notifies us via the TIMER_NOTIFIERS map.
-    ///
-    /// Uses the defensive notified() pattern to avoid missing notifications.
-    pub(super) async fn await_timer(&self, step: i32) -> Result<()> {
-        let key = (self.id, step);
-
-        // Defensive pattern: Register for notification FIRST
-        let notifier = TIMER_NOTIFIERS
-            .entry(key)
-            .or_insert_with(|| Arc::new(Notify::new()))
-            .value()
-            .clone();
-
-        let notified = notifier.notified();
-
-        // THEN check if already complete
-        if let Ok(Some(inv)) = self.storage.get_invocation(self.id, step).await {
-            if inv.status() == InvocationStatus::Complete {
-                // Timer already fired, no need to wait
-                TIMER_NOTIFIERS.remove(&key);
-                return Ok(());
-            }
-        }
-
-        // Wait for timer to fire (no timeout - worker shutdown handles cleanup)
-        notified.await;
-
-        // Clean up notifier
-        TIMER_NOTIFIERS.remove(&key);
-
-        Ok(())
-    }
+    // Suspend the flow - it will be resumed when the timer fires
+    Err(ExecutionError::Suspend(SuspendReason::Timer {
+        flow_id: ctx.id,
+        step: current_step,
+    }))
 }

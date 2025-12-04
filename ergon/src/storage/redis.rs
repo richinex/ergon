@@ -433,10 +433,31 @@ impl ExecutionLog for RedisExecutionLog {
     }
 
     async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
-        let invocations = self.get_invocations_for_flow(flow_id).await?;
-        Ok(invocations
-            .iter()
-            .any(|inv| inv.is_retryable() == Some(false)))
+        let mut conn = self.get_connection().await?;
+        let invocations_key = format!("ergon:invocations:{}", flow_id);
+
+        // Use Lua script to check all invocations without fetching full data
+        // This avoids N+1 queries and reduces network overhead
+        let script = redis::Script::new(
+            r#"
+            local keys = redis.call('LRANGE', KEYS[1], 0, -1)
+            for _, key in ipairs(keys) do
+                local is_retryable = redis.call('HGET', key, 'is_retryable')
+                if is_retryable == '0' then
+                    return 1
+                end
+            end
+            return 0
+            "#,
+        );
+
+        let has_non_retryable: i32 = script
+            .key(&invocations_key)
+            .invoke_async(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(has_non_retryable == 1)
     }
 
     async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()> {
@@ -849,30 +870,37 @@ impl ExecutionLog for RedisExecutionLog {
         let inv_key = Self::invocation_key(flow_id, step);
         let timer_key = format!("{}:{}", flow_id, step);
 
-        // Get current status
-        let status: Option<String> = conn
-            .hget(&inv_key, "status")
+        // Timer steps return Result<(), ExecutionError>, so we need to serialize Ok(()) properly
+        use crate::executor::ExecutionError as ExecError;
+        let result_ok: std::result::Result<(), ExecError> = Ok(());
+        let unit_value = crate::core::serialize_value(&result_ok)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        // Use Lua script for atomic check-and-set to prevent race conditions
+        // between status check and update
+        let script = redis::Script::new(
+            r#"
+            local status = redis.call('HGET', KEYS[1], 'status')
+            if status ~= 'WaitingForTimer' then
+                return 0
+            end
+            redis.call('HSET', KEYS[1], 'status', 'Complete')
+            redis.call('HSET', KEYS[1], 'return_value', ARGV[1])
+            redis.call('ZREM', KEYS[2], ARGV[2])
+            return 1
+            "#,
+        );
+
+        let claimed: i32 = script
+            .key(&inv_key)
+            .key("ergon:timers:pending")
+            .arg(unit_value)
+            .arg(&timer_key)
+            .invoke_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        if status.as_deref() != Some("WaitingForTimer") {
-            return Ok(false); // Already claimed or not waiting
-        }
-
-        // Atomically update status and remove from timers set
-        let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        let _: () = redis::pipe()
-            .atomic()
-            .hset(&inv_key, "status", "Complete")
-            .hset(&inv_key, "return_value", unit_value)
-            .zrem("ergon:timers:pending", &timer_key)
-            .query_async(&mut *conn)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        Ok(true)
+        Ok(claimed == 1)
     }
 
     async fn log_timer(
@@ -899,6 +927,69 @@ impl ExecutionLog for RedisExecutionLog {
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
+        Ok(())
+    }
+
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+
+        // Scan to find the task_id for this flow_id
+        let mut cursor = 0u64;
+        let mut task_id: Option<Uuid> = None;
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .cursor_arg(cursor)
+                .arg("MATCH")
+                .arg("ergon:flow:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            for key in keys {
+                let stored_flow_id: Option<String> = conn
+                    .hget(&key, "flow_id")
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                if let Some(stored_id) = stored_flow_id {
+                    if let Ok(parsed_id) = Uuid::parse_str(&stored_id) {
+                        if parsed_id == flow_id {
+                            // Extract task_id from key: "ergon:flow:{task_id}"
+                            if let Some(id_str) = key.strip_prefix("ergon:flow:") {
+                                if let Ok(tid) = Uuid::parse_str(id_str) {
+                                    task_id = Some(tid);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if task_id.is_some() {
+                break;
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        let task_id = task_id.ok_or_else(|| {
+            StorageError::Connection(format!("Task not found for flow_id: {}", flow_id))
+        })?;
+
+        // Re-enqueue the task to pending queue
+        let _: () = conn
+            .rpush("ergon:queue:pending", task_id.to_string())
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        debug!("Resumed flow: flow_id={}, task_id={}", flow_id, task_id);
         Ok(())
     }
 
@@ -1017,29 +1108,30 @@ impl ExecutionLog for RedisExecutionLog {
         let mut conn = self.get_connection().await?;
         let now = Utc::now().timestamp_millis();
 
-        // Get all tasks ready to execute (score <= now)
-        let ready_tasks: Vec<String> = conn
-            .zrangebyscore("ergon:queue:delayed", 0, now)
+        // Use Lua script to atomically find and move ready tasks
+        // This prevents race conditions where multiple workers try to move the same tasks
+        let script = redis::Script::new(
+            r#"
+            local ready = redis.call('ZRANGEBYSCORE', 'ergon:queue:delayed', 0, ARGV[1], 'LIMIT', 0, 100)
+            local count = 0
+            for _, task_id in ipairs(ready) do
+                redis.call('ZREM', 'ergon:queue:delayed', task_id)
+                redis.call('LPUSH', 'ergon:queue:pending', task_id)
+                count = count + 1
+            end
+            return count
+            "#,
+        );
+
+        let count: u64 = script
+            .arg(now)
+            .invoke_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        if ready_tasks.is_empty() {
-            return Ok(0);
+        if count > 0 {
+            debug!("Moved {} delayed tasks to pending queue", count);
         }
-
-        // Atomically move tasks from delayed to pending
-        let count = ready_tasks.len() as u64;
-        for task_id in &ready_tasks {
-            let _: () = redis::pipe()
-                .atomic()
-                .zrem("ergon:queue:delayed", task_id)
-                .rpush("ergon:queue:pending", task_id)
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
-        }
-
-        debug!("Moved {} delayed tasks to pending queue", count);
         Ok(count)
     }
 

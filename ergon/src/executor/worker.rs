@@ -8,6 +8,7 @@
 //! them in a distributed manner.
 
 use crate::core::{deserialize_value, FlowType};
+use crate::executor::ExecutionError;
 use crate::storage::{ExecutionLog, TaskStatus};
 use crate::Executor;
 use chrono::Utc;
@@ -17,13 +18,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Notify, RwLock, Semaphore};
+use tokio::sync::{RwLock, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument};
 use uuid::Uuid;
-
-use super::timer::TIMER_NOTIFIERS;
 
 // ============================================================================
 // Timer Typestates
@@ -119,20 +118,19 @@ impl TimerProcessing for WithTimers {
                     // Try to claim the timer (optimistic concurrency)
                     match storage.claim_timer(timer.flow_id, timer.step).await {
                         Ok(true) => {
-                            // Successfully claimed - fire the timer
-                            // Use or_insert_with to ensure notification is stored even if no waiter exists yet
-                            // This matches the pattern in signal.rs and prevents lost notifications
-                            let key = (timer.flow_id, timer.step);
-                            let notifier = TIMER_NOTIFIERS
-                                .entry(key)
-                                .or_insert_with(|| Arc::new(Notify::new()))
-                                .value()
-                                .clone();
-                            notifier.notify_one();
+                            // Successfully claimed - resume the flow
                             info!(
                                 "Timer fired: flow={} step={} name={:?}",
                                 timer.flow_id, timer.step, timer.timer_name
                             );
+
+                            // Resume the flow by re-enqueuing it
+                            if let Err(e) = storage.resume_flow(timer.flow_id).await {
+                                warn!(
+                                    "Failed to resume flow after timer: flow={} step={} error={}",
+                                    timer.flow_id, timer.step, e
+                                );
+                            }
                         }
                         Ok(false) => {
                             // Another worker already claimed it
@@ -231,7 +229,7 @@ impl TracingBehavior for WithStructuredTracing {
 ///
 /// Wrapped in Arc to allow cloning without holding the registry lock during execution.
 type BoxedExecutor<S> = Arc<
-    dyn Fn(Vec<u8>, Uuid, Arc<S>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>
+    dyn Fn(Vec<u8>, Uuid, Arc<S>) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send>>
         + Send
         + Sync,
 >;
@@ -315,7 +313,7 @@ impl<S: ExecutionLog + 'static> Registry<S> {
         F: Fn(Arc<T>) -> Fut + Send + Sync + Clone + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
         R: Send + 'static,
-        E: std::fmt::Display + Send + 'static,
+        E: Into<ExecutionError> + Send + 'static,
     {
         // Use stable type ID instead of std::any::type_name()
         // This ensures compatibility across different compiler versions
@@ -328,18 +326,21 @@ impl<S: ExecutionLog + 'static> Registry<S> {
 
                 Box::pin(async move {
                     // Deserialize the flow
-                    let flow: T = deserialize_value(&data)
-                        .map_err(|e| format!("failed to deserialize flow: {}", e))?;
+                    let flow: T = match deserialize_value(&data) {
+                        Ok(f) => f,
+                        Err(e) => return Err(ExecutionError::Failed(format!("failed to deserialize flow: {}", e))),
+                    };
 
                     // Create executor
                     let exec = Executor::new(flow_id, flow, storage);
 
                     // Execute the flow using the registered executor
                     // The executor expects Arc<T>, so we clone &T to create owned T, then wrap in Arc
-                    exec.execute(move |f: &T| Box::pin(executor(Arc::new(f.clone()))))
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
+                    let result = exec.execute(move |f: &T| Box::pin(executor(Arc::new(f.clone()))))
+                        .await;
+
+                    // Convert user's error type E to ExecutionError (preserves Suspend variant)
+                    result.map(|_| ()).map_err(|e| e.into())
                 })
             });
 
@@ -609,7 +610,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         F: Fn(Arc<Flow>) -> Fut + Send + Sync + Clone + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
         R: Send + 'static,
-        E: std::fmt::Display + Send + 'static,
+        E: Into<ExecutionError> + Send + 'static,
     {
         let mut registry = self.registry.write().await;
         registry.register(executor);
@@ -760,11 +761,11 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                     exec(flow.flow_data.clone(), flow.flow_id, storage.clone()).await
                                 }
                                 None => {
-                                    Err(format!("no executor registered for type: {}", flow.flow_type))
+                                    Err(ExecutionError::Failed(format!("no executor registered for type: {}", flow.flow_type)))
                                 }
                             };
 
-                            // Handle completion or retry
+                            // Handle completion, suspension, or retry
                             match result {
                                 Ok(_) => {
                                     info!(
@@ -781,7 +782,20 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                         );
                                     }
                                 }
-                                Err(error_msg) => {
+                                Err(ExecutionError::Suspend(reason)) => {
+                                    // Flow suspended - just log it and do nothing
+                                    // The task stays in its current state (locked_by is cleared implicitly
+                                    // when the tokio task ends)
+                                    info!(
+                                        "Worker {} flow suspended: task_id={}, reason={:?}",
+                                        worker_id, flow_task_id, reason
+                                    );
+                                    // Note: Task remains in database with all its step history intact.
+                                    // When timer fires, resume_flow() will re-enqueue it, and the flow
+                                    // will resume from where it left off (using cached step results).
+                                }
+                                Err(error) => {
+                                    let error_msg = error.to_string();
                                     // Flow failed - check if we should retry
                                     error!(
                                         "Worker {} flow failed: task_id={}, error={}",

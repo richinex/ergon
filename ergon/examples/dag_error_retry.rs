@@ -36,6 +36,7 @@
 //! - On retry: A is skipped, B runs again
 //! - More efficient than re-running everything!
 
+use ergon::executor::ExecutionError;
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -84,6 +85,13 @@ impl RetryableError for PaymentError {
             self,
             PaymentError::NetworkTimeout | PaymentError::ServiceUnavailable
         )
+    }
+}
+
+// Convert PaymentError to ExecutionError
+impl From<PaymentError> for ExecutionError {
+    fn from(e: PaymentError) -> Self {
+        ExecutionError::Failed(e.to_string())
     }
 }
 

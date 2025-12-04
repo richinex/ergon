@@ -31,7 +31,7 @@
 //! cargo run --example distributed_worker_timer_sqlite --features=sqlite
 //! ```
 
-use ergon::executor::{schedule_timer_named, Scheduler};
+use ergon::executor::{schedule_timer_named, ExecutionError, Scheduler};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,7 +47,7 @@ struct TimedOrderProcessor {
 impl TimedOrderProcessor {
     /// Main flow that orchestrates order processing with timed delays
     #[flow]
-    async fn process_order(self: Arc<Self>) -> Result<OrderResult, String> {
+    async fn process_order(self: Arc<Self>) -> Result<OrderResult, ExecutionError> {
         println!("[{}] Starting order processing", self.order_id);
 
         // Validate the order
@@ -75,53 +75,51 @@ impl TimedOrderProcessor {
     }
 
     #[step]
-    async fn validate_order(self: Arc<Self>) -> Result<bool, String> {
+    async fn validate_order(self: Arc<Self>) -> Result<bool, ExecutionError> {
         println!(
             "[{}] Validating order for {} (amount: ${})",
             self.order_id, self.customer, self.amount
         );
 
         if self.amount <= 0.0 {
-            return Err(format!("Invalid amount: {}", self.amount));
+            return Err(ExecutionError::Failed(format!("Invalid amount: {}", self.amount)));
         }
 
         Ok(true)
     }
 
     #[step]
-    async fn wait_for_fraud_check(self: Arc<Self>) -> Result<(), String> {
+    async fn wait_for_fraud_check(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("[{}] Waiting 2s for fraud check...", self.order_id);
         schedule_timer_named(
             Duration::from_secs(2),
             &format!("fraud-check-{}", self.order_id),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         println!("[{}] Fraud check complete", self.order_id);
         Ok(())
     }
 
     #[step]
-    async fn process_payment(self: Arc<Self>) -> Result<String, String> {
+    async fn process_payment(self: Arc<Self>) -> Result<String, ExecutionError> {
         println!("[{}] Processing payment of ${}", self.order_id, self.amount);
         Ok(format!("payment-{}", self.order_id))
     }
 
     #[step]
-    async fn wait_for_warehouse(self: Arc<Self>) -> Result<(), String> {
+    async fn wait_for_warehouse(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("[{}] Waiting 3s for warehouse processing...", self.order_id);
         schedule_timer_named(
             Duration::from_secs(3),
             &format!("warehouse-{}", self.order_id),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         println!("[{}] Warehouse processing complete", self.order_id);
         Ok(())
     }
 
     #[step]
-    async fn ship_order(self: Arc<Self>) -> Result<String, String> {
+    async fn ship_order(self: Arc<Self>) -> Result<String, ExecutionError> {
         println!("[{}] Shipping order", self.order_id);
         Ok(format!("tracking-{}", self.order_id))
     }
@@ -142,7 +140,7 @@ struct TrialExpiryNotification {
 
 impl TrialExpiryNotification {
     #[flow]
-    async fn send_expiry_notice(self: Arc<Self>) -> Result<String, String> {
+    async fn send_expiry_notice(self: Arc<Self>) -> Result<String, ExecutionError> {
         println!("[Trial {}] Starting trial expiry flow", self.user_id);
 
         // Wait for trial period (simulated with 5 second timer)
@@ -158,7 +156,7 @@ impl TrialExpiryNotification {
     }
 
     #[step]
-    async fn wait_for_trial_period(self: Arc<Self>) -> Result<(), String> {
+    async fn wait_for_trial_period(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!(
             "[Trial {}] Waiting 5s for trial period to expire...",
             self.user_id
@@ -167,14 +165,13 @@ impl TrialExpiryNotification {
             Duration::from_secs(5),
             &format!("trial-expiry-{}", self.user_id),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         println!("[Trial {}] Trial period expired", self.user_id);
         Ok(())
     }
 
     #[step]
-    async fn send_notification(self: Arc<Self>) -> Result<bool, String> {
+    async fn send_notification(self: Arc<Self>) -> Result<bool, ExecutionError> {
         println!(
             "[Trial {}] Sending expiry notice to {}",
             self.user_id, self.email

@@ -196,7 +196,7 @@ impl DeferredRegistry {
         let factory_boxed: StepFactory = Box::new(move |inputs| {
             Box::pin(async move {
                 let result = factory(inputs).await?;
-                serialize_value(&result).map_err(ExecutionError::Core)
+                serialize_value(&result).map_err(ExecutionError::from)
             })
         });
 
@@ -204,7 +204,7 @@ impl DeferredRegistry {
         let sender_boxed: Box<dyn FnOnce(Result<Vec<u8>>) + Send> =
             Box::new(move |result: Result<Vec<u8>>| {
                 let typed_result = result.and_then(|bytes: Vec<u8>| {
-                    deserialize_value::<T>(&bytes).map_err(ExecutionError::Core)
+                    deserialize_value::<T>(&bytes).map_err(ExecutionError::from)
                 });
                 let _ = tx.send(typed_result);
             });
@@ -719,9 +719,9 @@ mod tests {
         let handle_b = registry.register::<i32, _, _>("b", &[], |_| async { Ok(20) });
         let handle_c = registry.register::<i32, _, _>("c", &["a", "b"], |inputs| async move {
             let a: i32 = deserialize_value(inputs.get(&StepId::new("a")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             let b: i32 = deserialize_value(inputs.get(&StepId::new("b")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             Ok(a + b)
         });
 
@@ -757,9 +757,9 @@ mod tests {
 
         let handle_c = registry.register::<String, _, _>("c", &["a", "b"], |inputs| async move {
             let a: String = deserialize_value(inputs.get(&StepId::new("a")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             let b: String = deserialize_value(inputs.get(&StepId::new("b")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             Ok(format!("{}{}", a, b))
         });
 
@@ -791,19 +791,19 @@ mod tests {
         let _handle_a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(10) });
         let _handle_b = registry.register::<i32, _, _>("b", &["a"], |inputs| async move {
             let a: i32 = deserialize_value(inputs.get(&StepId::new("a")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             Ok(a + 1)
         });
         let _handle_c = registry.register::<i32, _, _>("c", &["a"], |inputs| async move {
             let a: i32 = deserialize_value(inputs.get(&StepId::new("a")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             Ok(a + 2)
         });
         let handle_d = registry.register::<i32, _, _>("d", &["b", "c"], |inputs| async move {
             let b: i32 = deserialize_value(inputs.get(&StepId::new("b")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             let c: i32 = deserialize_value(inputs.get(&StepId::new("c")).unwrap())
-                .map_err(ExecutionError::Core)?;
+                .map_err(ExecutionError::from)?;
             Ok(b + c)
         });
 

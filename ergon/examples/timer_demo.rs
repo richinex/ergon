@@ -36,7 +36,7 @@
 //! ```
 
 use chrono::Utc;
-use ergon::executor::{schedule_timer, schedule_timer_named, Worker};
+use ergon::executor::{schedule_timer, schedule_timer_named, ExecutionError, Scheduler, Worker};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,7 +56,7 @@ impl OrderWorkflow {
     /// - Wait 3 seconds: Ship order
     /// - Wait 1 second: Send confirmation
     #[flow]
-    async fn process_order(self: Arc<Self>) -> Result<String, String> {
+    async fn process_order(self: Arc<Self>) -> Result<String, ExecutionError> {
         println!("\n[{}] Order {} created", format_time(), self.order_id);
 
         // Step 1: Wait before processing (simulates order validation period)
@@ -90,52 +90,46 @@ impl OrderWorkflow {
     }
 
     #[step]
-    async fn wait_for_processing(self: Arc<Self>) -> Result<(), String> {
+    async fn wait_for_processing(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("[{}] Waiting 2 seconds before payment...", format_time());
-        schedule_timer_named(Duration::from_secs(2), "payment-delay")
-            .await
-            .map_err(|e| e.to_string())?;
+        schedule_timer_named(Duration::from_secs(2), "payment-delay").await?;
         println!("[{}] Payment delay timer fired!", format_time());
         Ok(())
     }
 
     #[step]
-    async fn process_payment(self: Arc<Self>) -> Result<(), String> {
+    async fn process_payment(self: Arc<Self>) -> Result<(), ExecutionError> {
         // Simulate payment processing
         Ok(())
     }
 
     #[step]
-    async fn wait_for_shipping(self: Arc<Self>) -> Result<(), String> {
+    async fn wait_for_shipping(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("[{}] Waiting 3 seconds before shipping...", format_time());
-        schedule_timer_named(Duration::from_secs(3), "shipping-delay")
-            .await
-            .map_err(|e| e.to_string())?;
+        schedule_timer_named(Duration::from_secs(3), "shipping-delay").await?;
         println!("[{}] Shipping delay timer fired!", format_time());
         Ok(())
     }
 
     #[step]
-    async fn ship_order(self: Arc<Self>) -> Result<(), String> {
+    async fn ship_order(self: Arc<Self>) -> Result<(), ExecutionError> {
         // Simulate shipping
         Ok(())
     }
 
     #[step]
-    async fn wait_for_confirmation(self: Arc<Self>) -> Result<(), String> {
+    async fn wait_for_confirmation(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!(
             "[{}] Waiting 1 second before confirmation...",
             format_time()
         );
-        schedule_timer(Duration::from_secs(1))
-            .await
-            .map_err(|e| e.to_string())?;
+        schedule_timer(Duration::from_secs(1)).await?;
         println!("[{}] Confirmation delay timer fired!", format_time());
         Ok(())
     }
 
     #[step]
-    async fn send_confirmation(self: Arc<Self>) -> Result<(), String> {
+    async fn send_confirmation(self: Arc<Self>) -> Result<(), ExecutionError> {
         // Simulate sending email
         Ok(())
     }
@@ -161,36 +155,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create SQLite storage for durability
     let storage = Arc::new(SqliteExecutionLog::new("timer_demo.db").await?);
+    storage.reset().await?;
+
+    let scheduler = Scheduler::new(storage.clone());
 
     // Start worker with timer processing (polls every 100ms for demo responsiveness)
     let worker = Worker::new(storage.clone(), "timer-demo-worker")
         .with_timers()
         .with_timer_interval(Duration::from_millis(100))
-        .start()
+        .with_poll_interval(Duration::from_millis(100));
+
+    // Register the flow handler
+    worker
+        .register(|flow: Arc<OrderWorkflow>| flow.process_order())
         .await;
+
+    let worker_handle = worker.start().await;
 
     println!("[{}] Worker with timer processing started\n", format_time());
 
-    // Create and execute an order with timers
+    // Schedule the order flow
     let order = OrderWorkflow {
         order_id: "ORD-12345".to_string(),
         customer_email: "customer@example.com".to_string(),
     };
 
     let flow_id = uuid::Uuid::new_v4();
-    let instance = Executor::new(flow_id, order, storage.clone());
+    let _task_id = scheduler.schedule(order, flow_id).await?;
 
     println!("Total expected duration: ~6 seconds (2s + 3s + 1s)\n");
     println!("Starting order processing...\n");
 
     let start = std::time::Instant::now();
 
-    // Execute the flow
-    let result = instance
-        .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
-        .await?;
+    // Wait for flow to complete by checking task status
+    loop {
+        if let Some(task) = storage.get_scheduled_flow(_task_id).await? {
+            match task.status {
+                ergon::storage::TaskStatus::Complete => break,
+                ergon::storage::TaskStatus::Failed => {
+                    println!("\n[WARNING] Flow failed");
+                    break;
+                }
+                _ => {
+                    // Still running or pending
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        } else {
+            break; // Task not found
+        }
+    }
 
     let elapsed = start.elapsed();
+
+    // Get the flow result from step 0
+    let result = if let Some(flow_inv) = storage.get_invocation(flow_id, 0).await? {
+        if flow_inv.status() == ergon::InvocationStatus::Complete {
+            String::from("Order completed successfully")
+        } else {
+            String::from("Order processing in progress or failed")
+        }
+    } else {
+        String::from("Order not found")
+    };
 
     println!("\n=== Results ===");
     println!("Result: {}", result);
@@ -205,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Gracefully shutdown the worker
     println!("\n[{}] Shutting down worker...", format_time());
-    worker.shutdown().await;
+    worker_handle.shutdown().await;
 
     println!("\n=== Demo Complete ===");
     println!("Check timer_demo.db to see persisted timer state");

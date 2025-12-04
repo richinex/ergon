@@ -793,7 +793,10 @@ impl ExecutionLog for SqliteExecutionLog {
         let mut tx = self.pool.begin().await?;
 
         // Optimistic concurrency: UPDATE with status check
-        let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
+        // Timer steps return Result<(), ExecutionError>, so we need to serialize Ok(()) properly
+        use crate::executor::ExecutionError as ExecError;
+        let result_ok: std::result::Result<(), ExecError> = Ok(());
+        let unit_value = crate::core::serialize_value(&result_ok)
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         let result = sqlx::query(
@@ -937,6 +940,33 @@ impl ExecutionLog for SqliteExecutionLog {
         );
 
         Ok(deleted_invocations)
+    }
+
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+        // Find the task_id for this flow_id and re-enqueue it
+        let result = sqlx::query(
+            "UPDATE flow_queue
+             SET status = 'PENDING',
+                 locked_by = NULL,
+                 updated_at = ?
+             WHERE flow_id = ?
+               AND status != 'COMPLETE'
+               AND status != 'FAILED'",
+        )
+        .bind(Utc::now().timestamp_millis())
+        .bind(flow_id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::Connection(format!(
+                "Task not found for flow_id: {}",
+                flow_id
+            )));
+        }
+
+        debug!("Resumed flow: flow_id={}", flow_id);
+        Ok(())
     }
 }
 

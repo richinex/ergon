@@ -9,7 +9,6 @@
 
 use super::error::{format_params_preview, ExecutionError, Result};
 use super::signal::{RESUME_PARAMS, WAIT_NOTIFIERS};
-use super::timer::TIMER_NOTIFIERS;
 use crate::core::{
     deserialize_value, hash_params, serialize_value, CallType, Invocation, InvocationStatus,
     RetryPolicy,
@@ -179,7 +178,7 @@ impl ExecutionContext {
                 retry_policy: params.retry_policy,
             })
             .await
-            .map_err(ExecutionError::Storage)?;
+            .map_err(ExecutionError::from)?;
         Ok(())
     }
 
@@ -193,7 +192,7 @@ impl ExecutionContext {
         self.storage
             .log_invocation_completion(self.id, step, &return_bytes)
             .await
-            .map_err(ExecutionError::Storage)?;
+            .map_err(ExecutionError::from)?;
         Ok(())
     }
 
@@ -210,7 +209,7 @@ impl ExecutionContext {
         self.storage
             .update_is_retryable(self.id, step, is_retryable)
             .await
-            .map_err(ExecutionError::Storage)?;
+            .map_err(ExecutionError::from)?;
         Ok(())
     }
 
@@ -298,7 +297,7 @@ impl ExecutionContext {
             .storage
             .get_invocation(self.id, step)
             .await
-            .map_err(ExecutionError::Storage)?;
+            .map_err(ExecutionError::from)?;
 
         if let Some(inv) = invocation {
             // Validate the invocation matches current execution
@@ -342,11 +341,6 @@ impl Drop for ExecutionContext {
         // Clean up signal-related notifiers
         WAIT_NOTIFIERS.remove(&self.id);
         RESUME_PARAMS.remove(&self.id);
-
-        // Clean up all timer notifiers for this flow
-        // TIMER_NOTIFIERS uses (flow_id, step) as key, so we need to remove all entries
-        // where flow_id matches self.id
-        TIMER_NOTIFIERS.retain(|(flow_id, _step), _notifier| *flow_id != self.id);
     }
 }
 
