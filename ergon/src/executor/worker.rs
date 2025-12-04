@@ -241,11 +241,15 @@ impl TracingBehavior for WithStructuredTracing {
 /// Returns `FlowOutcome` which makes suspension explicit (per Dave Cheney's principle).
 ///
 /// Wrapped in Arc to allow cloning without holding the registry lock during execution.
+///
+/// The executor now takes parent metadata (parent_flow_id, signal_token) to support
+/// Level 3 child flow signaling.
 type BoxedExecutor<S> = Arc<
     dyn Fn(
             Vec<u8>,
             Uuid,
             Arc<S>,
+            Option<(Uuid, String)>, // (parent_flow_id, signal_token)
         ) -> Pin<
             Box<
                 dyn Future<Output = crate::executor::FlowOutcome<Result<(), ExecutionError>>>
@@ -333,15 +337,18 @@ impl<S: ExecutionLog + 'static> Registry<S> {
         T: DeserializeOwned + FlowType + Send + Sync + Clone + 'static,
         F: Fn(Arc<T>) -> Fut + Send + Sync + Clone + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
-        R: Send + 'static,
+        R: serde::Serialize + Send + 'static,
         E: Into<BoxError> + Send + 'static,
     {
         // Use stable type ID instead of std::any::type_name()
         // This ensures compatibility across different compiler versions
         let type_name = T::type_id().to_string();
 
-        let boxed: BoxedExecutor<S> =
-            Arc::new(move |data: Vec<u8>, flow_id: Uuid, storage: Arc<S>| {
+        let boxed: BoxedExecutor<S> = Arc::new(
+            move |data: Vec<u8>,
+                  flow_id: Uuid,
+                  storage: Arc<S>,
+                  _parent_metadata: Option<(Uuid, String)>| {
                 // Clone the executor for this invocation
                 let executor = executor.clone();
 
@@ -372,6 +379,9 @@ impl<S: ExecutionLog + 'static> Registry<S> {
                     match outcome {
                         FlowOutcome::Suspended(reason) => FlowOutcome::Suspended(reason),
                         FlowOutcome::Completed(result) => {
+                            // DON'T signal parent here - signaling happens in work loop after retry decision
+                            // This ensures parent only gets notified when child truly completes (not during retries)
+
                             // Convert user's error type E to ExecutionError
                             let converted_result = result.map(|_| ()).map_err(|e| {
                                 let boxed: BoxError = e.into();
@@ -381,7 +391,8 @@ impl<S: ExecutionLog + 'static> Registry<S> {
                         }
                     }
                 })
-            });
+            },
+        );
 
         debug!("Registered flow type: {}", type_name);
         self.executors.insert(type_name, boxed);
@@ -466,6 +477,44 @@ impl<S: ExecutionLog + 'static> Default for Registry<S> {
 /// # Ok(())
 /// # }
 /// ```
+/// Signals a parent flow with the result of a child flow (Level 3 API).
+///
+/// This function is called after retry decision to ensure parent only gets notified
+/// when child truly completes (not during retries).
+async fn signal_parent_level3<S, R>(
+    storage: &Arc<S>,
+    parent_id: uuid::Uuid,
+    signal_token: &str,
+    child_result: crate::executor::ChildResult<R>,
+) where
+    S: ExecutionLog,
+    R: serde::Serialize,
+{
+    if let Ok(result_bytes) = crate::core::serialize_value(&child_result) {
+        if let Ok(invocations) = storage.get_invocations_for_flow(parent_id).await {
+            if let Some(waiting_step) = invocations.iter().find(|inv| {
+                inv.status() == crate::core::InvocationStatus::WaitingForSignal
+                    && inv.timer_name() == Some(signal_token)
+            }) {
+                let _ = storage
+                    .store_signal_params(parent_id, waiting_step.step(), &result_bytes)
+                    .await;
+                let _ = storage.resume_flow(parent_id).await;
+                match &child_result {
+                    crate::executor::ChildResult::Ok(_) => debug!(
+                        "Auto-signaled parent flow {} with token {} (success)",
+                        parent_id, signal_token
+                    ),
+                    crate::executor::ChildResult::Err(msg) => debug!(
+                        "Auto-signaled parent flow {} with token {} (error: {})",
+                        parent_id, signal_token, msg
+                    ),
+                }
+            }
+        }
+    }
+}
+
 pub struct Worker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStructuredTracing> {
     storage: Arc<S>,
     worker_id: String,
@@ -648,7 +697,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         Flow: DeserializeOwned + FlowType + Send + Sync + Clone + 'static,
         F: Fn(Arc<Flow>) -> Fut + Send + Sync + Clone + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
-        R: Send + 'static,
+        R: serde::Serialize + Send + 'static,
         E: Into<BoxError> + Send + 'static,
     {
         let mut registry = self.registry.write().await;
@@ -795,9 +844,13 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             };
                             // RwLock released here!
 
+                            // Extract parent metadata for Level 3 API signaling
+                            let parent_metadata = flow.parent_flow_id
+                                .and_then(|parent_id| flow.signal_token.clone().map(|token| (parent_id, token)));
+
                             let outcome = match executor {
                                 Some(exec) => {
-                                    exec(flow.flow_data.clone(), flow.flow_id, storage.clone()).await
+                                    exec(flow.flow_data.clone(), flow.flow_id, storage.clone(), parent_metadata).await
                                 }
                                 None => {
                                     use crate::executor::FlowOutcome;
@@ -827,6 +880,46 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                         "Worker {} completed flow: task_id={}",
                                         worker_id, flow_task_id
                                     );
+
+                                    // Signal parent (Level 3 API) - after successful completion
+                                    if let Some((parent_id, signal_token)) = flow.parent_flow_id
+                                        .and_then(|pid| flow.signal_token.clone().map(|token| (pid, token)))
+                                    {
+                                        // Read the flow's result from storage (invocation step 0)
+                                        if let Ok(Some(invocation)) = storage.get_invocation(flow.flow_id, 0).await {
+                                            if let Some(result_bytes) = invocation.return_value() {
+                                                // Wrap success result in ChildResult
+                                                // We signal with raw bytes since we don't know the type R here
+                                                // Parent will deserialize as ChildResult<R>
+                                                let child_result_bytes = {
+                                                    // Result bytes are already serialized R, wrap them in Ok variant
+                                                    // Serialize a ChildResult::Ok wrapping a raw value placeholder
+                                                    // Actually, we need to deserialize R, wrap in ChildResult, and reserialize
+                                                    // But we don't know R... let's use serde_json::Value as intermediary
+                                                    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(result_bytes) {
+                                                        let wrapped = crate::executor::ChildResult::Ok(value);
+                                                        crate::core::serialize_value(&wrapped).ok()
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+
+                                                if let Some(bytes) = child_result_bytes {
+                                                    if let Ok(invocations) = storage.get_invocations_for_flow(parent_id).await {
+                                                        if let Some(waiting_step) = invocations.iter().find(|inv| {
+                                                            inv.status() == crate::core::InvocationStatus::WaitingForSignal
+                                                                && inv.timer_name() == Some(signal_token.as_str())
+                                                        }) {
+                                                            let _ = storage.store_signal_params(parent_id, waiting_step.step(), &bytes).await;
+                                                            let _ = storage.resume_flow(parent_id).await;
+                                                            debug!("Auto-signaled parent flow {} with token {} (success)", parent_id, signal_token);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     if let Err(e) = storage
                                         .complete_flow(flow_task_id, TaskStatus::Complete)
                                         .await
@@ -871,28 +964,31 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                         // Get the flow's invocation (step 0) to check retry policy
                                         match storage.get_invocation(flow.flow_id, 0).await {
                                             Ok(Some(invocation)) => {
-                                                if let Some(policy) = invocation.retry_policy() {
-                                                    let next_attempt = flow.retry_count + 1;
+                                                // Get retry policy (explicit or default)
+                                                let policy = invocation.retry_policy().unwrap_or_else(|| {
+                                                    // No explicit policy, but error is retryable (we passed has_non_retryable_error check)
+                                                    // Use a default policy for retryable errors
+                                                    debug!(
+                                                        "Flow {} has no explicit retry policy but error is retryable, using default: RetryPolicy::STANDARD (3 attempts)",
+                                                        flow.flow_id
+                                                    );
+                                                    crate::core::RetryPolicy::STANDARD
+                                                });
 
-                                                    if let Some(delay) =
-                                                        policy.delay_for_attempt(next_attempt)
-                                                    {
-                                                        debug!(
-                                                            "Flow {} will retry (attempt {}/{}) after {:?}",
-                                                            flow.flow_id, next_attempt, policy.max_attempts, delay
-                                                        );
-                                                        Ok(Some(delay))
-                                                    } else {
-                                                        debug!(
-                                                            "Flow {} exceeded max retry attempts ({}/{})",
-                                                            flow.flow_id, next_attempt, policy.max_attempts
-                                                        );
-                                                        Ok(None)
-                                                    }
+                                                let next_attempt = flow.retry_count + 1;
+
+                                                if let Some(delay) =
+                                                    policy.delay_for_attempt(next_attempt)
+                                                {
+                                                    debug!(
+                                                        "Flow {} will retry (attempt {}/{}) after {:?}",
+                                                        flow.flow_id, next_attempt, policy.max_attempts, delay
+                                                    );
+                                                    Ok(Some(delay))
                                                 } else {
                                                     debug!(
-                                                        "Flow {} has no retry policy",
-                                                        flow.flow_id
+                                                        "Flow {} exceeded max retry attempts ({}/{})",
+                                                        flow.flow_id, next_attempt, policy.max_attempts
                                                     );
                                                     Ok(None)
                                                 }
@@ -931,6 +1027,16 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                                 "Worker {} not retrying flow: task_id={} (not retryable or max attempts reached)",
                                                 worker_id, flow_task_id
                                             );
+
+                                            // Signal parent (Level 3 API) - after retries exhausted
+                                            if let Some((parent_id, signal_token)) = flow.parent_flow_id
+                                                .and_then(|pid| flow.signal_token.clone().map(|token| (pid, token)))
+                                            {
+                                                // Signal error to parent
+                                                let child_result = crate::executor::ChildResult::Err::<serde_json::Value>(error_msg.clone());
+                                                signal_parent_level3(&storage, parent_id, &signal_token, child_result).await;
+                                            }
+
                                             if let Err(e) = storage
                                                 .complete_flow(flow_task_id, TaskStatus::Failed)
                                                 .await
@@ -946,6 +1052,15 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                                 "Worker {} failed to check retry policy: {}, marking as failed",
                                                 worker_id, e
                                             );
+
+                                            // Signal parent (Level 3 API) - failed to check retry policy
+                                            if let Some((parent_id, signal_token)) = flow.parent_flow_id
+                                                .and_then(|pid| flow.signal_token.clone().map(|token| (pid, token)))
+                                            {
+                                                let child_result = crate::executor::ChildResult::Err::<serde_json::Value>(error_msg.clone());
+                                                signal_parent_level3(&storage, parent_id, &signal_token, child_result).await;
+                                            }
+
                                             if let Err(e) = storage
                                                 .complete_flow(flow_task_id, TaskStatus::Failed)
                                                 .await

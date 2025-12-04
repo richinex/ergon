@@ -60,7 +60,7 @@ mod serialization;
 
 // Re-export public types from submodules
 pub use error::{Error, Result};
-pub use flow_type::FlowType;
+pub use flow_type::{FlowType, InvokableFlow};
 pub use invocation::{CallType, Invocation, InvocationStatus};
 pub use retry::{DefaultKind, RetryPolicy, RetryableError, RetryableKind};
 pub use serialization::{deserialize_value, hash_params, serialize_value};

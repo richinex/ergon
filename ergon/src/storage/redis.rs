@@ -522,8 +522,8 @@ impl ExecutionLog for RedisExecutionLog {
             let scheduled_ts = scheduled_for.timestamp_millis();
 
             // Store flow metadata and add to delayed queue
-            let _: () = redis::pipe()
-                .atomic()
+            let mut pipe = redis::pipe();
+            pipe.atomic()
                 .hset(&flow_key, "task_id", task_id.to_string())
                 .hset(&flow_key, "flow_id", flow.flow_id.to_string())
                 .hset(&flow_key, "flow_type", &flow.flow_type)
@@ -531,24 +531,44 @@ impl ExecutionLog for RedisExecutionLog {
                 .hset(&flow_key, "created_at", flow.created_at.timestamp())
                 .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
                 .hset(&flow_key, "scheduled_for", scheduled_ts)
-                .hset(&flow_key, "flow_data", flow.flow_data.as_slice())
-                // Add to delayed queue (sorted by scheduled_for timestamp)
+                .hset(&flow_key, "flow_data", flow.flow_data.as_slice());
+
+            // Level 3: Add parent metadata if present
+            if let Some(parent_id) = flow.parent_flow_id {
+                pipe.hset(&flow_key, "parent_flow_id", parent_id.to_string());
+            }
+            if let Some(ref signal_token) = flow.signal_token {
+                pipe.hset(&flow_key, "signal_token", signal_token);
+            }
+
+            // Add to delayed queue (sorted by scheduled_for timestamp)
+            let _: () = pipe
                 .zadd("ergon:queue:delayed", task_id.to_string(), scheduled_ts)
                 .query_async(&mut *conn)
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
         } else {
             // Immediate execution - add to pending queue
-            let _: () = redis::pipe()
-                .atomic()
+            let mut pipe = redis::pipe();
+            pipe.atomic()
                 .hset(&flow_key, "task_id", task_id.to_string())
                 .hset(&flow_key, "flow_id", flow.flow_id.to_string())
                 .hset(&flow_key, "flow_type", &flow.flow_type)
                 .hset(&flow_key, "status", "Pending")
                 .hset(&flow_key, "created_at", flow.created_at.timestamp())
                 .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
-                .hset(&flow_key, "flow_data", flow.flow_data.as_slice())
-                // Add to pending queue (FIFO)
+                .hset(&flow_key, "flow_data", flow.flow_data.as_slice());
+
+            // Level 3: Add parent metadata if present
+            if let Some(parent_id) = flow.parent_flow_id {
+                pipe.hset(&flow_key, "parent_flow_id", parent_id.to_string());
+            }
+            if let Some(ref signal_token) = flow.signal_token {
+                pipe.hset(&flow_key, "signal_token", signal_token);
+            }
+
+            // Add to pending queue (FIFO)
+            let _: () = pipe
                 .rpush("ergon:queue:pending", task_id.to_string())
                 .query_async(&mut *conn)
                 .await
@@ -638,6 +658,8 @@ impl ExecutionLog for RedisExecutionLog {
                 retry_count: 0,
                 error_message: None,
                 scheduled_for: None,
+                parent_flow_id: None, // TODO: Extract from Redis hash
+                signal_token: None,   // TODO: Extract from Redis hash
             }))
         } else {
             Ok(None)
@@ -774,6 +796,15 @@ impl ExecutionLog for RedisExecutionLog {
                 .ok();
         let scheduled_for = scheduled_for_ms.and_then(chrono::DateTime::from_timestamp_millis);
 
+        // Extract Level 3 parent metadata if present
+        let parent_flow_id: Option<String> = data
+            .get("parent_flow_id")
+            .map(|v| String::from_utf8_lossy(v).to_string());
+        let parent_flow_id = parent_flow_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
+        let signal_token: Option<String> = data
+            .get("signal_token")
+            .map(|v| String::from_utf8_lossy(v).to_string());
+
         Ok(Some(super::ScheduledFlow {
             task_id,
             flow_id,
@@ -786,6 +817,8 @@ impl ExecutionLog for RedisExecutionLog {
             retry_count,
             error_message,
             scheduled_for,
+            parent_flow_id,
+            signal_token,
         }))
     }
 

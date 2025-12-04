@@ -82,6 +82,11 @@ pub struct ScheduledFlow {
     /// When this task should be executed (for delayed retry).
     /// If None, execute immediately.
     pub scheduled_for: Option<DateTime<Utc>>,
+    /// Parent flow ID for Level 3 child invocation (if this is a child flow).
+    pub parent_flow_id: Option<Uuid>,
+    /// Signal token for Level 3 child invocation (if this is a child flow).
+    /// This is the token the parent is waiting on (typically child's flow_id).
+    pub signal_token: Option<String>,
 }
 
 impl ScheduledFlow {
@@ -100,6 +105,8 @@ impl ScheduledFlow {
             retry_count: 0,
             error_message: None,
             scheduled_for: None,
+            parent_flow_id: None,
+            signal_token: None,
         }
     }
 

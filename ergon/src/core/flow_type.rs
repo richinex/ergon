@@ -72,4 +72,66 @@ pub trait FlowType {
     /// This value MUST be stable across compiler versions and builds.
     /// Do not use `std::any::type_name()` or other unstable sources.
     fn type_id() -> &'static str;
+
+    /// Returns parent flow information if this is a child flow.
+    ///
+    /// This enables automatic parent signaling when the child completes.
+    /// Child flows can implement this to specify their parent's ID and
+    /// the method name the parent is waiting on.
+    ///
+    /// # Returns
+    ///
+    /// - `Some((parent_id, parent_method))` if this is a child flow
+    /// - `None` if this is a top-level flow
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl FlowType for InventoryCheckFlow {
+    ///     fn type_id() -> &'static str { "InventoryCheckFlow" }
+    ///
+    ///     fn parent_info(&self) -> Option<(uuid::Uuid, String)> {
+    ///         Some((self.parent_flow_id, "await_inventory_check".to_string()))
+    ///     }
+    /// }
+    /// ```
+    fn parent_info(&self) -> Option<(uuid::Uuid, String)> {
+        None
+    }
+}
+
+/// Marker trait for flows that can be invoked as child flows using the Level 3 API.
+///
+/// This trait extends `FlowType` with an associated `Output` type, enabling
+/// compile-time type inference when invoking child flows.
+///
+/// # Example
+///
+/// ```ignore
+/// use ergon::prelude::*;
+///
+/// #[derive(Clone, Serialize, Deserialize, FlowType)]
+/// struct CheckInventory {
+///     product_id: String,
+/// }
+///
+/// impl InvokableFlow for CheckInventory {
+///     type Output = InventoryStatus;
+/// }
+///
+/// // Parent can invoke with full type inference:
+/// let inventory = self.invoke(CheckInventory { product_id }).result().await?;
+/// // ^^^^^^^^^^^ Type inferred as InventoryStatus!
+/// ```
+///
+/// # Backwards Compatibility
+///
+/// This trait is separate from `FlowType` to maintain backwards compatibility.
+/// Existing flows that don't use the `invoke()` API don't need to implement it.
+pub trait InvokableFlow: FlowType {
+    /// The type returned by this flow's execution.
+    ///
+    /// This enables type-safe parent-child invocation where the compiler
+    /// automatically infers the child's result type.
+    type Output: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + 'static;
 }

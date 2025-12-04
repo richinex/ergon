@@ -436,15 +436,18 @@ pub trait DefaultKind: Sized {
 }
 
 // Higher priority: implemented for E where E: RetryableError
-// Self = E (the error type directly)
-// Method takes &self = &E
-// When calling (&error).error_kind(), &E matches &self directly
+// When calling (error).error_kind() where error: E and E: RetryableError:
+// - error has type E
+// - E implements RetryableKind directly
+// - Returns RetryableTag which delegates to user's RetryableError impl
 impl<E: RetryableError> RetryableKind for E {}
 
-// Lower priority: implemented for &E for any E
-// Self = &E (reference to error type)
-// Method takes &self = &&E
-// When calling (&error).error_kind(), &E needs autoref to get &&E
+// Lower priority: implemented for &E for any E (via autoref)
+// When calling (error).error_kind() where error: E and E does NOT implement RetryableError:
+// - error has type E
+// - E doesn't implement RetryableKind (no RetryableError bound)
+// - Rust autorefs to &E to match this impl
+// - Returns DefaultTag (all errors retryable by default)
 impl<E> DefaultKind for &E {}
 
 impl RetryableTag {

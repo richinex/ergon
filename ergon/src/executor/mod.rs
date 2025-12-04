@@ -29,6 +29,7 @@
 //! let result = executor.run(|f| f.process()).await?;
 //! ```
 
+mod child_flow;
 mod context;
 pub mod dag;
 mod error;
@@ -40,13 +41,14 @@ mod timer;
 mod worker;
 
 // Re-export public types
+pub use child_flow::{ChildResult, InvokeChild, PendingChild};
 pub use context::{ExecutionContext, LogStepStartParams, CALL_TYPE, EXECUTION_CONTEXT};
 pub use dag::{DagSummary, DeferredRegistry, StepHandle};
 pub use error::{ExecutionError, FlowOutcome, Result, SuspendReason};
 pub use instance::Executor;
 pub use retry_helper::retry_with_policy;
 pub use scheduler::Scheduler;
-pub use signal::{await_external_signal, StepFuture};
+pub use signal::{await_external_signal, signal_parent_flow, StepFuture};
 pub use timer::{schedule_timer, schedule_timer_named};
 pub use worker::{
     Registry, WithStructuredTracing, WithTimers, WithoutStructuredTracing, WithoutTimers, Worker,

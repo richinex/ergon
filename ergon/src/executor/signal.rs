@@ -17,6 +17,7 @@
 use super::context::EXECUTION_CONTEXT;
 use super::error::{ExecutionError, Result, SuspendReason};
 use crate::core::{deserialize_value, InvocationStatus};
+use uuid::Uuid;
 
 /// Wrapper type for step futures (for backwards compatibility with step macro).
 ///
@@ -156,4 +157,96 @@ where
     Err(ExecutionError::Failed(
         "Flow suspended for signal".to_string(),
     ))
+}
+
+/// Helper function to signal a parent flow with a typed result.
+///
+/// This encapsulates the low-level operations needed for parent-child flow communication:
+/// - Finding the parent's waiting step by method name
+/// - Serializing the result
+/// - Storing signal parameters
+/// - Resuming the parent flow
+///
+/// # Arguments
+///
+/// * `parent_flow_id` - The UUID of the parent flow to signal
+/// * `parent_method_name` - The name of the method the parent is waiting on (without parentheses)
+/// * `result` - The typed result to send to the parent
+///
+/// # Errors
+///
+/// Returns `ExecutionError` if:
+/// - Not called within a flow context
+/// - Parent flow not found
+/// - Parent not waiting for the specified signal
+/// - Serialization fails
+/// - Storage operations fail
+///
+/// # Example
+///
+/// ```rust
+/// use ergon::prelude::*;
+/// use ergon::executor::signal_parent_flow;
+///
+/// #[derive(Clone, Serialize, Deserialize)]
+/// struct InventoryResult {
+///     available: bool,
+///     warehouse: String,
+/// }
+///
+/// #[step]
+/// async fn signal_parent(
+///     self: Arc<Self>,
+///     result: InventoryResult,
+/// ) -> Result<(), ExecutionError> {
+///     signal_parent_flow(
+///         self.parent_flow_id,
+///         "await_inventory_check",
+///         result
+///     ).await
+/// }
+/// ```
+pub async fn signal_parent_flow<T>(
+    parent_flow_id: Uuid,
+    parent_method_name: &str,
+    result: T,
+) -> Result<()>
+where
+    T: serde::Serialize,
+{
+    let storage = EXECUTION_CONTEXT
+        .try_with(|ctx| ctx.storage.clone())
+        .expect("signal_parent_flow must be called within flow context");
+
+    // Serialize result using bincode (same format as ergon internals)
+    let result_bytes = crate::core::serialize_value(&result)?;
+
+    // Find parent's waiting step
+    let invocations = storage.get_invocations_for_flow(parent_flow_id).await?;
+
+    // Construct full method name with parentheses (how ergon stores method names)
+    let full_method_name = format!("{}()", parent_method_name);
+
+    let waiting_step = invocations
+        .iter()
+        .find(|inv| {
+            inv.status() == crate::core::InvocationStatus::WaitingForSignal
+                && inv.method_name() == full_method_name
+        })
+        .ok_or_else(|| {
+            ExecutionError::Failed(format!(
+                "Parent flow {} not waiting for signal at method {}",
+                parent_flow_id, full_method_name
+            ))
+        })?;
+
+    // Store signal data
+    storage
+        .store_signal_params(parent_flow_id, waiting_step.step(), &result_bytes)
+        .await?;
+
+    // Resume parent flow
+    storage.resume_flow(parent_flow_id).await?;
+
+    Ok(())
 }

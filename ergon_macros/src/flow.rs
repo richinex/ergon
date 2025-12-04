@@ -125,9 +125,15 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // Users should use the explicit dag! macro instead of relying on
-    // silent auto-wrapping of register_* calls
-    let wrapped_block = quote! { #block };
+    // Wrap the user's block in an immediately-invoked async closure
+    // This prevents early returns from bypassing the completion logging code
+    // The closure captures all parameters from the outer scope
+    let wrapped_block = quote! {
+        {
+            let __executor = || async move { #block };
+            __executor().await
+        }
+    };
 
     // Generate completion logging code
     let log_completion_code = if !returns_result {
@@ -140,12 +146,18 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #[allow(unused_imports)]
                 use ::ergon::kind::*;
 
-                let __should_cache = match __result.as_ref().err() {
+                let (__should_cache, __is_retryable_opt) = match __result.as_ref().err() {
                     Some(__e) => {
-                        (__e).error_kind().should_cache(__e)
+                        let __is_retryable = (__e).error_kind().is_retryable(__e);
+                        (!__is_retryable, Some(__is_retryable)) // should_cache = !is_retryable
                     }
-                    None => true,
+                    None => (true, None),
                 };
+
+                // Store the is_retryable flag before caching (for worker retry decision)
+                if let Some(__is_ret) = __is_retryable_opt {
+                    let _ = __ctx.update_step_retryability(__step, __is_ret).await;
+                }
 
                 if __should_cache {
                     let _ = __ctx.log_step_completion(__step, &__result).await;
