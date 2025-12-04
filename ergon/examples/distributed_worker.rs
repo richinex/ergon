@@ -138,11 +138,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Ergon Distributed Worker Example ===\n");
 
     // Create shared storage
-    let storage = Arc::new(SqliteExecutionLog::new("distributed_demo.db")?);
+    let storage = Arc::new(SqliteExecutionLog::new("distributed_demo.db").await?);
     storage.reset().await?;
 
     println!("1. Creating scheduler...");
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     println!("2. Scheduling flows for distributed execution...\n");
 
@@ -183,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start worker 1 (handles both flow types)
     let worker1 =
-        FlowWorker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(100));
+        Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(100));
     worker1
         .register(|flow: Arc<OrderProcessor>| flow.process_order())
         .await;
@@ -195,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start worker 2 (handles both flow types)
     let worker2 =
-        FlowWorker::new(storage.clone(), "worker-2").with_poll_interval(Duration::from_millis(100));
+        Worker::new(storage.clone(), "worker-2").with_poll_interval(Duration::from_millis(100));
     worker2
         .register(|flow: Arc<OrderProcessor>| flow.process_order())
         .await;

@@ -264,7 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
 
     // Schedule file processing flows
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     let files = vec![
         ("data/sales_2024_q1.csv", "output/sales_q1_report.txt"),
@@ -283,7 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Scheduled {} file processing flows\n", 3);
 
     // Start worker to process flows
-    let worker = FlowWorker::new(storage.clone(), "file-worker");
+    let worker = Worker::new(storage.clone(), "file-worker");
     worker
         .register(|flow: Arc<FileProcessor>| flow.process())
         .await;

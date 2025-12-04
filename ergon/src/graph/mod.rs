@@ -24,5 +24,5 @@ mod flow_graph;
 mod step_id;
 
 pub use error::{GraphError, GraphResult};
-pub use flow_graph::{FlowGraph, StepNode};
+pub use flow_graph::{Graph, StepNode};
 pub use step_id::StepId;

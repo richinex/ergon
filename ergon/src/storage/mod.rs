@@ -278,6 +278,88 @@ pub trait ExecutionLog: Send + Sync {
             "timers not implemented for this storage backend".to_string(),
         ))
     }
+
+    // ===== External Signal Operations =====
+    // These methods support durable external signals that survive crashes.
+
+    /// Store signal parameters for a waiting flow.
+    ///
+    /// Called when a signal arrives for a flow that is (or will be)
+    /// waiting for an external signal. Parameters are persisted so they
+    /// survive worker crashes.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        params: &[u8],
+    ) -> Result<()> {
+        let _ = (flow_id, step, params);
+        Err(StorageError::Unsupported(
+            "signals not implemented for this storage backend".to_string(),
+        ))
+    }
+
+    /// Retrieve signal parameters for a waiting flow.
+    ///
+    /// Returns the parameters if they exist, or None if no signal has
+    /// arrived yet.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns None by default.
+    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
+        let _ = (flow_id, step);
+        Ok(None)
+    }
+
+    /// Remove signal parameters after they've been consumed.
+    ///
+    /// Called after a flow successfully resumes from a signal to clean up
+    /// the stored parameters.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns Ok by default (no-op).
+    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
+        let _ = (flow_id, step);
+        Ok(())
+    }
+
+    // ===== Cleanup Operations =====
+    // Periodic cleanup to prevent unbounded growth of completed flow data.
+
+    /// Clean up completed flows older than the specified duration.
+    ///
+    /// This method should be called periodically (e.g., daily) to remove
+    /// old completed flow data and prevent unbounded storage growth.
+    ///
+    /// # Arguments
+    ///
+    /// * `older_than` - Delete flows completed more than this duration ago
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of rows deleted.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Clean up flows completed more than 7 days ago
+    /// let deleted = storage.cleanup_completed(Duration::from_secs(7 * 24 * 3600)).await?;
+    /// info!("Cleaned up {} old completed flows", deleted);
+    /// ```
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns 0 by default (no-op).
+    async fn cleanup_completed(&self, older_than: Duration) -> Result<u64> {
+        let _ = older_than;
+        Ok(0)
+    }
 }
 
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage
@@ -371,5 +453,26 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         timer_name: Option<&str>,
     ) -> Result<()> {
         (**self).log_timer(flow_id, step, fire_at, timer_name).await
+    }
+
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        params: &[u8],
+    ) -> Result<()> {
+        (**self).store_signal_params(flow_id, step, params).await
+    }
+
+    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
+        (**self).get_signal_params(flow_id, step).await
+    }
+
+    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
+        (**self).remove_signal_params(flow_id, step).await
+    }
+
+    async fn cleanup_completed(&self, older_than: Duration) -> Result<u64> {
+        (**self).cleanup_completed(older_than).await
     }
 }

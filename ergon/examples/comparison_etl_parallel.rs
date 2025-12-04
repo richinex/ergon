@@ -692,12 +692,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nStarting ETL execution...\n");
 
     let start = std::time::Instant::now();
-    let instance = Ergon::new_flow(pipeline, flow_id, Arc::clone(&storage));
+    let executor = Executor::new(flow_id, pipeline, Arc::clone(&storage));
 
-    let result = instance
-        .executor()
+    let result = executor
         .execute(|p| Box::pin(p.clone().run_etl_pipeline()))
-        .await??;
+        .await?;
     let elapsed = start.elapsed();
 
     // Retrieve the analytics report from storage for JSON export

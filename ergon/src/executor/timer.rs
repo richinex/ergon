@@ -107,7 +107,9 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
     }
 
     // First time - calculate fire time and log timer
-    let fire_at = Utc::now() + ChronoDuration::from_std(duration).unwrap();
+    let fire_at = ChronoDuration::from_std(duration)
+        .map(|d| Utc::now() + d)
+        .unwrap_or_else(|_| Utc::now() + ChronoDuration::MAX);
 
     ctx.storage
         .log_timer(ctx.id, current_step, fire_at, name)
@@ -161,15 +163,8 @@ impl ExecutionContext {
             }
         }
 
-        // Wait for timer to fire with timeout
-        tokio::time::timeout(Duration::from_secs(3600), notified)
-            .await
-            .map_err(|_| {
-                super::error::ExecutionError::Failed(format!(
-                    "Timer wait timed out for step {}",
-                    step
-                ))
-            })?;
+        // Wait for timer to fire (no timeout - worker shutdown handles cleanup)
+        notified.await;
 
         // Clean up notifier
         TIMER_NOTIFIERS.remove(&key);

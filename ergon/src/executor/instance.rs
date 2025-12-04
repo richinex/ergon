@@ -1,42 +1,50 @@
-//! Flow instance and executor module.
+//! Flow executor module.
 //!
-//! This module provides:
-//! - FlowInstance: Holds flow state (id, flow object, storage)
-//! - FlowExecutor: Execution strategies (async, sync, resume, signal)
+//! This module provides the Executor type for running flow instances with various
+//! execution strategies (async, sync, resume, signal).
 //!
-//! Following Parnas's information hiding principle, this module encapsulates
-//! decisions about how flow instances are created and executed.
+//! Following Dave Cheney's simplicity principle and the guideline "The name of an
+//! identifier includes its package name," we use `Executor` instead of `FlowExecutor`
+//! since the `ergon::` namespace already indicates this is flow-related.
 
-use super::context::FlowContext;
+use super::context::{ExecutionContext, CALL_TYPE, EXECUTION_CONTEXT};
 use super::error::{ExecutionError, Result};
 use super::signal::{RESUME_PARAMS, WAIT_NOTIFIERS};
-use crate::core::{serialize_value, InvocationStatus};
+use crate::core::{serialize_value, CallType, InvocationStatus};
 use crate::storage::ExecutionLog;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-/// Flow instance holding only the state of a flow execution.
+/// Executes flow instances with various execution strategies.
 ///
-/// FlowInstance follows the separation of concerns principle:
-/// - **State**: This struct holds only the flow state (id, flow object, storage)
-/// - **Execution**: Use `FlowExecutor` for execution strategies
-/// - **Context**: Use `FlowContext` for task-local context management
+/// Executor holds the complete state of a flow execution (ID, flow object, storage)
+/// and provides methods for executing flows in different contexts:
+///
+/// - `execute`: For async flows (primary API)
+/// - `execute_sync`: For sync flows with manual runtime management (rare)
+/// - `execute_sync_blocking`: For sync flows from async contexts (uses spawn_blocking)
+/// - `resume`: For resuming flows waiting for external signals
+/// - `signal_resume`: For sending signals to waiting flows
+///
+/// # Design Rationale
+///
+/// This type replaces the previous split between `FlowInstance` (state holder) and
+/// `FlowExecutor` (execution methods). Following Dave Cheney's simplicity principle,
+/// we merged them into a single type since there was no benefit to the indirection.
 ///
 /// The generic parameter `S` allows for monomorphization over concrete storage
-/// types, enabling compiler optimizations. This replaces the previous
-/// `Arc<dyn ExecutionLog + Send + Sync>` which required virtual dispatch.
+/// types, enabling compiler optimizations while avoiding vtable dispatch.
 ///
 /// # Example
+///
 /// ```ignore
 /// use ergon::prelude::*;
 ///
-/// let storage = SqliteExecutionLog::new("my.db").unwrap();
-/// let instance = FlowInstance::new(id, flow, Arc::new(storage));
-/// let executor = instance.executor();
+/// let executor = Executor::new(flow_id, flow, Arc::new(storage));
 /// let result = executor.execute(|f| Box::pin(f.run())).await?;
 /// ```
-pub struct FlowInstance<T, S: ExecutionLog> {
+pub struct Executor<T, S: ExecutionLog> {
     /// The unique identifier for this flow execution.
     pub id: Uuid,
     /// The flow object containing the business logic.
@@ -45,58 +53,16 @@ pub struct FlowInstance<T, S: ExecutionLog> {
     pub storage: Arc<S>,
 }
 
-impl<T, S: ExecutionLog + 'static> FlowInstance<T, S> {
-    /// Creates a new FlowInstance with the given state.
-    pub fn new(id: Uuid, flow: T, storage: Arc<S>) -> Self {
-        Self { id, flow, storage }
-    }
-
-    /// Returns a FlowExecutor for this instance.
-    ///
-    /// The executor provides all execution methods:
-    /// - `execute`: For async flows (primary API)
-    /// - `execute_sync`: For sync flows with manual runtime management
-    /// - `execute_sync_blocking`: For sync flows from async contexts
-    /// - `resume`: For resuming flows waiting for signals
-    /// - `signal_resume`: For sending signals to waiting flows
+impl<T, S: ExecutionLog + 'static> Executor<T, S> {
+    /// Creates a new Executor for executing a flow instance.
     ///
     /// # Example
+    ///
     /// ```ignore
-    /// let result = instance.executor()
-    ///     .execute(|f| Box::pin(f.process()))
-    ///     .await?;
+    /// let executor = Executor::new(flow_id, my_flow, storage);
     /// ```
-    pub fn executor(&self) -> FlowExecutor<'_, T, S> {
-        FlowExecutor::new(&self.flow, self.id, Arc::clone(&self.storage))
-    }
-}
-
-/// Executes flows with various execution strategies.
-///
-/// FlowExecutor separates the "how" of flow execution from the "what" of flow state.
-/// It provides execution methods with clear naming:
-///
-/// - `execute`: For async flows (primary API)
-/// - `execute_sync`: For sync flows with manual runtime management (rare)
-/// - `execute_sync_blocking`: For sync flows from async contexts (uses spawn_blocking)
-/// - `resume`: For resuming flows waiting for external signals
-/// - `signal_resume`: For sending signals to waiting flows
-///
-/// The generic parameter `S` allows for monomorphization over concrete storage
-/// types, enabling compiler optimizations.
-pub struct FlowExecutor<'a, T, S: ExecutionLog> {
-    /// Reference to the flow state.
-    flow: &'a T,
-    /// The flow execution ID.
-    id: Uuid,
-    /// The storage backend.
-    storage: Arc<S>,
-}
-
-impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
-    /// Creates a new FlowExecutor for the given flow state.
-    pub fn new(flow: &'a T, id: Uuid, storage: Arc<S>) -> Self {
-        Self { flow, id, storage }
+    pub fn new(id: Uuid, flow: T, storage: Arc<S>) -> Self {
+        Self { id, flow, storage }
     }
 
     /// Executes an async flow function that returns a value.
@@ -104,20 +70,35 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
     /// This is the primary method for executing flows. Most flows should be async
     /// and use this method.
     ///
+    /// # Return Value
+    ///
+    /// Returns `R` directly - the flow's return value. If your flow can fail, have it
+    /// return `Result<T, E>` as the `R` type.
+    ///
     /// # Example
+    ///
     /// ```ignore
-    /// let result = instance.executor()
+    /// // Flow returns Result<Order, String>
+    /// let result = executor
     ///     .execute(|f| Box::pin(f.process_order("Alice", 149.99)))
-    ///     .await?;
+    ///     .await;  // Note: no ? operator needed here
+    /// match result {
+    ///     Ok(order) => println!("Order processed: {:?}", order),
+    ///     Err(e) => println!("Flow error: {}", e),
+    /// }
     /// ```
-    pub async fn execute<F, R>(&self, f: F) -> Result<R>
+    pub async fn execute<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&T) -> std::pin::Pin<Box<dyn std::future::Future<Output = R> + Send + '_>>,
         R: Send + 'static,
     {
-        let ctx = FlowContext::new(self.id, self.storage.clone());
-        let result = ctx.run_scoped(|| async { f(self.flow).await }).await;
-        Ok(result)
+        let context = Arc::new(ExecutionContext::new(self.id, self.storage.clone()));
+        EXECUTION_CONTEXT
+            .scope(
+                Arc::clone(&context),
+                CALL_TYPE.scope(CallType::Run, async { f(&self.flow).await }),
+            )
+            .await
     }
 
     /// Executes a synchronous flow function that returns a value.
@@ -125,37 +106,63 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
     /// This is a rare case - prefer async flows with `execute()` when possible.
     ///
     /// # Requirements
+    ///
     /// This method requires an active tokio runtime context established via `Runtime::enter()`.
     ///
     /// # Important
+    ///
     /// **Cannot be used from `#[tokio::main]` or async contexts** due to nested block_on restrictions.
     /// Use `execute_sync_blocking()` instead for those cases.
     ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime context. If you need error handling instead,
+    /// check `tokio::runtime::Handle::try_current()` before calling this method.
+    ///
     /// # Example
+    ///
     /// ```ignore
     /// fn main() {
     ///     let rt = tokio::runtime::Runtime::new().unwrap();
     ///     let _guard = rt.enter();
-    ///     let result = instance.executor().execute_sync(|f| f.calculate())?;
+    ///     let result = executor.execute_sync(|f| f.calculate());
     /// }
     /// ```
-    pub fn execute_sync<F, R>(&self, f: F) -> Result<R>
+    pub fn execute_sync<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&T) -> R,
         R: Send + 'static,
     {
-        let ctx = FlowContext::new(self.id, self.storage.clone());
-        let result = ctx.run_sync_scoped(|| f(self.flow));
-        Ok(result)
+        let context = Arc::new(ExecutionContext::new(self.id, self.storage.clone()));
+        let handle = tokio::runtime::Handle::try_current().expect(
+            "Sync flows require an active tokio runtime created with Runtime::new() + enter(). \
+             Cannot use #[tokio::main] due to nested block_on restriction.",
+        );
+
+        handle.block_on(async {
+            EXECUTION_CONTEXT
+                .scope(
+                    Arc::clone(&context),
+                    CALL_TYPE.scope(CallType::Run, async { f(&self.flow) }),
+                )
+                .await
+        })
     }
 
     /// Resumes a flow that was waiting for an external signal.
     ///
     /// # Errors
+    ///
     /// Returns an error if:
     /// - No invocation is found for this flow
     /// - The latest step is not in WaitingForSignal status
     /// - The class/method names don't match (incompatible flow structure)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// executor.resume("MyFlow", "wait_for_approval", |f| Box::pin(f.continue_after_approval())).await?;
+    /// ```
     pub async fn resume<F>(&self, class_name: &str, method_name: &str, f: F) -> Result<()>
     where
         F: FnOnce(&T) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>,
@@ -182,19 +189,39 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
             return Err(ExecutionError::Failed("No invocation found".to_string()));
         }
 
-        let ctx = FlowContext::new(self.id, self.storage.clone());
-        ctx.resume_scoped(|| async { f(self.flow).await }).await;
+        let context = Arc::new(ExecutionContext::new(self.id, self.storage.clone()));
+        EXECUTION_CONTEXT
+            .scope(
+                Arc::clone(&context),
+                CALL_TYPE.scope(CallType::Resume, async { f(&self.flow).await }),
+            )
+            .await;
 
         Ok(())
     }
 
     /// Sends a signal to resume a waiting flow with the given parameters.
     ///
-    /// This method stores the resume parameters and notifies any waiting tasks.
-    pub fn signal_resume<P: serde::Serialize>(&self, params: &P) -> Result<()> {
+    /// This method persists the resume parameters to storage and notifies any waiting tasks.
+    /// Parameters are stored both in-memory and in persistent storage for crash recovery.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// executor.signal_resume(&approval_data).await?;
+    /// ```
+    pub async fn signal_resume<P: serde::Serialize>(&self, params: &P) -> Result<()> {
         let params_bytes = serialize_value(params)?;
 
-        RESUME_PARAMS.insert(self.id, params_bytes);
+        // Store in-memory for immediate notification
+        RESUME_PARAMS.insert(self.id, params_bytes.clone());
+
+        // Persist to storage for crash recovery
+        // We use step=0 as a convention for flow-level signals (not step-specific)
+        let _ = self
+            .storage
+            .store_signal_params(self.id, 0, &params_bytes)
+            .await;
 
         let notifier = WAIT_NOTIFIERS
             .entry(self.id)
@@ -208,7 +235,7 @@ impl<'a, T, S: ExecutionLog + 'static> FlowExecutor<'a, T, S> {
     }
 }
 
-impl<'a, T, S> FlowExecutor<'a, T, S>
+impl<T, S> Executor<T, S>
 where
     T: Clone + Send + Sync + 'static,
     S: ExecutionLog + 'static,
@@ -220,10 +247,11 @@ where
     /// nested block_on panics.
     ///
     /// # Example
+    ///
     /// ```ignore
     /// #[tokio::main]
     /// async fn main() {
-    ///     let result = instance.executor()
+    ///     let result = executor
     ///         .execute_sync_blocking(|f| f.calculate_sum(&numbers))
     ///         .await?;
     /// }
@@ -238,10 +266,10 @@ where
         let storage = Arc::clone(&self.storage);
 
         tokio::task::spawn_blocking(move || {
-            let executor = FlowExecutor::new(&flow_clone, id, storage);
+            let executor = Executor::new(id, flow_clone, storage);
             executor.execute_sync(f)
         })
         .await
-        .map_err(|e| ExecutionError::TaskPanic(e.to_string()))?
+        .map_err(|e| ExecutionError::TaskPanic(e.to_string()))
     }
 }

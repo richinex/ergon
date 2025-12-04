@@ -164,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Testing: Retryable error (ApiTimeout) vs Non-retryable error (ItemNotFound)\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // SCENARIO A: RETRYABLE Error
     println!("SCENARIO A: RETRYABLE Error (ApiTimeout)");
@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_a = storage.clone();
     let worker_a = tokio::spawn(async move {
         let worker =
-            FlowWorker::new(storage_a, "Worker-A").with_poll_interval(Duration::from_millis(50));
+            Worker::new(storage_a, "Worker-A").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderA>| flow.process_order())
@@ -220,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_b = storage.clone();
     let worker_b = tokio::spawn(async move {
         let worker =
-            FlowWorker::new(storage_b, "Worker-B").with_poll_interval(Duration::from_millis(50));
+            Worker::new(storage_b, "Worker-B").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderB>| flow.process_order())

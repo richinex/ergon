@@ -232,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=========================================");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // Schedule parent flow only - it will spawn children
     let order = OrderProcessor {
@@ -244,7 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Worker only needs to handle the parent flow type
     // Child flows are executed inline, not scheduled separately
-    let worker = FlowWorker::new(storage.clone(), "worker-1");
+    let worker = Worker::new(storage.clone(), "worker-1");
     worker
         .register(|flow: Arc<OrderProcessor>| flow.process_order())
         .await;

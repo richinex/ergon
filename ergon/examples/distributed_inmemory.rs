@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
 
     println!("1. Creating scheduler with in-memory storage...");
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     println!("2. Scheduling compute tasks...\n");
 
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start worker 1
     let worker1 =
-        FlowWorker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(50));
+        Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(50));
     worker1
         .register(|flow: Arc<ComputeTask>| flow.compute())
         .await;
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start worker 2
     let worker2 =
-        FlowWorker::new(storage.clone(), "worker-2").with_poll_interval(Duration::from_millis(50));
+        Worker::new(storage.clone(), "worker-2").with_poll_interval(Duration::from_millis(50));
     worker2
         .register(|flow: Arc<ComputeTask>| flow.compute())
         .await;

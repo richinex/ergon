@@ -181,10 +181,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = "/tmp/ergon_benchmark_sqlite.db";
     let _ = std::fs::remove_file(db_path);
 
-    let storage = Arc::new(SqliteExecutionLog::new(db_path)?);
+    let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
     let start = Instant::now();
 
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
     for i in 0..NUM_FLOWS {
         let pipeline = DataAnalysis {
             id: i as u64,
@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = format!("worker-{}", worker_id);
 
         let handle = tokio::spawn(async move {
-            let worker = FlowWorker::new(storage_clone.clone(), &id)
+            let worker = Worker::new(storage_clone.clone(), &id)
                 .with_poll_interval(Duration::from_millis(50));
             worker
                 .register(|flow: Arc<DataAnalysis>| flow.analyze())

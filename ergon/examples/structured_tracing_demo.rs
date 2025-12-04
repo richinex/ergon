@@ -174,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing(structured, full_spans);
 
     // Create storage
-    let storage = Arc::new(SqliteExecutionLog::in_memory()?);
+    let storage = Arc::new(SqliteExecutionLog::in_memory().await?);
 
     println!("\n=== Structured Tracing Demo ===\n");
 
@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  - Rich debugging context for production\n");
 
         // Create worker with structured tracing
-        let worker = FlowWorker::new(storage.clone(), "worker-1")
+        let worker = Worker::new(storage.clone(), "worker-1")
             .with_structured_tracing() // Enable structured spans
             .with_poll_interval(Duration::from_millis(100));
 
@@ -206,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("     └─ (your flow steps execute here)\n");
 
         // Schedule some flows
-        let scheduler = FlowScheduler::new(storage.clone());
+        let scheduler = Scheduler::new(storage.clone());
 
         info!("Scheduling flows...");
         let order1 = OrderFlow {
@@ -241,7 +241,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  - Simple info/debug/warn/error messages\n");
 
         // Create worker WITHOUT structured tracing (default)
-        let worker = FlowWorker::new(storage.clone(), "worker-1")
+        let worker = Worker::new(storage.clone(), "worker-1")
             .with_poll_interval(Duration::from_millis(100));
 
         worker
@@ -256,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Worker started with BASIC TRACING (zero-cost)\n");
 
         // Schedule some flows
-        let scheduler = FlowScheduler::new(storage.clone());
+        let scheduler = Scheduler::new(storage.clone());
 
         info!("Scheduling flows...");
         let order1 = OrderFlow {

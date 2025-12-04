@@ -193,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Redis storage
     println!("Connecting to Redis at {}...", redis_url);
     let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // Schedule an order
     let order = OrderProcessor {
@@ -217,7 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_clone.clone(), "worker-auto-retry")
+        let worker = Worker::new(storage_clone.clone(), "worker-auto-retry")
             .with_poll_interval(Duration::from_millis(50));
 
         worker

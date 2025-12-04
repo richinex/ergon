@@ -28,7 +28,7 @@
 //!
 //! Run with: cargo run --example distributed_worker_timer --features=redis
 
-use ergon::executor::{schedule_timer_named, FlowScheduler};
+use ergon::executor::{schedule_timer_named, Scheduler};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -189,12 +189,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
     storage.reset().await?;
 
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     println!("Starting workers with timer processing...\n");
 
     // Start worker 1 with timer processing enabled
-    let worker1 = FlowWorker::new(storage.clone(), "worker-1")
+    let worker1 = Worker::new(storage.clone(), "worker-1")
         .with_timers() // Enable timer processing
         .with_timer_interval(Duration::from_millis(100)) // Check timers frequently
         .with_poll_interval(Duration::from_millis(90)); // Slightly faster polling
@@ -209,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Started worker-1");
 
     // Start worker 2 with timer processing enabled (staggered poll interval)
-    let worker2 = FlowWorker::new(storage.clone(), "worker-2")
+    let worker2 = Worker::new(storage.clone(), "worker-2")
         .with_timers()
         .with_timer_interval(Duration::from_millis(100))
         .with_poll_interval(Duration::from_millis(110)); // Slightly slower to stagger

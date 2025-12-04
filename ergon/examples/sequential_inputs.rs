@@ -271,9 +271,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline = Arc::new(DataPipeline::new("database://users".to_string()));
     let flow_id1 = Uuid::new_v4();
 
-    let instance1 = Ergon::new_flow(Arc::clone(&pipeline), flow_id1, Arc::clone(&storage1));
+    let instance1 = Executor::new(flow_id1, Arc::clone(&pipeline), Arc::clone(&storage1));
     let result1 = instance1
-        .executor()
         .execute(|f| Box::pin(f.clone().process_pipeline()))
         .await;
 
@@ -289,9 +288,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let enrichment = Arc::new(EnrichmentPipeline::new("USER-123".to_string()));
     let flow_id2 = Uuid::new_v4();
 
-    let instance2 = Ergon::new_flow(Arc::clone(&enrichment), flow_id2, Arc::clone(&storage2));
+    let instance2 = Executor::new(flow_id2, Arc::clone(&enrichment), Arc::clone(&storage2));
     let result2 = instance2
-        .executor()
         .execute(|f| Box::pin(f.clone().process()))
         .await;
 

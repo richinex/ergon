@@ -229,9 +229,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
     let test1 = Arc::new(TestFlow::new("case1".to_string()));
     let start1 = Instant::now();
-    let instance1 = Ergon::new_flow(Arc::clone(&test1), Uuid::new_v4(), Arc::clone(&storage));
+    let instance1 = Executor::new(Uuid::new_v4(), Arc::clone(&test1), Arc::clone(&storage));
     let result1 = instance1
-        .executor()
         .execute(|f| Box::pin(f.clone().run_case1()))
         .await;
     let elapsed1 = start1.elapsed();
@@ -272,9 +271,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
     let test2 = Arc::new(TestFlow::new("case2".to_string()));
     let start2 = Instant::now();
-    let instance2 = Ergon::new_flow(Arc::clone(&test2), Uuid::new_v4(), Arc::clone(&storage));
+    let instance2 = Executor::new(Uuid::new_v4(), Arc::clone(&test2), Arc::clone(&storage));
     let result2 = instance2
-        .executor()
         .execute(|f| Box::pin(f.clone().run_case2()))
         .await;
     let elapsed2 = start2.elapsed();
@@ -315,9 +313,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
     let test3 = Arc::new(TestFlow::new("case3".to_string()));
     let start3 = Instant::now();
-    let instance3 = Ergon::new_flow(Arc::clone(&test3), Uuid::new_v4(), Arc::clone(&storage));
+    let instance3 = Executor::new(Uuid::new_v4(), Arc::clone(&test3), Arc::clone(&storage));
     let result3 = instance3
-        .executor()
         .execute(|f| Box::pin(f.clone().run_case3()))
         .await;
     let elapsed3 = start3.elapsed();
@@ -355,9 +352,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
     let test4 = Arc::new(TestFlow::new("case4".to_string()));
     let start4 = Instant::now();
-    let instance4 = Ergon::new_flow(Arc::clone(&test4), Uuid::new_v4(), Arc::clone(&storage));
+    let instance4 = Executor::new(Uuid::new_v4(), Arc::clone(&test4), Arc::clone(&storage));
     let result4 = instance4
-        .executor()
         .execute(|f| Box::pin(f.clone().run_case4()))
         .await;
     let elapsed4 = start4.elapsed();

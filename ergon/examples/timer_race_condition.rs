@@ -50,7 +50,7 @@
 //! ```
 
 use chrono::Utc;
-use ergon::executor::{schedule_timer, FlowWorker};
+use ergon::executor::{schedule_timer, Worker};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -112,11 +112,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - ergon handles this correctly via database check\n");
 
     // Setup storage (use file-based DB like timer_demo)
-    let storage = Arc::new(SqliteExecutionLog::new("timer_race.db")?);
+    let storage = Arc::new(SqliteExecutionLog::new("timer_race.db").await?);
 
     // Start worker with timer processing enabled and VERY frequent polling (10ms)
     // This makes the race condition MORE likely to occur
-    let worker = FlowWorker::new(storage.clone(), "timer-race-worker")
+    let worker = Worker::new(storage.clone(), "timer-race-worker")
         .with_timers()
         .with_timer_interval(Duration::from_millis(10))
         .start()
@@ -136,11 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let flow_id = uuid::Uuid::new_v4();
-            let instance = FlowInstance::new(flow_id, flow, storage_clone);
+            let instance = Executor::new(flow_id, flow, storage_clone);
 
             let start = std::time::Instant::now();
             let result = instance
-                .executor()
                 .execute(|f| Box::pin(Arc::new(f.clone()).test_race()))
                 .await;
             let elapsed = start.elapsed();
@@ -153,14 +152,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for all flows to complete
     for handle in handles {
         match handle.await? {
-            (i, Ok(Ok(result)), elapsed) => {
+            (i, Ok(result), elapsed) => {
                 println!("[OK] Flow {} completed: {} (took {:?})", i, result, elapsed);
             }
-            (i, Ok(Err(e)), elapsed) => {
-                println!("[ERR] Flow {} failed: {} (took {:?})", i, e, elapsed);
-            }
             (i, Err(e), elapsed) => {
-                println!("[ERR] Flow {} error: {} (took {:?})", i, e, elapsed);
+                println!("[ERR] Flow {} failed: {} (took {:?})", i, e, elapsed);
             }
         }
     }

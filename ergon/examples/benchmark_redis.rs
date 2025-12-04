@@ -197,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
 
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
     for i in 0..NUM_FLOWS {
         let pipeline = DataAnalysis {
             id: i as u64,
@@ -212,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = format!("worker-{}", worker_id);
 
         let handle = tokio::spawn(async move {
-            let worker = FlowWorker::new(storage_clone.clone(), &id)
+            let worker = Worker::new(storage_clone.clone(), &id)
                 .with_poll_interval(Duration::from_millis(50));
             worker
                 .register(|flow: Arc<DataAnalysis>| flow.analyze())

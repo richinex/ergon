@@ -1,11 +1,15 @@
-//! Distributed flow worker.
+//! Distributed worker for flow execution.
+//!
+//! Following Dave Cheney's principle "The name of an identifier includes its package name,"
+//! we use `Worker` and `Registry` instead of `FlowWorker` and `FlowRegistry` since the
+//! `ergon::` namespace already indicates these are flow-related.
 //!
 //! This module provides workers that poll a storage queue for flows and execute
 //! them in a distributed manner.
 
 use crate::core::{deserialize_value, FlowType};
 use crate::storage::{ExecutionLog, ScheduledFlow, TaskStatus};
-use crate::Ergon;
+use crate::Executor;
 use chrono::Utc;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -13,8 +17,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
-use tokio::task::JoinHandle;
+use tokio::sync::{Notify, RwLock};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn, Instrument};
 use uuid::Uuid;
 
@@ -115,12 +119,15 @@ impl TimerProcessing for WithTimers {
                     match storage.claim_timer(timer.flow_id, timer.step).await {
                         Ok(true) => {
                             // Successfully claimed - fire the timer
+                            // Use or_insert_with to ensure notification is stored even if no waiter exists yet
+                            // This matches the pattern in signal.rs and prevents lost notifications
                             let key = (timer.flow_id, timer.step);
-                            if let Some(notifier) =
-                                TIMER_NOTIFIERS.get(&key).map(|entry| entry.value().clone())
-                            {
-                                notifier.notify_one();
-                            }
+                            let notifier = TIMER_NOTIFIERS
+                                .entry(key)
+                                .or_insert_with(|| Arc::new(Notify::new()))
+                                .value()
+                                .clone();
+                            notifier.notify_one();
                             info!(
                                 "Timer fired: flow={} step={} name={:?}",
                                 timer.flow_id, timer.step, timer.timer_name
@@ -228,14 +235,14 @@ type BoxedExecutor<S> = Box<
 
 /// Registry that maps flow type names to their executors.
 ///
-/// The `FlowRegistry` stores executor functions that can deserialize and execute
+/// The `Registry` stores executor functions that can deserialize and execute
 /// flows based on their type name. This allows the worker to handle different
 /// flow types dynamically.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use ergon::executor::FlowRegistry;
+/// use ergon::executor::Registry;
 /// use ergon::storage::InMemoryExecutionLog;
 /// use ergon_macros::FlowType;
 /// use serde::{Serialize, Deserialize};
@@ -252,14 +259,14 @@ type BoxedExecutor<S> = Box<
 ///     }
 /// }
 ///
-/// let mut registry: FlowRegistry<InMemoryExecutionLog> = FlowRegistry::new();
+/// let mut registry: Registry<InMemoryExecutionLog> = Registry::new();
 /// registry.register(|flow: Arc<MyFlow>| flow.run());
 /// ```
-pub struct FlowRegistry<S: ExecutionLog> {
+pub struct Registry<S: ExecutionLog> {
     executors: HashMap<String, BoxedExecutor<S>>,
 }
 
-impl<S: ExecutionLog + 'static> FlowRegistry<S> {
+impl<S: ExecutionLog + 'static> Registry<S> {
     /// Creates a new empty flow registry.
     pub fn new() -> Self {
         Self {
@@ -282,7 +289,7 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
     /// # Example
     ///
     /// ```no_run
-    /// # use ergon::executor::FlowRegistry;
+    /// # use ergon::executor::Registry;
     /// # use ergon::storage::InMemoryExecutionLog;
     /// # use ergon_macros::FlowType;
     /// # use serde::{Serialize, Deserialize};
@@ -296,7 +303,7 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
     /// #         Ok(self.order_id.clone())
     /// #     }
     /// # }
-    /// let mut registry: FlowRegistry<InMemoryExecutionLog> = FlowRegistry::new();
+    /// let mut registry: Registry<InMemoryExecutionLog> = Registry::new();
     /// registry.register(|flow: Arc<OrderProcessor>| flow.process());
     /// ```
     pub fn register<T, F, Fut, R, E>(&mut self, executor: F)
@@ -321,19 +328,15 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
                     let flow: T = deserialize_value(&data)
                         .map_err(|e| format!("failed to deserialize flow: {}", e))?;
 
-                    // Create flow instance using Ergon factory
-                    let instance = Ergon::new_flow(flow, flow_id, storage);
+                    // Create executor
+                    let exec = Executor::new(flow_id, flow, storage);
 
                     // Execute the flow using the registered executor
                     // The executor expects Arc<T>, so we clone &T to create owned T, then wrap in Arc
-                    let result = instance
-                        .executor()
-                        .execute(move |f: &T| Box::pin(executor(Arc::new(f.clone()))))
+                    exec.execute(move |f: &T| Box::pin(executor(Arc::new(f.clone()))))
                         .await
-                        .map_err(|e| format!("flow execution failed: {}", e))?;
-
-                    // Check if the flow itself returned an error
-                    result.map(|_| ()).map_err(|e| e.to_string())
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
                 })
             });
 
@@ -364,7 +367,7 @@ impl<S: ExecutionLog + 'static> FlowRegistry<S> {
     }
 }
 
-impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
+impl<S: ExecutionLog + 'static> Default for Registry<S> {
     fn default() -> Self {
         Self::new()
     }
@@ -372,7 +375,7 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 
 /// Worker that executes flows from a distributed queue.
 ///
-/// The `FlowWorker` polls a storage backend's task queue for pending flows,
+/// The `Worker` polls a storage backend's task queue for pending flows,
 /// executes them using registered flow executors, and marks them as complete.
 ///
 /// Uses the typestate pattern to optionally enable:
@@ -384,7 +387,7 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 /// # Example
 ///
 /// ```no_run
-/// use ergon::executor::{FlowWorker, FlowRegistry};
+/// use ergon::executor::{Worker, Registry};
 /// use ergon::storage::SqliteExecutionLog;
 /// use ergon_macros::FlowType;
 /// use serde::{Serialize, Deserialize};
@@ -406,10 +409,10 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 /// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
 ///
 /// // Basic worker (no timers, no structured tracing)
-/// let worker = FlowWorker::new(storage.clone(), "worker-1");
+/// let worker = Worker::new(storage.clone(), "worker-1");
 ///
 /// // Worker with timers and structured tracing
-/// let worker_advanced = FlowWorker::new(storage.clone(), "worker-2")
+/// let worker_advanced = Worker::new(storage.clone(), "worker-2")
 ///     .with_timers()
 ///     .with_timer_interval(Duration::from_millis(100))
 ///     .with_structured_tracing();
@@ -424,16 +427,16 @@ impl<S: ExecutionLog + 'static> Default for FlowRegistry<S> {
 /// # Ok(())
 /// # }
 /// ```
-pub struct FlowWorker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStructuredTracing> {
+pub struct Worker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStructuredTracing> {
     storage: Arc<S>,
     worker_id: String,
-    registry: Arc<RwLock<FlowRegistry<S>>>,
+    registry: Arc<RwLock<Registry<S>>>,
     poll_interval: Duration,
     timer_state: T,
     tracing_state: Tr,
 }
 
-impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithoutTimers, Tr> {
+impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
     /// Enables timer processing for this worker.
     ///
     /// Returns a worker in the `WithTimers` state, which allows configuring
@@ -445,12 +448,12 @@ impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithoutTimers, Tr> {
     /// # Example
     ///
     /// ```ignore
-    /// let worker = FlowWorker::new(storage, "worker-1")
+    /// let worker = Worker::new(storage, "worker-1")
     ///     .with_timers()
     ///     .with_timer_interval(Duration::from_millis(100));
     /// ```
-    pub fn with_timers(self) -> FlowWorker<S, WithTimers, Tr> {
-        FlowWorker {
+    pub fn with_timers(self) -> Worker<S, WithTimers, Tr> {
+        Worker {
             storage: self.storage,
             worker_id: self.worker_id,
             registry: self.registry,
@@ -463,7 +466,7 @@ impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithoutTimers, Tr> {
     }
 }
 
-impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers, WithoutStructuredTracing> {
+impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracing> {
     /// Creates a new flow worker without timer processing or structured tracing.
     ///
     /// This is the default state providing zero-cost abstraction.
@@ -476,12 +479,12 @@ impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers, WithoutStructuredTr
     /// # Example
     ///
     /// ```no_run
-    /// # use ergon::executor::FlowWorker;
+    /// # use ergon::executor::Worker;
     /// # use ergon::storage::SqliteExecutionLog;
     /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
-    /// let worker = FlowWorker::new(storage, "worker-1");
+    /// let worker = Worker::new(storage, "worker-1");
     /// # Ok(())
     /// # }
     /// ```
@@ -489,7 +492,7 @@ impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers, WithoutStructuredTr
         Self {
             storage,
             worker_id: worker_id.into(),
-            registry: Arc::new(RwLock::new(FlowRegistry::new())),
+            registry: Arc::new(RwLock::new(Registry::new())),
             poll_interval: Duration::from_secs(1),
             timer_state: WithoutTimers,
             tracing_state: WithoutStructuredTracing,
@@ -497,7 +500,7 @@ impl<S: ExecutionLog + 'static> FlowWorker<S, WithoutTimers, WithoutStructuredTr
     }
 }
 
-impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithTimers, Tr> {
+impl<S: ExecutionLog + 'static, Tr> Worker<S, WithTimers, Tr> {
     /// Sets the interval for checking expired timers.
     ///
     /// Only available when timer processing is enabled.
@@ -508,7 +511,7 @@ impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithTimers, Tr> {
     /// # Example
     ///
     /// ```ignore
-    /// let worker = FlowWorker::new(storage, "worker-1")
+    /// let worker = Worker::new(storage, "worker-1")
     ///     .with_timers()
     ///     .with_timer_interval(Duration::from_millis(100));
     /// ```
@@ -519,7 +522,7 @@ impl<S: ExecutionLog + 'static, Tr> FlowWorker<S, WithTimers, Tr> {
 }
 
 // State transition methods for tracing
-impl<S: ExecutionLog + 'static, T> FlowWorker<S, T, WithoutStructuredTracing> {
+impl<S: ExecutionLog + 'static, T> Worker<S, T, WithoutStructuredTracing> {
     /// Enables structured tracing for this worker.
     ///
     /// Returns a worker in the `WithStructuredTracing` state, which creates
@@ -533,13 +536,13 @@ impl<S: ExecutionLog + 'static, T> FlowWorker<S, T, WithoutStructuredTracing> {
     /// # Example
     ///
     /// ```ignore
-    /// let worker = FlowWorker::new(storage, "worker-1")
+    /// let worker = Worker::new(storage, "worker-1")
     ///     .with_structured_tracing()
     ///     .start()
     ///     .await;
     /// ```
-    pub fn with_structured_tracing(self) -> FlowWorker<S, T, WithStructuredTracing> {
-        FlowWorker {
+    pub fn with_structured_tracing(self) -> Worker<S, T, WithStructuredTracing> {
+        Worker {
             storage: self.storage,
             worker_id: self.worker_id,
             registry: self.registry,
@@ -552,7 +555,7 @@ impl<S: ExecutionLog + 'static, T> FlowWorker<S, T, WithoutStructuredTracing> {
 
 // Methods available for all timer and tracing state combinations
 impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavior + 'static>
-    FlowWorker<S, T, Tr>
+    Worker<S, T, Tr>
 {
     /// Sets the poll interval for checking the queue.
     ///
@@ -564,7 +567,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
 
     /// Registers a flow type with its executor function.
     ///
-    /// See [`FlowRegistry::register`] for details.
+    /// See [`Registry::register`] for details.
     ///
     /// Note: Using `Flow` as type parameter name to avoid collision with struct's `T` parameter.
     pub async fn register<Flow, F, Fut, R, E>(&self, executor: F)
@@ -592,15 +595,26 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         info!("Starting worker: {}", self.worker_id);
 
         let handle = tokio::spawn(async move {
+            // Track spawned flow tasks for graceful shutdown
+            let mut active_flows: JoinSet<()> = JoinSet::new();
+
             loop {
                 // Create worker loop span (no-op for WithoutStructuredTracing)
                 let loop_span = self.tracing_state.worker_loop_span(&self.worker_id);
                 let _loop_guard = loop_span.as_ref().map(|span| span.enter());
 
                 // Check for shutdown signal
-                if shutdown_rx.try_recv().is_ok() {
-                    info!("Worker {} received shutdown signal", self.worker_id);
-                    break;
+                match shutdown_rx.try_recv() {
+                    Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        info!("Worker {} received shutdown signal", self.worker_id);
+                        break;
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                }
+
+                // Reap completed flow tasks (non-blocking)
+                while let Some(Ok(_)) = active_flows.try_join_next() {
+                    // Task completed, continue reaping
                 }
 
                 // Process expired timers with optional span
@@ -791,10 +805,11 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                         };
 
                         // Spawn with proper instrumentation (avoids Span::enter() across await points)
+                        // Track in JoinSet for graceful shutdown
                         if let Some(span) = flow_span {
-                            tokio::spawn(task.instrument(span));
+                            active_flows.spawn(task.instrument(span));
                         } else {
-                            tokio::spawn(task);
+                            active_flows.spawn(task);
                         }
                     }
                     Ok(None) => {
@@ -806,6 +821,22 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                         tokio::time::sleep(self.poll_interval).await;
                     }
                 }
+            }
+
+            // Gracefully wait for all in-flight flows to complete
+            let in_flight_count = active_flows.len();
+            if in_flight_count > 0 {
+                info!(
+                    "Worker {} waiting for {} in-flight flows to complete",
+                    self.worker_id, in_flight_count
+                );
+                while (active_flows.join_next().await).is_some() {
+                    // Wait for each flow to complete
+                }
+                info!(
+                    "Worker {} completed all {} in-flight flows",
+                    self.worker_id, in_flight_count
+                );
             }
 
             info!("Worker {} stopped", self.worker_id);
@@ -860,7 +891,7 @@ impl WorkerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::FlowScheduler;
+    use crate::executor::Scheduler;
     use crate::storage::SqliteExecutionLog;
     use ergon_macros::FlowType;
     use serde::{Deserialize, Serialize};
@@ -880,8 +911,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_worker_registry() {
-        let storage = Arc::new(SqliteExecutionLog::in_memory().unwrap());
-        let worker = FlowWorker::new(storage.clone(), "test-worker");
+        let storage = Arc::new(SqliteExecutionLog::in_memory().await.unwrap());
+        let worker = Worker::new(storage.clone(), "test-worker");
 
         worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
 
@@ -891,8 +922,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_scheduler_enqueue() {
-        let storage = Arc::new(SqliteExecutionLog::in_memory().unwrap());
-        let scheduler = FlowScheduler::new(storage.clone());
+        let storage = Arc::new(SqliteExecutionLog::in_memory().await.unwrap());
+        let scheduler = Scheduler::new(storage.clone());
 
         let flow = TestFlow { value: 21 };
         let flow_id = Uuid::new_v4();

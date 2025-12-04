@@ -32,6 +32,10 @@ pub enum ExecutionError {
     /// A background task panicked during execution.
     #[error("task panicked: {0}")]
     TaskPanic(String),
+
+    /// An external signal timed out while waiting.
+    #[error("signal timeout: {message}")]
+    SignalTimeout { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, ExecutionError>;

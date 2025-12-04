@@ -284,7 +284,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
 
     // Schedule file processing flows
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     let files = vec![
         ("data/sales_2024_q1.csv", "output/sales_q1_report.txt"),
@@ -313,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let worker_name = format!("worker-{}", worker_id);
 
         let handle = tokio::spawn(async move {
-            let worker = FlowWorker::new(storage_clone.clone(), &worker_name)
+            let worker = Worker::new(storage_clone.clone(), &worker_name)
                 .with_poll_interval(Duration::from_millis(50));
 
             worker

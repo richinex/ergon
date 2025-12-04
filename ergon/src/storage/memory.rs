@@ -25,6 +25,8 @@ pub struct InMemoryExecutionLog {
     invocations: dashmap::DashMap<(Uuid, i32), Invocation>,
     /// Concurrent storage for scheduled flows keyed by task_id
     flow_queue: dashmap::DashMap<Uuid, super::ScheduledFlow>,
+    /// Concurrent storage for signal parameters keyed by (flow_id, step)
+    signal_params: dashmap::DashMap<(Uuid, i32), Vec<u8>>,
 }
 
 impl InMemoryExecutionLog {
@@ -33,6 +35,7 @@ impl InMemoryExecutionLog {
         Self {
             invocations: dashmap::DashMap::new(),
             flow_queue: dashmap::DashMap::new(),
+            signal_params: dashmap::DashMap::new(),
         }
     }
 }
@@ -173,6 +176,7 @@ impl ExecutionLog for InMemoryExecutionLog {
 
     async fn reset(&self) -> Result<()> {
         self.invocations.clear();
+        self.flow_queue.clear();
         Ok(())
     }
 
@@ -189,37 +193,44 @@ impl ExecutionLog for InMemoryExecutionLog {
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        // Find the oldest pending flow that is ready to execute
-        // Note: DashMap doesn't have built-in ordering, so we need to scan
-        let mut oldest: Option<(Uuid, super::ScheduledFlow)> = None;
-        let now = Utc::now();
+        // Retry loop to handle race conditions when multiple workers compete
+        // for the same flow. This ensures we find the next oldest flow if the
+        // first candidate is claimed by another worker.
+        loop {
+            // Find the oldest pending flow that is ready to execute
+            // Note: DashMap doesn't have built-in ordering, so we need to scan
+            let mut oldest: Option<(Uuid, super::ScheduledFlow)> = None;
+            let now = Utc::now();
 
-        for entry in self.flow_queue.iter() {
-            let flow = entry.value();
-            // Only consider pending flows that are ready to execute
-            if flow.status == super::TaskStatus::Pending {
-                // Check if scheduled_for time has passed (or is None)
-                let is_ready = flow.scheduled_for.is_none_or(|scheduled| scheduled <= now);
+            for entry in self.flow_queue.iter() {
+                let flow = entry.value();
+                // Only consider pending flows that are ready to execute
+                if flow.status == super::TaskStatus::Pending {
+                    // Check if scheduled_for time has passed (or is None)
+                    let is_ready = flow.scheduled_for.is_none_or(|scheduled| scheduled <= now);
 
-                if is_ready {
-                    if let Some((_, ref current_oldest)) = oldest {
-                        if flow.created_at < current_oldest.created_at {
+                    if is_ready {
+                        if let Some((_, ref current_oldest)) = oldest {
+                            if flow.created_at < current_oldest.created_at {
+                                oldest = Some((*entry.key(), flow.clone()));
+                            }
+                        } else {
                             oldest = Some((*entry.key(), flow.clone()));
                         }
-                    } else {
-                        oldest = Some((*entry.key(), flow.clone()));
                     }
                 }
             }
-        }
 
-        // If we found a pending flow, atomically lock it
-        if let Some((task_id, mut flow)) = oldest {
-            // Use get_mut to atomically update
+            // If no pending flows found, return None
+            let Some((task_id, mut flow)) = oldest else {
+                return Ok(None);
+            };
+
+            // Try to atomically lock the flow
             if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
                 // Double-check it's still pending (another thread might have taken it)
                 if entry.status == super::TaskStatus::Pending {
-                    // Lock it
+                    // Successfully locked it
                     entry.status = super::TaskStatus::Running;
                     entry.locked_by = Some(worker_id.to_string());
                     entry.updated_at = Utc::now();
@@ -231,9 +242,10 @@ impl ExecutionLog for InMemoryExecutionLog {
                     return Ok(Some(flow));
                 }
             }
-        }
 
-        Ok(None)
+            // Flow was claimed by another worker, retry to find the next oldest
+            continue;
+        }
     }
 
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
@@ -303,9 +315,6 @@ impl ExecutionLog for InMemoryExecutionLog {
         // Sort by fire_at (oldest first)
         timers.sort_by_key(|t| t.fire_at);
 
-        // Limit to 100 timers per batch (same as SQLite)
-        timers.truncate(100);
-
         Ok(timers)
     }
 
@@ -344,6 +353,55 @@ impl ExecutionLog for InMemoryExecutionLog {
         } else {
             Err(StorageError::InvocationNotFound { id: flow_id, step })
         }
+    }
+
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        params: &[u8],
+    ) -> Result<()> {
+        let key = (flow_id, step);
+        self.signal_params.insert(key, params.to_vec());
+        Ok(())
+    }
+
+    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
+        let key = (flow_id, step);
+        Ok(self.signal_params.get(&key).map(|v| v.clone()))
+    }
+
+    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
+        let key = (flow_id, step);
+        self.signal_params.remove(&key);
+        Ok(())
+    }
+
+    async fn cleanup_completed(&self, older_than: std::time::Duration) -> Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(older_than).unwrap();
+
+        // Count and remove completed invocations older than cutoff
+        let mut deleted = 0u64;
+        self.invocations.retain(|_key, inv| {
+            if inv.status() == InvocationStatus::Complete && inv.timestamp() < cutoff {
+                deleted += 1;
+                false // Remove this entry
+            } else {
+                true // Keep this entry
+            }
+        });
+
+        // Cleanup old signal parameters
+        self.signal_params.clear(); // In-memory can just clear all signal params
+
+        // Cleanup old completed flows from queue
+        self.flow_queue.retain(|_key, flow| {
+            !(flow.status == super::TaskStatus::Complete
+                || flow.status == super::TaskStatus::Failed)
+                || flow.updated_at >= cutoff
+        });
+
+        Ok(deleted)
     }
 }
 

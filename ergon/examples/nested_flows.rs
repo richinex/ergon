@@ -399,7 +399,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("===================================");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // Schedule PARENT flow (order processing)
     let order = OrderProcessor {
@@ -429,7 +429,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     scheduler.schedule(inventory, Uuid::new_v4()).await?;
 
     // Start worker
-    let worker = FlowWorker::new(storage.clone(), "orchestrator");
+    let worker = Worker::new(storage.clone(), "orchestrator");
     worker
         .register(|flow: Arc<OrderProcessor>| flow.process_order())
         .await;

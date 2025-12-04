@@ -1,4 +1,8 @@
-//! Flow Graph - Dependency graph for durable execution steps
+//! Graph - Dependency graph for durable execution steps
+//!
+//! Following Dave Cheney's principle "The name of an identifier includes its package name,"
+//! we use `Graph` instead of `FlowGraph` since the `ergon::` namespace already indicates
+//! this is flow-related.
 //!
 //! This module provides the core data structures for representing step
 //! dependencies as a directed acyclic graph (DAG).
@@ -93,7 +97,7 @@ impl StepNode {
 
 /// A directed acyclic graph representing step dependencies in a flow
 ///
-/// The FlowGraph maintains:
+/// The Graph maintains:
 /// - All steps in the flow
 /// - Dependencies between steps (edges)
 /// - Bidirectional access to predecessors and successors
@@ -101,9 +105,9 @@ impl StepNode {
 /// # Example
 ///
 /// ```
-/// use ergon::{FlowGraph, StepId};
+/// use ergon::{Graph, StepId};
 ///
-/// let mut graph = FlowGraph::new();
+/// let mut graph = Graph::new();
 ///
 /// // Add steps
 /// graph.add_step(StepId::new("get_customer")).unwrap();
@@ -127,14 +131,14 @@ impl StepNode {
 /// assert_eq!(order.len(), 3);
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FlowGraph {
+pub struct Graph {
     /// Map from step ID to step node
     nodes: HashMap<StepId, StepNode>,
     /// Insertion order for deterministic iteration
     insertion_order: Vec<StepId>,
 }
 
-impl FlowGraph {
+impl Graph {
     /// Creates a new empty flow graph
     pub fn new() -> Self {
         Self {
@@ -507,14 +511,14 @@ mod tests {
 
     #[test]
     fn test_empty_graph() {
-        let graph = FlowGraph::new();
+        let graph = Graph::new();
         assert!(graph.is_empty());
         assert_eq!(graph.len(), 0);
     }
 
     #[test]
     fn test_add_step() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("step_a")).unwrap();
         graph.add_step(StepId::new("step_b")).unwrap();
 
@@ -525,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_step_error() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("step_a")).unwrap();
 
         let result = graph.add_step(StepId::new("step_a"));
@@ -534,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_add_dependency() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("step_a")).unwrap();
         graph.add_step(StepId::new("step_b")).unwrap();
 
@@ -552,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_self_dependency_error() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("step_a")).unwrap();
 
         let result = graph.add_dependency(StepId::new("step_a"), StepId::new("step_a"));
@@ -561,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_cycle_detection() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("a")).unwrap();
         graph.add_step(StepId::new("b")).unwrap();
         graph.add_step(StepId::new("c")).unwrap();
@@ -580,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_topological_sort_linear() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("a")).unwrap();
         graph.add_step(StepId::new("b")).unwrap();
         graph.add_step(StepId::new("c")).unwrap();
@@ -601,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_topological_sort_diamond() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("a")).unwrap();
         graph.add_step(StepId::new("b")).unwrap();
         graph.add_step(StepId::new("c")).unwrap();
@@ -638,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_runnable() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("a")).unwrap();
         graph.add_step(StepId::new("b")).unwrap();
         graph.add_step(StepId::new("c")).unwrap();
@@ -679,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_root_and_leaf_steps() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("a")).unwrap();
         graph.add_step(StepId::new("b")).unwrap();
         graph.add_step(StepId::new("c")).unwrap();
@@ -700,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_validation() {
-        let mut graph = FlowGraph::new();
+        let mut graph = Graph::new();
         graph.add_step(StepId::new("a")).unwrap();
         graph.add_step(StepId::new("b")).unwrap();
         graph
@@ -712,7 +716,7 @@ mod tests {
 
     #[test]
     fn test_validation_empty_graph() {
-        let graph = FlowGraph::new();
+        let graph = Graph::new();
         assert!(matches!(graph.validate(), Err(GraphError::EmptyGraph)));
     }
 }

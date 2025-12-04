@@ -285,7 +285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use in-memory storage (works same for Redis/SQLite)
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // Schedule an order
     let order = OrderProcessor {
@@ -305,7 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_a = tokio::spawn(async move {
         println!("[Worker-A] Starting up...");
         let worker =
-            FlowWorker::new(storage_a, "Worker-A").with_poll_interval(Duration::from_millis(50));
+            Worker::new(storage_a, "Worker-A").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderProcessor>| flow.process_order())
@@ -334,7 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_b = tokio::spawn(async move {
         println!("[Worker-B] Starting up...");
         let worker =
-            FlowWorker::new(storage_b, "Worker-B").with_poll_interval(Duration::from_millis(50));
+            Worker::new(storage_b, "Worker-B").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderProcessor>| flow.process_order())
@@ -352,7 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_c = tokio::spawn(async move {
         println!("[Worker-C] Starting up (standby mode)...");
         let worker =
-            FlowWorker::new(storage_c, "Worker-C").with_poll_interval(Duration::from_millis(50));
+            Worker::new(storage_c, "Worker-C").with_poll_interval(Duration::from_millis(50));
 
         worker
             .register(|flow: Arc<OrderProcessor>| flow.process_order())

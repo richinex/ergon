@@ -54,7 +54,7 @@
 
 use super::error::{ExecutionError, Result};
 use crate::core::{deserialize_value, serialize_value};
-use crate::graph::{FlowGraph, StepId};
+use crate::graph::{Graph, StepId};
 use petgraph::dot::{Config, Dot};
 use petgraph::graph::DiGraph;
 use std::collections::{HashMap, HashSet};
@@ -240,7 +240,7 @@ impl DeferredRegistry {
     /// registry.execute().await?;
     /// ```
     pub fn validate(&self) -> Result<()> {
-        let mut flow_graph = FlowGraph::new();
+        let mut flow_graph = Graph::new();
 
         for step in &self.steps {
             flow_graph
@@ -616,8 +616,8 @@ pub async fn execute_dag(mut steps: Vec<DeferredStep>) -> Result<()> {
     let mut completed: HashSet<StepId> = HashSet::new();
     let results: Arc<Mutex<HashMap<StepId, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // Build dependency graph using FlowGraph
-    let mut flow_graph = FlowGraph::new();
+    // Build dependency graph using Graph
+    let mut flow_graph = Graph::new();
     for step in &steps {
         flow_graph
             .add_step(step.step_id.clone())
@@ -639,7 +639,7 @@ pub async fn execute_dag(mut steps: Vec<DeferredStep>) -> Result<()> {
         steps.drain(..).map(|s| (s.step_id.clone(), s)).collect();
 
     while completed.len() < total {
-        // Use FlowGraph to find ready steps (eliminates duplication)
+        // Use Graph to find ready steps (eliminates duplication)
         let ready = flow_graph.runnable(&completed);
 
         if ready.is_empty() && completed.len() < total {

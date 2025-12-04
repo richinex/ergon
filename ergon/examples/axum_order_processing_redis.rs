@@ -17,7 +17,7 @@
 //!
 //! ## Key Takeaways
 //! - Ergon integrates seamlessly with Axum using shared Arc state
-//! - FlowScheduler enqueues flows, FlowWorker processes them asynchronously
+//! - Scheduler enqueues flows, Worker processes them asynchronously
 //! - Redis backend provides durability across server restarts
 //! - API returns immediately with flow_id while processing continues in background
 //! - get_invocations_for_flow() enables status querying
@@ -236,7 +236,7 @@ struct OrderStatus {
 #[derive(Clone, FlowType)]
 struct AppState {
     storage: Arc<RedisExecutionLog>,
-    scheduler: Arc<FlowScheduler<RedisExecutionLog>>,
+    scheduler: Arc<Scheduler<RedisExecutionLog>>,
 }
 
 // ===== API Handlers =====
@@ -396,7 +396,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // storage.reset().await?;
 
     // Setup flow scheduler
-    let scheduler = Arc::new(FlowScheduler::new(storage.clone()));
+    let scheduler = Arc::new(Scheduler::new(storage.clone()));
 
     // Create application state
     let state = AppState {
@@ -409,7 +409,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for worker_id in 0..2 {
         let storage_clone = storage.clone();
         tokio::spawn(async move {
-            let worker = FlowWorker::new(storage_clone, format!("worker-{}", worker_id))
+            let worker = Worker::new(storage_clone, format!("worker-{}", worker_id))
                 .with_poll_interval(tokio::time::Duration::from_millis(100));
 
             worker.register(|flow: Arc<OrderFlow>| flow.process()).await;

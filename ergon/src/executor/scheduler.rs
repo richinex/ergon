@@ -1,7 +1,8 @@
-//! Flow scheduler for distributed execution.
+//! Scheduler for distributed flow execution.
 //!
-//! The scheduler provides a simple API for enqueuing flows for distributed
-//! execution by workers.
+//! Following Dave Cheney's principle "The name of an identifier includes its package name,"
+//! we use `Scheduler` instead of `FlowScheduler` since the `ergon::` namespace already
+//! indicates this is flow-related.
 
 use crate::core::{serialize_value, FlowType};
 use crate::storage::{ExecutionLog, ScheduledFlow, StorageError};
@@ -11,14 +12,14 @@ use uuid::Uuid;
 
 /// Schedules flows for distributed execution.
 ///
-/// The `FlowScheduler` provides a convenient API for enqueuing flows into
+/// The Scheduler provides a convenient API for enqueuing flows into
 /// a storage backend's task queue. Workers can then pick up these flows
 /// and execute them.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use ergon::executor::FlowScheduler;
+/// use ergon::executor::Scheduler;
 /// use ergon::storage::SqliteExecutionLog;
 /// use ergon_macros::FlowType;
 /// use std::sync::Arc;
@@ -32,7 +33,7 @@ use uuid::Uuid;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
-/// let scheduler = FlowScheduler::new(storage);
+/// let scheduler = Scheduler::new(storage);
 ///
 /// let flow = MyFlow { data: "test".to_string() };
 /// let flow_id = Uuid::new_v4();
@@ -42,12 +43,12 @@ use uuid::Uuid;
 /// # Ok(())
 /// # }
 /// ```
-pub struct FlowScheduler<S: ExecutionLog> {
+pub struct Scheduler<S: ExecutionLog> {
     storage: Arc<S>,
 }
 
-impl<S: ExecutionLog> FlowScheduler<S> {
-    /// Creates a new flow scheduler with the given storage backend.
+impl<S: ExecutionLog> Scheduler<S> {
+    /// Creates a new scheduler with the given storage backend.
     pub fn new(storage: Arc<S>) -> Self {
         Self { storage }
     }
@@ -76,7 +77,7 @@ impl<S: ExecutionLog> FlowScheduler<S> {
     /// # Example
     ///
     /// ```no_run
-    /// # use ergon::executor::FlowScheduler;
+    /// # use ergon::executor::Scheduler;
     /// # use ergon::storage::SqliteExecutionLog;
     /// # use ergon_macros::FlowType;
     /// # use std::sync::Arc;
@@ -88,7 +89,7 @@ impl<S: ExecutionLog> FlowScheduler<S> {
     /// #
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
-    /// let scheduler = FlowScheduler::new(storage);
+    /// let scheduler = Scheduler::new(storage);
     ///
     /// let order = OrderProcessor { order_id: "12345".to_string() };
     /// let task_id = scheduler.schedule(order, Uuid::new_v4()).await?;
@@ -133,8 +134,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_schedule_flow() {
-        let storage = Arc::new(SqliteExecutionLog::in_memory().unwrap());
-        let scheduler = FlowScheduler::new(storage.clone());
+        let storage = Arc::new(SqliteExecutionLog::in_memory().await.unwrap());
+        let scheduler = Scheduler::new(storage.clone());
 
         let flow = TestFlow {
             data: "test".to_string(),

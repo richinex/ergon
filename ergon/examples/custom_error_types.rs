@@ -28,7 +28,7 @@
 //! ```
 
 use ergon::core::{InvocationStatus, RetryPolicy};
-use ergon::executor::{FlowScheduler, FlowWorker};
+use ergon::executor::{Scheduler, Worker};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -397,7 +397,7 @@ impl OrderFlow {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Custom Error Types Example ===\n");
 
-    let storage = Arc::new(SqliteExecutionLog::new("custom_errors.db")?);
+    let storage = Arc::new(SqliteExecutionLog::new("custom_errors.db").await?);
     storage.reset().await?;
 
     // ==========================================================================
@@ -415,16 +415,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id1 = uuid::Uuid::new_v4();
-    let instance1 = FlowInstance::new(flow_id1, order1, storage.clone());
+    let instance1 = Executor::new(flow_id1, order1, storage.clone());
 
     match instance1
-        .executor()
         .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
         .await
     {
-        Ok(Ok(result)) => println!("\nResult: {} - {}", result.order_id, result.status),
-        Ok(Err(e)) => println!("\nOrder failed: {}", e),
-        Err(e) => println!("\nExecution error: {}", e),
+        Ok(result) => println!("\nResult: {} - {}", result.order_id, result.status),
+        Err(e) => println!("\nOrder failed: {}", e),
     }
 
     // ==========================================================================
@@ -442,16 +440,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id2 = uuid::Uuid::new_v4();
-    let instance2 = FlowInstance::new(flow_id2, order2, storage.clone());
+    let instance2 = Executor::new(flow_id2, order2, storage.clone());
 
     match instance2
-        .executor()
         .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
         .await
     {
-        Ok(Ok(result)) => println!("\nResult: {} - {}", result.order_id, result.status),
-        Ok(Err(e)) => println!("\nOrder failed: {}", e),
-        Err(e) => println!("\nExecution error: {}", e),
+        Ok(result) => println!("\nResult: {} - {}", result.order_id, result.status),
+        Err(e) => println!("\nOrder failed: {}", e),
     }
 
     // ==========================================================================
@@ -469,16 +465,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id3 = uuid::Uuid::new_v4();
-    let instance3 = FlowInstance::new(flow_id3, order3, storage.clone());
+    let instance3 = Executor::new(flow_id3, order3, storage.clone());
 
     match instance3
-        .executor()
         .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
         .await
     {
-        Ok(Ok(result)) => println!("\nResult: {} - {}", result.order_id, result.status),
-        Ok(Err(e)) => println!("\nOrder failed: {}", e),
-        Err(e) => println!("\nExecution error: {}", e),
+        Ok(result) => println!("\nResult: {} - {}", result.order_id, result.status),
+        Err(e) => println!("\nOrder failed: {}", e),
     }
 
     // ==========================================================================
@@ -500,14 +494,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Use scheduler and worker for automatic retry
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
     let flow_id4 = uuid::Uuid::new_v4();
     scheduler.schedule(order4, flow_id4).await?;
 
     // Start worker to process the flow with retries
     let storage_clone = storage.clone();
     let worker_task = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_clone.clone(), "retry-worker")
+        let worker = Worker::new(storage_clone.clone(), "retry-worker")
             .with_poll_interval(Duration::from_millis(100));
 
         worker

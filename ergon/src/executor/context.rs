@@ -1,9 +1,8 @@
 //! Execution context management module.
 //!
-//! This module hides the complexity of:
-//! - ExecutionContext state management (step counters, graph, storage)
-//! - FlowContext scoping (task-local context propagation)
-//! - CallType scoping for execution modes (Run, Resume, Await)
+//! This module provides execution state management for durable flows:
+//! - ExecutionContext: Holds flow ID, storage, step counter, and dependency graph
+//! - Task-local variables: EXECUTION_CONTEXT and CALL_TYPE for context propagation
 //!
 //! Following Parnas's information hiding principle, this module encapsulates
 //! decisions about how execution context is managed and propagated.
@@ -15,9 +14,8 @@ use crate::core::{
     deserialize_value, hash_params, serialize_value, CallType, Invocation, InvocationStatus,
     RetryPolicy,
 };
-use crate::graph::{FlowGraph, GraphResult, StepId};
+use crate::graph::{Graph, GraphResult, StepId};
 use crate::storage::{ExecutionLog, InvocationStartParams};
-use std::future::Future;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -62,7 +60,7 @@ pub struct ExecutionContext {
     pub(super) step_counter: AtomicI32,
     /// Dependency graph for steps (built at runtime from step registrations).
     /// Uses RwLock for interior mutability since steps register during execution.
-    dependency_graph: RwLock<FlowGraph>,
+    dependency_graph: RwLock<Graph>,
 }
 
 impl ExecutionContext {
@@ -72,7 +70,7 @@ impl ExecutionContext {
             id,
             storage,
             step_counter: AtomicI32::new(0),
-            dependency_graph: RwLock::new(FlowGraph::new()),
+            dependency_graph: RwLock::new(Graph::new()),
         }
     }
 
@@ -122,7 +120,7 @@ impl ExecutionContext {
     }
 
     /// Returns a reference to the dependency graph.
-    pub fn dependency_graph(&self) -> std::sync::RwLockReadGuard<'_, FlowGraph> {
+    pub fn dependency_graph(&self) -> std::sync::RwLockReadGuard<'_, Graph> {
         self.dependency_graph
             .read()
             .expect("Dependency graph RwLock poisoned - unrecoverable state")
@@ -352,93 +350,3 @@ impl Drop for ExecutionContext {
     }
 }
 
-/// Manages execution context setup and scoping for flow execution.
-///
-/// FlowContext encapsulates the task-local context propagation mechanism,
-/// providing a clean interface for running code within an execution context.
-/// This separates the "how" of context management from the "what" of flow execution.
-pub struct FlowContext {
-    /// The execution context for this flow.
-    context: Arc<ExecutionContext>,
-}
-
-impl FlowContext {
-    /// Creates a new FlowContext for the given flow ID and storage backend.
-    pub fn new(id: Uuid, storage: Arc<dyn ExecutionLog>) -> Self {
-        Self {
-            context: Arc::new(ExecutionContext::new(id, storage)),
-        }
-    }
-
-    /// Creates a FlowContext from an existing ExecutionContext.
-    pub fn from_context(context: Arc<ExecutionContext>) -> Self {
-        Self { context }
-    }
-
-    /// Returns a reference to the underlying ExecutionContext.
-    pub fn execution_context(&self) -> &Arc<ExecutionContext> {
-        &self.context
-    }
-
-    /// Executes an async closure within this flow context with Run call type.
-    ///
-    /// This method sets up the task-local EXECUTION_CONTEXT and CALL_TYPE,
-    /// executes the provided future, and properly cleans up afterward.
-    pub async fn run_scoped<F, Fut, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = R>,
-    {
-        EXECUTION_CONTEXT
-            .scope(
-                Arc::clone(&self.context),
-                CALL_TYPE.scope(CallType::Run, async { f().await }),
-            )
-            .await
-    }
-
-    /// Executes an async closure within this flow context with Resume call type.
-    ///
-    /// Used when resuming a flow that was waiting for an external signal.
-    pub async fn resume_scoped<F, Fut, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = R>,
-    {
-        EXECUTION_CONTEXT
-            .scope(
-                Arc::clone(&self.context),
-                CALL_TYPE.scope(CallType::Resume, async { f().await }),
-            )
-            .await
-    }
-
-    /// Executes a synchronous closure within this flow context.
-    ///
-    /// This method uses block_on to bridge from sync to async context,
-    /// setting up the required task-local variables.
-    ///
-    /// # Requirements
-    /// Requires an active tokio runtime created with Runtime::new() + enter().
-    ///
-    /// # Panics
-    /// Panics if no tokio runtime is available.
-    pub fn run_sync_scoped<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let handle = tokio::runtime::Handle::try_current().expect(
-            "Sync flows require an active tokio runtime created with Runtime::new() + enter(). \
-             Cannot use #[tokio::main] due to nested block_on restriction.",
-        );
-
-        handle.block_on(async {
-            EXECUTION_CONTEXT
-                .scope(
-                    Arc::clone(&self.context),
-                    CALL_TYPE.scope(CallType::Run, async { f() }),
-                )
-                .await
-        })
-    }
-}

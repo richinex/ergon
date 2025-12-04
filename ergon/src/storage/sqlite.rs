@@ -2,9 +2,8 @@ use super::{error::Result, error::StorageError, params::InvocationStartParams, E
 use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
-use r2d2::{Pool, PooledConnection};
-use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::{Pool, Row, Sqlite, SqlitePool};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
@@ -46,11 +45,11 @@ impl Default for PoolConfig {
 
 /// SQLite-based execution log with connection pooling.
 ///
-/// This implementation uses r2d2 connection pooling to efficiently
-/// manage multiple concurrent database connections. The async methods
-/// use `spawn_blocking` internally to avoid blocking the async runtime.
+/// This implementation uses sqlx connection pooling to efficiently
+/// manage multiple concurrent database connections. All methods are
+/// natively async without `spawn_blocking` overhead.
 pub struct SqliteExecutionLog {
-    pool: Pool<SqliteConnectionManager>,
+    pool: SqlitePool,
     db_path: String,
 }
 
@@ -58,23 +57,30 @@ impl SqliteExecutionLog {
     /// Creates a new SQLite execution log with the specified database path.
     ///
     /// Uses default pool configuration.
-    pub fn new(db_path: impl AsRef<Path>) -> Result<Self> {
-        Self::with_config(db_path, PoolConfig::default())
+    pub async fn new(db_path: impl AsRef<Path>) -> Result<Self> {
+        Self::with_config(db_path, PoolConfig::default()).await
     }
 
     /// Creates a new SQLite execution log with custom pool configuration.
-    pub fn with_config(db_path: impl AsRef<Path>, config: PoolConfig) -> Result<Self> {
+    pub async fn with_config(db_path: impl AsRef<Path>, config: PoolConfig) -> Result<Self> {
         let db_path_str = db_path.as_ref().to_string_lossy().to_string();
-        let manager = SqliteConnectionManager::file(&db_path_str);
 
-        let pool = Self::build_pool(manager, &config)?;
+        // Configure SQLite connection options for optimal concurrent access
+        let connect_options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path_str))
+            .map_err(|e| StorageError::Connection(e.to_string()))?
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(5))
+            .create_if_missing(true);
+
+        let pool = Self::build_pool(connect_options, &config).await?;
 
         let log = Self {
             pool,
             db_path: db_path_str,
         };
 
-        log.initialize()?;
+        log.initialize().await?;
 
         Ok(log)
     }
@@ -83,8 +89,8 @@ impl SqliteExecutionLog {
     ///
     /// Note: In-memory databases with connection pooling share the same
     /// database across all connections using a special URI.
-    pub fn in_memory() -> Result<Self> {
-        Self::in_memory_with_config(PoolConfig::default())
+    pub async fn in_memory() -> Result<Self> {
+        Self::in_memory_with_config(PoolConfig::default()).await
     }
 
     /// Creates an in-memory SQLite execution log with custom pool configuration.
@@ -92,62 +98,62 @@ impl SqliteExecutionLog {
     /// For in-memory databases, we use a single connection to ensure data consistency
     /// across the application. This is suitable for sequential flows but NOT for DAG
     /// flows which require concurrent write access. For DAG flows, use file-based storage.
-    pub fn in_memory_with_config(config: PoolConfig) -> Result<Self> {
+    pub async fn in_memory_with_config(config: PoolConfig) -> Result<Self> {
         // For in-memory, we use a single connection to ensure data consistency
         let mut in_memory_config = config;
         in_memory_config.max_size = 1;
-        // Fix: Ensure min_idle doesn't exceed max_size
         in_memory_config.min_idle = Some(0);
 
-        let manager = SqliteConnectionManager::memory();
-        let pool = Self::build_pool(manager, &in_memory_config)?;
+        let connect_options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .map_err(|e| StorageError::Connection(e.to_string()))?
+            .journal_mode(SqliteJournalMode::Memory)
+            .synchronous(SqliteSynchronous::Normal);
+
+        let pool = Self::build_pool(connect_options, &in_memory_config).await?;
 
         let log = Self {
             pool,
             db_path: ":memory:".to_string(),
         };
 
-        log.initialize()?;
+        log.initialize().await?;
 
         Ok(log)
     }
 
     /// Builds the connection pool with the given configuration.
-    fn build_pool(
-        manager: SqliteConnectionManager,
+    async fn build_pool(
+        connect_options: SqliteConnectOptions,
         config: &PoolConfig,
-    ) -> Result<Pool<SqliteConnectionManager>> {
-        let mut builder = Pool::builder()
-            .max_size(config.max_size)
-            .connection_timeout(config.connection_timeout);
+    ) -> Result<Pool<Sqlite>> {
+        let mut builder = SqlitePoolOptions::new()
+            .max_connections(config.max_size)
+            .acquire_timeout(config.connection_timeout);
 
         if let Some(min_idle) = config.min_idle {
-            builder = builder.min_idle(Some(min_idle));
+            builder = builder.min_connections(min_idle);
         }
 
         if let Some(max_lifetime) = config.max_lifetime {
-            builder = builder.max_lifetime(Some(max_lifetime));
+            builder = builder.max_lifetime(max_lifetime);
         }
 
         if let Some(idle_timeout) = config.idle_timeout {
-            builder = builder.idle_timeout(Some(idle_timeout));
+            builder = builder.idle_timeout(idle_timeout);
         }
 
-        let pool = builder.build(manager)?;
+        let pool = builder
+            .connect_with(connect_options)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
         Ok(pool)
     }
 
     /// Initialize the database schema and settings.
-    fn initialize(&self) -> Result<()> {
-        let conn = self.pool.get()?;
-
-        // Configure SQLite for optimal concurrent access
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
-
-        // Create table with indexes for efficient queries
-        conn.execute(
+    async fn initialize(&self) -> Result<()> {
+        // Create table with complete schema (no migrations needed for new project)
+        sqlx::query(
             "CREATE TABLE IF NOT EXISTS execution_log (
                 id TEXT NOT NULL,
                 step INTEGER NOT NULL,
@@ -160,61 +166,37 @@ impl SqliteExecutionLog {
                 parameters BLOB,
                 params_hash INTEGER NOT NULL DEFAULT 0,
                 return_value BLOB,
+                retry_policy TEXT,
+                is_retryable INTEGER,
+                timer_fire_at INTEGER,
+                timer_name TEXT,
                 PRIMARY KEY (id, step)
             )",
-            [],
-        )?;
-
-        // Add params_hash column if it doesn't exist (migration for existing databases)
-        let _ = conn.execute(
-            "ALTER TABLE execution_log ADD COLUMN params_hash INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-
-        // Add retry_policy column if it doesn't exist (migration for existing databases)
-        // Store as JSON TEXT for flexibility
-        let _ = conn.execute("ALTER TABLE execution_log ADD COLUMN retry_policy TEXT", []);
-
-        // Add is_retryable column if it doesn't exist (migration for existing databases)
-        // NULL = not an error (Ok result)
-        // 0 = non-retryable error (permanent failure)
-        // 1 = retryable error (transient failure)
-        let _ = conn.execute(
-            "ALTER TABLE execution_log ADD COLUMN is_retryable INTEGER",
-            [],
-        );
-
-        // Add timer_fire_at column if it doesn't exist (migration for existing databases)
-        // Stores when a timer should fire (milliseconds since epoch)
-        let _ = conn.execute(
-            "ALTER TABLE execution_log ADD COLUMN timer_fire_at INTEGER",
-            [],
-        );
-
-        // Add timer_name column if it doesn't exist (migration for existing databases)
-        // Optional name for debugging and observability
-        let _ = conn.execute("ALTER TABLE execution_log ADD COLUMN timer_name TEXT", []);
+        )
+        .execute(&self.pool)
+        .await?;
 
         // Create index for efficient flow lookups
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_execution_log_id ON execution_log(id)",
-            [],
-        )?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_execution_log_id ON execution_log(id)")
+            .execute(&self.pool)
+            .await?;
 
         // Create index for incomplete flow queries
-        conn.execute(
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_execution_log_status ON execution_log(step, status)",
-            [],
-        )?;
+        )
+        .execute(&self.pool)
+        .await?;
 
         // Create index for timer queries (find expired timers)
-        conn.execute(
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_execution_log_timers ON execution_log(status, timer_fire_at)",
-            [],
-        )?;
+        )
+        .execute(&self.pool)
+        .await?;
 
         // Create flow queue table for distributed execution
-        conn.execute(
+        sqlx::query(
             "CREATE TABLE IF NOT EXISTS flow_queue (
                 task_id TEXT PRIMARY KEY,
                 flow_id TEXT NOT NULL,
@@ -228,26 +210,38 @@ impl SqliteExecutionLog {
                 error_message TEXT,
                 scheduled_for INTEGER
             )",
-            [],
-        )?;
+        )
+        .execute(&self.pool)
+        .await?;
 
         // Create index for efficient pending flow lookups
-        conn.execute(
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_flow_queue_status ON flow_queue(status, created_at)",
-            [],
-        )?;
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Create signal parameters table for durable signals
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS signal_params (
+                flow_id TEXT NOT NULL,
+                step INTEGER NOT NULL,
+                params BLOB NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (flow_id, step)
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Create index for signal parameter cleanup
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_signal_params_created ON signal_params(created_at)",
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
-    }
-
-    /// Get a connection from the pool.
-    fn get_connection(&self) -> Result<PooledConnection<SqliteConnectionManager>> {
-        self.pool.get().map_err(StorageError::Pool)
-    }
-
-    /// Returns the current pool state for monitoring.
-    pub fn pool_state(&self) -> r2d2::State {
-        self.pool.state()
     }
 
     /// Returns the database path.
@@ -255,39 +249,42 @@ impl SqliteExecutionLog {
         &self.db_path
     }
 
-    fn row_to_scheduled_flow(row: &rusqlite::Row) -> rusqlite::Result<super::ScheduledFlow> {
-        let task_id_str: String = row.get(0)?;
-        let task_id = Uuid::parse_str(&task_id_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    /// Returns the current pool state for monitoring.
+    pub fn pool_size(&self) -> u32 {
+        self.pool.size()
+    }
 
-        let flow_id_str: String = row.get(1)?;
-        let flow_id = Uuid::parse_str(&flow_id_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    /// Returns the number of idle connections.
+    pub fn idle_connections(&self) -> usize {
+        self.pool.num_idle()
+    }
 
-        let flow_type: String = row.get(2)?;
-        let flow_data: Vec<u8> = row.get(3)?;
-        let status_str: String = row.get(4)?;
-        let status = status_str.parse().map_err(|e: String| {
-            rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-            )
-        })?;
-        let locked_by: Option<String> = row.get(5)?;
-        let created_at_millis: i64 = row.get(6)?;
+    fn row_to_scheduled_flow(row: &sqlx::sqlite::SqliteRow) -> Result<super::ScheduledFlow> {
+        let task_id_str: String = row.try_get("task_id")?;
+        let task_id =
+            Uuid::parse_str(&task_id_str).map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        let flow_id_str: String = row.try_get("flow_id")?;
+        let flow_id =
+            Uuid::parse_str(&flow_id_str).map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        let flow_type: String = row.try_get("flow_type")?;
+        let flow_data: Vec<u8> = row.try_get("flow_data")?;
+        let status_str: String = row.try_get("status")?;
+        let status = status_str
+            .parse()
+            .map_err(|e: String| StorageError::Connection(e))?;
+        let locked_by: Option<String> = row.try_get("locked_by")?;
+        let created_at_millis: i64 = row.try_get("created_at")?;
         let created_at =
             chrono::DateTime::from_timestamp_millis(created_at_millis).unwrap_or_else(Utc::now);
-        let updated_at_millis: i64 = row.get(7)?;
+        let updated_at_millis: i64 = row.try_get("updated_at")?;
         let updated_at =
             chrono::DateTime::from_timestamp_millis(updated_at_millis).unwrap_or_else(Utc::now);
 
-        // Parse retry fields (indices 8, 9, 10)
-        let retry_count: u32 = row.get(8).unwrap_or(0);
-        let error_message: Option<String> = row.get(9).ok();
-        let scheduled_for_millis: Option<i64> = row.get(10).ok();
+        let retry_count: u32 = row.try_get("retry_count").unwrap_or(0);
+        let error_message: Option<String> = row.try_get("error_message").ok();
+        let scheduled_for_millis: Option<i64> = row.try_get("scheduled_for").ok();
         let scheduled_for = scheduled_for_millis.and_then(chrono::DateTime::from_timestamp_millis);
 
         Ok(super::ScheduledFlow {
@@ -305,46 +302,39 @@ impl SqliteExecutionLog {
         })
     }
 
-    fn row_to_invocation(row: &rusqlite::Row) -> rusqlite::Result<Invocation> {
-        let id_str: String = row.get(0)?;
-        let id = Uuid::parse_str(&id_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    fn row_to_invocation(row: &sqlx::sqlite::SqliteRow) -> Result<Invocation> {
+        let id_str: String = row.try_get("id")?;
+        let id = Uuid::parse_str(&id_str).map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        let step: i32 = row.get(1)?;
-        let timestamp_millis: i64 = row.get(2)?;
+        let step: i32 = row.try_get("step")?;
+        let timestamp_millis: i64 = row.try_get("timestamp")?;
         let timestamp =
             chrono::DateTime::from_timestamp_millis(timestamp_millis).unwrap_or_else(Utc::now);
-        let class_name: String = row.get(3)?;
-        let method_name: String = row.get(4)?;
-        let status_str: String = row.get(5)?;
-        let status = InvocationStatus::from_str(&status_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                5,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-            )
-        })?;
-        let attempts: i32 = row.get(6)?;
-        let parameters: Vec<u8> = row.get(7)?;
-        let params_hash: i64 = row.get(8)?;
-        let return_value: Option<Vec<u8>> = row.get(9)?;
-        let delay: Option<i64> = row.get(10)?;
+        let class_name: String = row.try_get("class_name")?;
+        let method_name: String = row.try_get("method_name")?;
+        let status_str: String = row.try_get("status")?;
+        let status = InvocationStatus::from_str(&status_str)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        let attempts: i32 = row.try_get("attempts")?;
+        let parameters: Vec<u8> = row.try_get("parameters")?;
+        let params_hash: i64 = row.try_get("params_hash")?;
+        let return_value: Option<Vec<u8>> = row.try_get("return_value")?;
+        let delay: Option<i64> = row.try_get("delay")?;
 
         // Parse retry_policy from JSON if present
-        let retry_policy_json: Option<String> = row.get(11)?;
+        let retry_policy_json: Option<String> = row.try_get("retry_policy")?;
         let retry_policy = retry_policy_json.and_then(|json| serde_json::from_str(&json).ok());
 
         // Parse is_retryable (NULL, 0, or 1)
-        let is_retryable_int: Option<i32> = row.get(12).ok().flatten();
+        let is_retryable_int: Option<i32> = row.try_get("is_retryable").ok();
         let is_retryable = is_retryable_int.map(|v| v != 0);
 
         // Parse timer_fire_at from milliseconds since epoch
-        let timer_fire_at_millis: Option<i64> = row.get(13).ok().flatten();
+        let timer_fire_at_millis: Option<i64> = row.try_get("timer_fire_at").ok();
         let timer_fire_at = timer_fire_at_millis.and_then(chrono::DateTime::from_timestamp_millis);
 
         // Parse timer_name
-        let timer_name: Option<String> = row.get(14).ok().flatten();
+        let timer_name: Option<String> = row.try_get("timer_name").ok();
 
         let mut invocation = Invocation::new(
             id,
@@ -389,54 +379,40 @@ impl ExecutionLog for SqliteExecutionLog {
             retry_policy,
         } = params;
 
-        // Clone data for move into spawn_blocking
-        let class_name = class_name.to_string();
-        let method_name = method_name.to_string();
-        let parameters = parameters.to_vec();
         // Compute params_hash internally from the parameters bytes
-        let params_hash = hash_params(&parameters);
+        let params_hash = hash_params(parameters);
 
         // Serialize retry_policy to JSON if present
         let retry_policy_json = retry_policy.and_then(|p| serde_json::to_string(&p).ok());
 
-        // Get a connection from the pool (this is fast)
-        let conn = self.get_connection()?;
+        let delay_millis = delay.map(|d| d.as_millis() as i64);
 
-        // Use spawn_blocking to avoid blocking the async runtime
-        let result = tokio::task::spawn_blocking(move || {
-            let delay_millis = delay.map(|d| d.as_millis() as i64);
+        sqlx::query(
+            "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, delay, status, attempts, parameters, params_hash, retry_policy)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id, step)
+             DO UPDATE SET attempts = attempts + 1",
+        )
+        .bind(id.to_string())
+        .bind(step)
+        .bind(Utc::now().timestamp_millis())
+        .bind(class_name)
+        .bind(method_name)
+        .bind(delay_millis)
+        .bind(status.as_str())
+        .bind(1)
+        .bind(parameters)
+        .bind(params_hash as i64)
+        .bind(retry_policy_json)
+        .execute(&self.pool)
+        .await?;
 
-            conn.execute(
-                "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, delay, status, attempts, parameters, params_hash, retry_policy)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(id, step)
-                 DO UPDATE SET attempts = attempts + 1",
-                params![
-                    id.to_string(),
-                    step,
-                    Utc::now().timestamp_millis(),
-                    class_name,
-                    method_name,
-                    delay_millis,
-                    status.as_str(),
-                    1,
-                    parameters,
-                    params_hash as i64,
-                    retry_policy_json,
-                ],
-            )?;
+        debug!(
+            "Logged invocation start: id={}, step={}, class={}, method={}, params_hash={}",
+            id, step, class_name, method_name, params_hash
+        );
 
-            debug!(
-                "Logged invocation start: id={}, step={}, class={}, method={}, params_hash={}",
-                id, step, class_name, method_name, params_hash
-            );
-
-            Ok::<(), StorageError>(())
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))??;
-
-        Ok(result)
+        Ok(())
     }
 
     async fn log_invocation_completion(
@@ -445,318 +421,274 @@ impl ExecutionLog for SqliteExecutionLog {
         step: i32,
         return_value: &[u8],
     ) -> Result<Invocation> {
-        let return_value = return_value.to_vec();
-        let conn = self.get_connection()?;
+        sqlx::query(
+            "UPDATE execution_log
+             SET status = 'COMPLETE', return_value = ?
+             WHERE id = ? AND step = ?",
+        )
+        .bind(return_value)
+        .bind(id.to_string())
+        .bind(step)
+        .execute(&self.pool)
+        .await?;
 
-        tokio::task::spawn_blocking(move || {
-            conn.execute(
-                "UPDATE execution_log
-                 SET status = 'COMPLETE', return_value = ?
-                 WHERE id = ? AND step = ?",
-                params![return_value, id.to_string(), step],
-            )?;
+        let invocation = sqlx::query(
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+             FROM execution_log
+             WHERE id = ? AND step = ?",
+        )
+        .bind(id.to_string())
+        .bind(step)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| Self::row_to_invocation(&row))
+        .transpose()?
+        .ok_or_else(|| StorageError::InvocationNotFound { id, step })?;
 
-            let invocation = conn
-                .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
-                     FROM execution_log
-                     WHERE id = ? AND step = ?",
-                    params![id.to_string(), step],
-                    SqliteExecutionLog::row_to_invocation,
-                )
-                .optional()?
-                .ok_or_else(|| StorageError::InvocationNotFound { id, step })?;
+        debug!(
+            "Logged invocation completion: id={}, step={}, status={:?}",
+            id,
+            step,
+            invocation.status()
+        );
 
-            debug!(
-                "Logged invocation completion: id={}, step={}, status={:?}",
-                id,
-                step,
-                invocation.status()
-            );
-
-            Ok(invocation)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(invocation)
     }
 
     async fn get_invocation(&self, id: Uuid, step: i32) -> Result<Option<Invocation>> {
-        let conn = self.get_connection()?;
+        let invocation = sqlx::query(
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+             FROM execution_log
+             WHERE id = ? AND step = ?",
+        )
+        .bind(id.to_string())
+        .bind(step)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| Self::row_to_invocation(&row))
+        .transpose()?;
 
-        tokio::task::spawn_blocking(move || {
-            let invocation = conn
-                .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
-                     FROM execution_log
-                     WHERE id = ? AND step = ?",
-                    params![id.to_string(), step],
-                    SqliteExecutionLog::row_to_invocation,
-                )
-                .optional()?;
-
-            Ok(invocation)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(invocation)
     }
 
     async fn get_latest_invocation(&self, id: Uuid) -> Result<Option<Invocation>> {
-        let conn = self.get_connection()?;
+        let invocation = sqlx::query(
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+             FROM execution_log
+             WHERE id = ?
+             ORDER BY step DESC
+             LIMIT 1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| Self::row_to_invocation(&row))
+        .transpose()?;
 
-        tokio::task::spawn_blocking(move || {
-            let invocation = conn
-                .query_row(
-                    "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
-                     FROM execution_log
-                     WHERE id = ?
-                     ORDER BY step DESC
-                     LIMIT 1",
-                    params![id.to_string()],
-                    SqliteExecutionLog::row_to_invocation,
-                )
-                .optional()?;
-
-            Ok(invocation)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(invocation)
     }
 
     async fn get_invocations_for_flow(&self, id: Uuid) -> Result<Vec<Invocation>> {
-        let conn = self.get_connection()?;
+        let rows = sqlx::query(
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+             FROM execution_log
+             WHERE id = ?
+             ORDER BY step ASC",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
 
-        tokio::task::spawn_blocking(move || {
-            let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
-                 FROM execution_log
-                 WHERE id = ?
-                 ORDER BY step ASC",
-            )?;
+        let invocations = rows
+            .iter()
+            .map(Self::row_to_invocation)
+            .collect::<Result<Vec<_>>>()?;
 
-            let invocations = stmt
-                .query_map(params![id.to_string()], SqliteExecutionLog::row_to_invocation)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-
-            Ok(invocations)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(invocations)
     }
 
     async fn get_incomplete_flows(&self) -> Result<Vec<Invocation>> {
-        let conn = self.get_connection()?;
+        let rows = sqlx::query(
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+             FROM execution_log
+             WHERE step = 0
+               AND status <> 'COMPLETE'
+             ORDER BY timestamp ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
-        tokio::task::spawn_blocking(move || {
-            let mut stmt = conn.prepare(
-                "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
-                 FROM execution_log
-                 WHERE step = 0
-                   AND status <> 'COMPLETE'
-                 ORDER BY timestamp ASC",
-            )?;
+        let invocations = rows
+            .iter()
+            .map(Self::row_to_invocation)
+            .collect::<Result<Vec<_>>>()?;
 
-            let invocations = stmt
-                .query_map([], SqliteExecutionLog::row_to_invocation)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+        info!("Found {} incomplete flows", invocations.len());
 
-            info!("Found {} incomplete flows", invocations.len());
-
-            Ok(invocations)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(invocations)
     }
 
     async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
-        let conn = self.get_connection()?;
+        // Check if any step in the flow has is_retryable = 0 (non-retryable error)
+        let has_non_retryable: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                     SELECT 1 FROM execution_log
+                     WHERE id = ? AND is_retryable = 0
+                 )",
+        )
+        .bind(flow_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
 
-        tokio::task::spawn_blocking(move || {
-            // Check if any step in the flow has is_retryable = 0 (non-retryable error)
-            let has_non_retryable: bool = conn.query_row(
-                "SELECT EXISTS(
-                         SELECT 1 FROM execution_log
-                         WHERE id = ? AND is_retryable = 0
-                     )",
-                params![flow_id.to_string()],
-                |row| row.get(0),
-            )?;
+        debug!(
+            "Flow {} has non-retryable error: {}",
+            flow_id, has_non_retryable
+        );
 
-            debug!(
-                "Flow {} has non-retryable error: {}",
-                flow_id, has_non_retryable
-            );
-
-            Ok(has_non_retryable)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(has_non_retryable)
     }
 
     async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()> {
-        let conn = self.get_connection()?;
+        sqlx::query(
+            "UPDATE execution_log
+             SET is_retryable = ?
+             WHERE id = ? AND step = ?",
+        )
+        .bind(if is_retryable { 1 } else { 0 })
+        .bind(id.to_string())
+        .bind(step)
+        .execute(&self.pool)
+        .await?;
 
-        tokio::task::spawn_blocking(move || {
-            conn.execute(
-                "UPDATE execution_log
-                 SET is_retryable = ?
-                 WHERE id = ? AND step = ?",
-                params![if is_retryable { 1 } else { 0 }, id.to_string(), step],
-            )?;
-
-            debug!(
-                "Updated is_retryable for flow {} step {}: {}",
-                id, step, is_retryable
-            );
-
-            Ok::<(), StorageError>(())
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))??;
+        debug!(
+            "Updated is_retryable for flow {} step {}: {}",
+            id, step, is_retryable
+        );
 
         Ok(())
     }
 
     async fn reset(&self) -> Result<()> {
-        let conn = self.get_connection()?;
-
-        tokio::task::spawn_blocking(move || {
-            conn.execute("DELETE FROM execution_log", [])?;
-            info!("Reset execution log database");
-            Ok(())
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        sqlx::query("DELETE FROM execution_log")
+            .execute(&self.pool)
+            .await?;
+        info!("Reset execution log database");
+        Ok(())
     }
 
     async fn close(&self) -> Result<()> {
+        self.pool.close().await;
         info!("Closing execution log database");
         Ok(())
     }
 
     async fn enqueue_flow(&self, flow: super::ScheduledFlow) -> Result<Uuid> {
-        let conn = self.get_connection()?;
         let task_id = flow.task_id;
+        let flow_type = flow.flow_type.clone();
 
-        tokio::task::spawn_blocking(move || {
-            conn.execute(
-                "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at, retry_count, error_message, scheduled_for)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![
-                    task_id.to_string(),
-                    flow.flow_id.to_string(),
-                    flow.flow_type,
-                    flow.flow_data,
-                    flow.status.as_str(),
-                    flow.locked_by,
-                    flow.created_at.timestamp_millis(),
-                    flow.updated_at.timestamp_millis(),
-                    flow.retry_count,
-                    flow.error_message,
-                    flow.scheduled_for.map(|dt| dt.timestamp_millis()),
-                ],
-            )?;
+        sqlx::query(
+            "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at, retry_count, error_message, scheduled_for)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(task_id.to_string())
+        .bind(flow.flow_id.to_string())
+        .bind(flow.flow_type)
+        .bind(flow.flow_data)
+        .bind(flow.status.as_str())
+        .bind(flow.locked_by)
+        .bind(flow.created_at.timestamp_millis())
+        .bind(flow.updated_at.timestamp_millis())
+        .bind(flow.retry_count as i64)
+        .bind(flow.error_message)
+        .bind(flow.scheduled_for.map(|dt| dt.timestamp_millis()))
+        .execute(&self.pool)
+        .await?;
 
-            debug!("Enqueued flow: task_id={}, flow_type={}", task_id, flow.flow_type);
-            Ok(task_id)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        debug!("Enqueued flow: task_id={}, flow_type={}", task_id, flow_type);
+        Ok(task_id)
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        let mut conn = self.get_connection()?;
-        let worker_id = worker_id.to_string();
+        // Start a transaction for atomic dequeue operation
+        let mut tx = self.pool.begin().await?;
 
-        tokio::task::spawn_blocking(move || {
-            // Use IMMEDIATE transaction to acquire write lock early and reduce contention
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Find the oldest pending flow that's ready to execute
+        let now = Utc::now().timestamp_millis();
+        let flow_opt = sqlx::query(
+            "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
+                    retry_count, error_message, scheduled_for
+             FROM flow_queue
+             WHERE status = 'PENDING'
+               AND (scheduled_for IS NULL OR scheduled_for <= ?)
+             ORDER BY created_at ASC
+             LIMIT 1",
+        )
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|row| Self::row_to_scheduled_flow(&row))
+        .transpose()?;
 
-            // Find the oldest pending flow that's ready to execute
-            let now = Utc::now().timestamp_millis();
-            let flow_opt = tx
-                .query_row(
-                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
-                            retry_count, error_message, scheduled_for
-                     FROM flow_queue
-                     WHERE status = 'PENDING'
-                       AND (scheduled_for IS NULL OR scheduled_for <= ?)
-                     ORDER BY created_at ASC
-                     LIMIT 1",
-                    params![now],
-                    SqliteExecutionLog::row_to_scheduled_flow,
-                )
-                .optional()?;
+        if let Some(flow) = flow_opt {
+            // Lock it by updating status and locked_by
+            let result = sqlx::query(
+                "UPDATE flow_queue
+                 SET status = 'RUNNING', locked_by = ?, updated_at = ?
+                 WHERE task_id = ? AND status = 'PENDING'",
+            )
+            .bind(worker_id)
+            .bind(Utc::now().timestamp_millis())
+            .bind(flow.task_id.to_string())
+            .execute(&mut *tx)
+            .await?;
 
-            if let Some(flow) = flow_opt {
-                // Lock it by updating status and locked_by
-                // Include status = 'PENDING' check for optimistic concurrency control
-                let rows_updated = tx.execute(
-                    "UPDATE flow_queue
-                     SET status = 'RUNNING', locked_by = ?, updated_at = ?
-                     WHERE task_id = ? AND status = 'PENDING'",
-                    params![
-                        &worker_id,
-                        Utc::now().timestamp_millis(),
-                        flow.task_id.to_string(),
-                    ],
-                )?;
-
-                // Check if we actually locked the flow (another worker may have grabbed it)
-                if rows_updated == 0 {
-                    // Another worker already locked this flow, return None
-                    debug!(
-                        "Flow already locked by another worker: task_id={}",
-                        flow.task_id
-                    );
-                    return Ok(None);
-                }
-
-                tx.commit()?;
-
+            // Check if we actually locked the flow (another worker may have grabbed it)
+            if result.rows_affected() == 0 {
+                // Another worker already locked this flow, return None
                 debug!(
-                    "Dequeued flow: task_id={}, flow_type={}, worker={}",
-                    flow.task_id, flow.flow_type, worker_id
+                    "Flow already locked by another worker: task_id={}",
+                    flow.task_id
                 );
-
-                // Return the flow with updated status
-                Ok(Some(super::ScheduledFlow {
-                    status: super::TaskStatus::Running,
-                    locked_by: Some(worker_id),
-                    updated_at: Utc::now(),
-                    ..flow
-                }))
-            } else {
-                Ok(None)
+                return Ok(None);
             }
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+
+            tx.commit().await?;
+
+            debug!(
+                "Dequeued flow: task_id={}, flow_type={}, worker={}",
+                flow.task_id, flow.flow_type, worker_id
+            );
+
+            // Return the flow with updated status
+            Ok(Some(super::ScheduledFlow {
+                status: super::TaskStatus::Running,
+                locked_by: Some(worker_id.to_string()),
+                updated_at: Utc::now(),
+                ..flow
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
-        let conn = self.get_connection()?;
+        let result = sqlx::query(
+            "UPDATE flow_queue
+             SET status = ?, updated_at = ?
+             WHERE task_id = ?",
+        )
+        .bind(status.as_str())
+        .bind(Utc::now().timestamp_millis())
+        .bind(task_id.to_string())
+        .execute(&self.pool)
+        .await?;
 
-        tokio::task::spawn_blocking(move || {
-            let updated = conn.execute(
-                "UPDATE flow_queue
-                 SET status = ?, updated_at = ?
-                 WHERE task_id = ?",
-                params![
-                    status.as_str(),
-                    Utc::now().timestamp_millis(),
-                    task_id.to_string(),
-                ],
-            )?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ScheduledFlowNotFound(task_id));
+        }
 
-            if updated == 0 {
-                return Err(StorageError::ScheduledFlowNotFound(task_id));
-            }
-
-            debug!("Completed flow: task_id={}, status={}", task_id, status);
-            Ok(())
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        debug!("Completed flow: task_id={}, status={}", task_id, status);
+        Ok(())
     }
 
     async fn retry_flow(
@@ -765,141 +697,120 @@ impl ExecutionLog for SqliteExecutionLog {
         error_message: String,
         delay: std::time::Duration,
     ) -> Result<()> {
-        let conn = self.get_connection()?;
+        // Calculate scheduled_for timestamp (current time + delay)
+        let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
 
-        tokio::task::spawn_blocking(move || {
-            // Calculate scheduled_for timestamp (current time + delay)
-            let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
+        let result = sqlx::query(
+            "UPDATE flow_queue
+             SET retry_count = retry_count + 1,
+                 error_message = ?,
+                 status = ?,
+                 locked_by = NULL,
+                 scheduled_for = ?,
+                 updated_at = ?
+             WHERE task_id = ?",
+        )
+        .bind(error_message)
+        .bind(super::TaskStatus::Pending.as_str())
+        .bind(scheduled_for.timestamp_millis())
+        .bind(Utc::now().timestamp_millis())
+        .bind(task_id.to_string())
+        .execute(&self.pool)
+        .await?;
 
-            let updated = conn.execute(
-                "UPDATE flow_queue
-                 SET retry_count = retry_count + 1,
-                     error_message = ?,
-                     status = ?,
-                     locked_by = NULL,
-                     scheduled_for = ?,
-                     updated_at = ?
-                 WHERE task_id = ?",
-                params![
-                    error_message,
-                    super::TaskStatus::Pending.as_str(),
-                    scheduled_for.timestamp_millis(),
-                    Utc::now().timestamp_millis(),
-                    task_id.to_string(),
-                ],
-            )?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ScheduledFlowNotFound(task_id));
+        }
 
-            if updated == 0 {
-                return Err(StorageError::ScheduledFlowNotFound(task_id));
-            }
-
-            debug!("Retried flow: task_id={}, retry_count incremented", task_id);
-            Ok(())
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        debug!("Retried flow: task_id={}, retry_count incremented", task_id);
+        Ok(())
     }
 
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<super::ScheduledFlow>> {
-        let conn = self.get_connection()?;
+        let flow = sqlx::query(
+            "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
+                    retry_count, error_message, scheduled_for
+             FROM flow_queue
+             WHERE task_id = ?",
+        )
+        .bind(task_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| Self::row_to_scheduled_flow(&row))
+        .transpose()?;
 
-        tokio::task::spawn_blocking(move || {
-            let flow = conn
-                .query_row(
-                    "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
-                            retry_count, error_message, scheduled_for
-                     FROM flow_queue
-                     WHERE task_id = ?",
-                    params![task_id.to_string()],
-                    SqliteExecutionLog::row_to_scheduled_flow,
-                )
-                .optional()?;
-
-            Ok(flow)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(flow)
     }
 
     async fn get_expired_timers(
         &self,
         now: chrono::DateTime<Utc>,
     ) -> Result<Vec<super::TimerInfo>> {
-        let conn = self.get_connection()?;
         let now_millis = now.timestamp_millis();
 
-        tokio::task::spawn_blocking(move || {
-            let mut stmt = conn.prepare(
-                "SELECT id, step, timer_fire_at, timer_name
-                 FROM execution_log
-                 WHERE status = 'WAITING_FOR_TIMER'
-                   AND timer_fire_at IS NOT NULL
-                   AND timer_fire_at <= ?
-                 ORDER BY timer_fire_at ASC
-                 LIMIT 100",
-            )?;
+        let rows = sqlx::query(
+            "SELECT id, step, timer_fire_at, timer_name
+             FROM execution_log
+             WHERE status = 'WAITING_FOR_TIMER'
+               AND timer_fire_at IS NOT NULL
+               AND timer_fire_at <= ?
+             ORDER BY timer_fire_at ASC
+             LIMIT 100",
+        )
+        .bind(now_millis)
+        .fetch_all(&self.pool)
+        .await?;
 
-            let timers = stmt
-                .query_map(params![now_millis], |row| {
-                    let flow_id_str: String = row.get(0)?;
-                    let flow_id = Uuid::parse_str(&flow_id_str)
-                        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        let timers = rows
+            .iter()
+            .map(|row| {
+                let flow_id_str: String = row.try_get("id")?;
+                let flow_id = Uuid::parse_str(&flow_id_str)
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-                    let step: i32 = row.get(1)?;
+                let step: i32 = row.try_get("step")?;
 
-                    let fire_at_millis: i64 = row.get(2)?;
-                    let fire_at = chrono::DateTime::from_timestamp_millis(fire_at_millis)
-                        .ok_or_else(|| {
-                            rusqlite::Error::InvalidParameterName("Invalid timestamp".to_string())
-                        })?;
+                let fire_at_millis: i64 = row.try_get("timer_fire_at")?;
+                let fire_at = chrono::DateTime::from_timestamp_millis(fire_at_millis)
+                    .ok_or_else(|| StorageError::Connection("Invalid timestamp".to_string()))?;
 
-                    let timer_name: Option<String> = row.get(3)?;
+                let timer_name: Option<String> = row.try_get("timer_name")?;
 
-                    Ok(super::TimerInfo {
-                        flow_id,
-                        step,
-                        fire_at,
-                        timer_name,
-                    })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(super::TimerInfo {
+                    flow_id,
+                    step,
+                    fire_at,
+                    timer_name,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-            Ok(timers)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(timers)
     }
 
     async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
-        let mut conn = self.get_connection()?;
+        // Start a transaction for atomic claim operation
+        let mut tx = self.pool.begin().await?;
 
-        tokio::task::spawn_blocking(move || {
-            // Use IMMEDIATE transaction for early write lock (same as dequeue_flow)
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Optimistic concurrency: UPDATE with status check
+        let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-            // Optimistic concurrency: UPDATE with status check
-            let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let result = sqlx::query(
+            "UPDATE execution_log
+             SET status = 'COMPLETE', return_value = ?
+             WHERE id = ? AND step = ? AND status = 'WAITING_FOR_TIMER'",
+        )
+        .bind(&unit_value)
+        .bind(flow_id.to_string())
+        .bind(step)
+        .execute(&mut *tx)
+        .await?;
 
-            let rows_updated = tx.execute(
-                "UPDATE execution_log
-                 SET status = 'COMPLETE', return_value = ?
-                 WHERE id = ? AND step = ? AND status = 'WAITING_FOR_TIMER'",
-                params![
-                    // Return unit value () for timer completion
-                    &unit_value,
-                    flow_id.to_string(),
-                    step,
-                ],
-            )?;
+        tx.commit().await?;
 
-            tx.commit()?;
-
-            // If rows_updated == 0, another worker already claimed this timer
-            Ok(rows_updated > 0)
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        // If rows_affected == 0, another worker already claimed this timer
+        Ok(result.rows_affected() > 0)
     }
 
     async fn log_timer(
@@ -909,27 +820,123 @@ impl ExecutionLog for SqliteExecutionLog {
         fire_at: chrono::DateTime<Utc>,
         timer_name: Option<&str>,
     ) -> Result<()> {
-        let conn = self.get_connection()?;
-        let timer_name = timer_name.map(|s| s.to_string());
+        sqlx::query(
+            "UPDATE execution_log
+             SET status = 'WAITING_FOR_TIMER',
+                 timer_fire_at = ?,
+                 timer_name = ?
+             WHERE id = ? AND step = ?",
+        )
+        .bind(fire_at.timestamp_millis())
+        .bind(timer_name)
+        .bind(flow_id.to_string())
+        .bind(step)
+        .execute(&self.pool)
+        .await?;
 
-        tokio::task::spawn_blocking(move || {
-            conn.execute(
-                "UPDATE execution_log
-                 SET status = 'WAITING_FOR_TIMER',
-                     timer_fire_at = ?,
-                     timer_name = ?
-                 WHERE id = ? AND step = ?",
-                params![
-                    fire_at.timestamp_millis(),
-                    timer_name,
-                    flow_id.to_string(),
-                    step,
-                ],
-            )?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?
+        Ok(())
+    }
+
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        params: &[u8],
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO signal_params (flow_id, step, params, created_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(flow_id, step)
+             DO UPDATE SET params = excluded.params, created_at = excluded.created_at",
+        )
+        .bind(flow_id.to_string())
+        .bind(step)
+        .bind(params)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
+
+        debug!(
+            "Stored signal params: flow_id={}, step={}",
+            flow_id, step
+        );
+
+        Ok(())
+    }
+
+    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
+        let params: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT params FROM signal_params WHERE flow_id = ? AND step = ?",
+        )
+        .bind(flow_id.to_string())
+        .bind(step)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(params)
+    }
+
+    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
+        sqlx::query("DELETE FROM signal_params WHERE flow_id = ? AND step = ?")
+            .bind(flow_id.to_string())
+            .bind(step)
+            .execute(&self.pool)
+            .await?;
+
+        debug!(
+            "Removed signal params: flow_id={}, step={}",
+            flow_id, step
+        );
+
+        Ok(())
+    }
+
+    async fn cleanup_completed(&self, older_than: std::time::Duration) -> Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(older_than).unwrap();
+        let cutoff_millis = cutoff.timestamp_millis();
+
+        // Start a transaction to delete from multiple tables atomically
+        let mut tx = self.pool.begin().await?;
+
+        // Delete completed invocations older than cutoff
+        let result = sqlx::query(
+            "DELETE FROM execution_log
+             WHERE status = 'COMPLETE'
+               AND timestamp < ?",
+        )
+        .bind(cutoff_millis)
+        .execute(&mut *tx)
+        .await?;
+
+        let deleted_invocations = result.rows_affected();
+
+        // Also cleanup old signal parameters (orphaned or very old)
+        sqlx::query(
+            "DELETE FROM signal_params
+             WHERE created_at < ?",
+        )
+        .bind(cutoff_millis)
+        .execute(&mut *tx)
+        .await?;
+
+        // Cleanup old completed flows from queue
+        sqlx::query(
+            "DELETE FROM flow_queue
+             WHERE status IN ('COMPLETE', 'FAILED')
+               AND updated_at < ?",
+        )
+        .bind(cutoff_millis)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        info!(
+            "Cleaned up {} completed invocations older than {:?}",
+            deleted_invocations, older_than
+        );
+
+        Ok(deleted_invocations)
     }
 }
 
@@ -940,7 +947,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_log_invocation() {
-        let log = SqliteExecutionLog::in_memory().unwrap();
+        let log = SqliteExecutionLog::in_memory().await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -972,7 +979,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_completion() {
-        let log = SqliteExecutionLog::in_memory().unwrap();
+        let log = SqliteExecutionLog::in_memory().await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1001,7 +1008,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_incomplete_flows() {
-        let log = SqliteExecutionLog::in_memory().unwrap();
+        let log = SqliteExecutionLog::in_memory().await.unwrap();
 
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
@@ -1057,7 +1064,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_increments_attempts() {
-        let log = SqliteExecutionLog::in_memory().unwrap();
+        let log = SqliteExecutionLog::in_memory().await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1097,7 +1104,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_latest_invocation() {
-        let log = SqliteExecutionLog::in_memory().unwrap();
+        let log = SqliteExecutionLog::in_memory().await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1131,9 +1138,10 @@ mod tests {
             idle_timeout: Some(Duration::from_secs(300)),
         };
 
-        // For in-memory, pool size is forced to 1, but we can still create with config
-        let log = SqliteExecutionLog::in_memory_with_config(config).unwrap();
-        let state = log.pool_state();
-        assert_eq!(state.connections, 1); // In-memory uses single connection
+        // For in-memory, pool size is forced to 1
+        let log = SqliteExecutionLog::in_memory_with_config(config)
+            .await
+            .unwrap();
+        assert_eq!(log.pool_size(), 1); // In-memory uses single connection
     }
 }

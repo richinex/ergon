@@ -9,9 +9,10 @@ use uuid::Uuid;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum StorageError {
-    /// A database operation failed.
+    /// A database operation failed (SQLite).
+    #[cfg(feature = "sqlite")]
     #[error("database operation failed: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(#[from] sqlx::Error),
 
     /// A core serialization or deserialization error occurred.
     #[error("core error: {0}")]
@@ -20,10 +21,6 @@ pub enum StorageError {
     /// An I/O operation failed.
     #[error("I/O error")]
     Io(#[from] std::io::Error),
-
-    /// Failed to get a connection from the pool.
-    #[error("connection pool error: {0}")]
-    Pool(#[from] r2d2::Error),
 
     /// The requested invocation was not found in storage.
     #[error("invocation not found: id={id}, step={step}")]

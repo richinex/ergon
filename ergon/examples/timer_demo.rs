@@ -36,7 +36,7 @@
 //! ```
 
 use chrono::Utc;
-use ergon::executor::{schedule_timer, schedule_timer_named, FlowWorker};
+use ergon::executor::{schedule_timer, schedule_timer_named, Worker};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -160,10 +160,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Fire exactly once via optimistic concurrency\n");
 
     // Create SQLite storage for durability
-    let storage = Arc::new(SqliteExecutionLog::new("timer_demo.db")?);
+    let storage = Arc::new(SqliteExecutionLog::new("timer_demo.db").await?);
 
     // Start worker with timer processing (polls every 100ms for demo responsiveness)
-    let worker = FlowWorker::new(storage.clone(), "timer-demo-worker")
+    let worker = Worker::new(storage.clone(), "timer-demo-worker")
         .with_timers()
         .with_timer_interval(Duration::from_millis(100))
         .start()
@@ -178,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id = uuid::Uuid::new_v4();
-    let instance = FlowInstance::new(flow_id, order, storage.clone());
+    let instance = Executor::new(flow_id, order, storage.clone());
 
     println!("Total expected duration: ~6 seconds (2s + 3s + 1s)\n");
     println!("Starting order processing...\n");
@@ -187,17 +187,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute the flow
     let result = instance
-        .executor()
         .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
         .await?;
 
     let elapsed = start.elapsed();
 
     println!("\n=== Results ===");
-    match result {
-        Ok(msg) => println!("Result: {}", msg),
-        Err(e) => println!("Error: {}", e),
-    }
+    println!("Result: {}", result);
     println!("Total time: {:?}", elapsed);
     println!("Expected: ~6 seconds");
 

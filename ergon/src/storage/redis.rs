@@ -1,4 +1,4 @@
-//! Redis-based execution log implementation.
+//! Redis-based execution log implementation with async pool and best practices.
 //!
 //! This module provides a Redis backend for distributed execution with true
 //! multi-machine support. Unlike SQLite which requires shared filesystem access,
@@ -6,55 +6,60 @@
 //!
 //! # Data Structures
 //!
-//! - `ergon:queue:pending` (LIST): FIFO queue of pending task IDs
-//! - `ergon:flow:{task_id}` (HASH): Flow metadata and serialized data
+//! - `ergon:queue:pending` (LIST): FIFO queue of ready task IDs
+//! - `ergon:queue:delayed` (ZSET): Delayed tasks (score = scheduled_timestamp)
+//! - `ergon:flow:{task_id}` (HASH): Flow metadata and serialized data (with TTL)
 //! - `ergon:invocations:{flow_id}` (LIST): Invocation history per flow
-//! - `ergon:running` (ZSET): Running flows index (score = start time)
+//! - `ergon:running` (ZSET): Running flows index (score = start time, for stale lock detection)
 //! - `ergon:timers:pending` (ZSET): Pending timers (score = fire_at timestamp)
 //! - `ergon:inv:{flow_id}:{step}` (HASH): Invocation data including timer info
+//! - `ergon:signal:{flow_id}:{step}` (STRING): Signal parameters (with TTL)
 //!
 //! # Key Features
 //!
-//! - **Blocking dequeue**: Uses BLPOP for efficient worker polling
-//! - **Atomic operations**: Uses MULTI/EXEC for consistency
-//! - **Network-accessible**: True distributed execution across machines
-//! - **Connection pooling**: r2d2 pool for concurrent access
+//! - **Async connection pool**: Uses deadpool-redis for true async operations
+//! - **Sorted sets for scheduling**: No busy-loop for delayed tasks
+//! - **Atomic operations**: Uses pipelines and Lua scripts
+//! - **TTL cleanup**: Automatic expiration of completed flows
+//! - **Stale lock recovery**: Detects and recovers crashed workers
 //!
 //! # Performance Characteristics
 //!
-//! - Enqueue: O(1) with RPUSH
+//! - Enqueue: O(log N) with ZADD to sorted set
 //! - Dequeue: O(1) with BLPOP (blocks until available)
-//! - Status update: O(1) with HSET
+//! - Background mover: O(log N) per ready task
 //! - Network overhead: ~0.1-0.5ms per operation (local network)
 
 use super::{error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog};
 use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
-use redis::Commands;
+use deadpool_redis::{Config, Pool, Runtime};
+use redis::AsyncCommands;
 use std::collections::HashMap;
+use std::str::FromStr;
+use std::time::Duration;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-/// Redis execution log using connection pooling.
+/// Default TTL for completed flows (7 days in seconds)
+const DEFAULT_COMPLETED_TTL: i64 = 7 * 24 * 3600;
+
+/// Default TTL for signal parameters (30 days in seconds)
+const DEFAULT_SIGNAL_TTL: i64 = 30 * 24 * 3600;
+
+/// Default stale lock timeout (5 minutes in milliseconds)
+const DEFAULT_STALE_LOCK_TIMEOUT_MS: i64 = 5 * 60 * 1000;
+
+/// Redis execution log using async connection pooling.
 ///
-/// This implementation uses Redis data structures optimized for distributed
-/// task queue processing with support for multiple workers across different
-/// machines.
-///
-/// # Example
-///
-/// ```no_run
-/// use ergon::storage::RedisExecutionLog;
-/// use std::sync::Arc;
-///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let redis_url = "redis://127.0.0.1:6379";
-/// let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
-/// # Ok(())
-/// # }
-/// ```
+/// This implementation uses deadpool-redis for async operations and
+/// follows Redis best practices for task scheduling, TTL, and lock management.
 pub struct RedisExecutionLog {
-    pool: r2d2::Pool<redis::Client>,
+    pool: Pool,
+    completed_ttl: i64,
+    signal_ttl: i64,
+    stale_lock_timeout_ms: i64,
 }
 
 impl RedisExecutionLog {
@@ -68,38 +73,51 @@ impl RedisExecutionLog {
     ///
     /// ```no_run
     /// # use ergon::storage::RedisExecutionLog;
-    /// let storage = RedisExecutionLog::new("redis://localhost:6379")?;
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let storage = RedisExecutionLog::new("redis://localhost:6379").await?;
+    /// # Ok(())
+    /// # }
     /// ```
-    pub fn new(redis_url: &str) -> Result<Self> {
-        let client =
-            redis::Client::open(redis_url).map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        let pool = r2d2::Pool::builder()
-            .max_size(16)
-            .build(client)
+    pub async fn new(redis_url: &str) -> Result<Self> {
+        let cfg = Config::from_url(redis_url);
+        let pool = cfg
+            .create_pool(Some(Runtime::Tokio1))
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            completed_ttl: DEFAULT_COMPLETED_TTL,
+            signal_ttl: DEFAULT_SIGNAL_TTL,
+            stale_lock_timeout_ms: DEFAULT_STALE_LOCK_TIMEOUT_MS,
+        })
     }
 
-    /// Creates a connection pool with custom configuration.
-    pub fn with_pool_config(redis_url: &str, max_connections: u32) -> Result<Self> {
-        let client =
-            redis::Client::open(redis_url).map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        let pool = r2d2::Pool::builder()
-            .max_size(max_connections)
-            .build(client)
+    /// Creates a connection pool with custom TTL configuration.
+    pub async fn with_ttl_config(
+        redis_url: &str,
+        completed_ttl_secs: i64,
+        signal_ttl_secs: i64,
+    ) -> Result<Self> {
+        let cfg = Config::from_url(redis_url);
+        let pool = cfg
+            .create_pool(Some(Runtime::Tokio1))
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            completed_ttl: completed_ttl_secs,
+            signal_ttl: signal_ttl_secs,
+            stale_lock_timeout_ms: DEFAULT_STALE_LOCK_TIMEOUT_MS,
+        })
     }
 
-    /// Gets a connection from the pool.
-    fn get_connection(&self) -> Result<r2d2::PooledConnection<redis::Client>> {
+    /// Gets an async connection from the pool.
+    async fn get_connection(
+        &self,
+    ) -> Result<deadpool_redis::Connection> {
         self.pool
             .get()
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))
     }
 
@@ -117,12 +135,191 @@ impl RedisExecutionLog {
     fn invocation_key(flow_id: Uuid, step: i32) -> String {
         format!("ergon:inv:{}:{}", flow_id, step)
     }
+
+    /// Builds the Redis key for signal parameters.
+    fn signal_key(flow_id: Uuid, step: i32) -> String {
+        format!("ergon:signal:{}:{}", flow_id, step)
+    }
+
+    /// Helper to parse invocation from Redis hash data.
+    fn parse_invocation(&self, data: HashMap<String, Vec<u8>>) -> Result<Invocation> {
+        // Helper to get string field
+        let get_str = |key: &str| -> Result<String> {
+            data.get(key)
+                .and_then(|v| String::from_utf8(v.clone()).ok())
+                .ok_or_else(|| StorageError::Connection(format!("Missing field: {}", key)))
+        };
+
+        // Helper to get i32 field
+        let get_i32 = |key: &str| -> Result<i32> {
+            get_str(key)?
+                .parse()
+                .map_err(|_| StorageError::Connection(format!("Invalid i32 for {}", key)))
+        };
+
+        // Helper to get i64 field
+        let get_i64 = |key: &str| -> Result<i64> {
+            get_str(key)?
+                .parse()
+                .map_err(|_| StorageError::Connection(format!("Invalid i64 for {}", key)))
+        };
+
+        let id = Uuid::parse_str(&get_str("id")?)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        let step = get_i32("step")?;
+        let timestamp_secs = get_i64("timestamp")?;
+        let timestamp = chrono::DateTime::from_timestamp(timestamp_secs, 0)
+            .unwrap_or_else(Utc::now);
+        let class_name = get_str("class_name")?;
+        let method_name = get_str("method_name")?;
+        let status_str = get_str("status")?;
+        let status = InvocationStatus::from_str(&status_str)
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        let attempts = get_i32("attempts")?;
+        let parameters = data.get("parameters").cloned().unwrap_or_default();
+        let params_hash = get_str("params_hash")?
+            .parse::<u64>()
+            .unwrap_or(0);
+        let return_value = data.get("return_value").cloned();
+        let delay_ms = get_i64("delay_ms").ok();
+
+        // Parse retry_policy
+        let retry_policy_json = get_str("retry_policy").ok();
+        let retry_policy = retry_policy_json.and_then(|json| {
+            if json.is_empty() {
+                None
+            } else {
+                serde_json::from_str(&json).ok()
+            }
+        });
+
+        // Parse is_retryable
+        let is_retryable_str = get_str("is_retryable").ok();
+        let is_retryable = is_retryable_str.and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                s.parse::<i32>().ok().map(|v| v != 0)
+            }
+        });
+
+        // Parse timer fields
+        let timer_fire_at_millis = get_i64("timer_fire_at").ok();
+        let timer_fire_at = timer_fire_at_millis.and_then(|ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+        });
+        let timer_name = get_str("timer_name").ok();
+
+        let mut invocation = Invocation::new(
+            id,
+            step,
+            timestamp,
+            class_name,
+            method_name,
+            status,
+            attempts,
+            parameters,
+            params_hash,
+            return_value,
+            delay_ms,
+            retry_policy,
+            is_retryable,
+        );
+
+        if let Some(fire_at) = timer_fire_at {
+            invocation.set_timer_fire_at(Some(fire_at));
+        }
+        if let Some(name) = timer_name {
+            invocation.set_timer_name(Some(name));
+        }
+
+        Ok(invocation)
+    }
+
+    /// Moves ready delayed tasks to the pending queue.
+    ///
+    /// This is called periodically by a background worker to check for
+    /// tasks in `ergon:queue:delayed` that are ready to execute.
+    pub async fn move_ready_delayed_tasks(&self) -> Result<u64> {
+        let mut conn = self.get_connection().await?;
+        let now = Utc::now().timestamp_millis();
+
+        // Get all tasks ready to execute (score <= now)
+        let ready_tasks: Vec<String> = conn
+            .zrangebyscore("ergon:queue:delayed", 0, now)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if ready_tasks.is_empty() {
+            return Ok(0);
+        }
+
+        // Atomically move tasks from delayed to pending
+        let count = ready_tasks.len() as u64;
+        for task_id in &ready_tasks {
+            let _: () = redis::pipe()
+                .atomic()
+                .zrem("ergon:queue:delayed", task_id)
+                .rpush("ergon:queue:pending", task_id)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+        }
+
+        debug!("Moved {} delayed tasks to pending queue", count);
+        Ok(count)
+    }
+
+    /// Recovers stale locks from crashed workers.
+    ///
+    /// Finds flows that have been running for too long and resets them to pending.
+    pub async fn recover_stale_locks(&self) -> Result<u64> {
+        let mut conn = self.get_connection().await?;
+        let now = Utc::now().timestamp_millis();
+        let stale_cutoff = now - self.stale_lock_timeout_ms;
+
+        // Find flows that started before the cutoff
+        let stale_tasks: Vec<String> = conn
+            .zrangebyscore("ergon:running", 0, stale_cutoff)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if stale_tasks.is_empty() {
+            return Ok(0);
+        }
+
+        let count = stale_tasks.len() as u64;
+        for task_id_str in &stale_tasks {
+            let task_id = match Uuid::parse_str(task_id_str) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            let flow_key = Self::flow_key(task_id);
+
+            // Reset flow to pending
+            let _: () = redis::pipe()
+                .atomic()
+                .hset(&flow_key, "status", "Pending")
+                .hdel(&flow_key, "locked_by")
+                .zrem("ergon:running", task_id_str)
+                .rpush("ergon:queue:pending", task_id_str)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            warn!("Recovered stale lock for flow: {}", task_id);
+        }
+
+        info!("Recovered {} stale locks", count);
+        Ok(count)
+    }
 }
 
 #[async_trait]
 impl ExecutionLog for RedisExecutionLog {
     async fn log_invocation_start(&self, params: InvocationStartParams<'_>) -> Result<()> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
 
         let InvocationStartParams {
             id,
@@ -136,7 +333,7 @@ impl ExecutionLog for RedisExecutionLog {
         } = params;
 
         let params_hash = hash_params(parameters);
-        let delay_ms = delay.map(|d| d.as_millis() as i64);
+        let delay_ms = delay.map(|d| d.as_millis() as i64).unwrap_or(0);
         let timestamp = Utc::now().timestamp();
 
         // Serialize retry_policy to JSON if present
@@ -153,15 +350,18 @@ impl ExecutionLog for RedisExecutionLog {
             .hset(&inv_key, "timestamp", timestamp)
             .hset(&inv_key, "class_name", class_name)
             .hset(&inv_key, "method_name", method_name)
-            .hset(&inv_key, "status", format!("{:?}", status))
+            .hset(&inv_key, "status", status.as_str())
             .hset(&inv_key, "attempts", 1)
             .hset(&inv_key, "parameters", parameters)
-            .hset(&inv_key, "params_hash", params_hash)
-            .hset(&inv_key, "delay_ms", delay_ms.unwrap_or(0))
+            .hset(&inv_key, "params_hash", params_hash.to_string())
+            .hset(&inv_key, "delay_ms", delay_ms)
             .hset(&inv_key, "retry_policy", retry_policy_json)
-            .hset(&inv_key, "is_retryable", "") // Empty string = None (not an error yet)
+            .hset(&inv_key, "is_retryable", "") // Empty = None
+            .hset(&inv_key, "timer_fire_at", 0)
+            .hset(&inv_key, "timer_name", "")
             .lpush(Self::invocations_key(id), &inv_key)
-            .query(&mut *conn)
+            .query_async(&mut *conn)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(())
@@ -173,12 +373,13 @@ impl ExecutionLog for RedisExecutionLog {
         step: i32,
         return_value: &[u8],
     ) -> Result<Invocation> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let inv_key = Self::invocation_key(id, step);
 
         // Check if invocation exists
         let exists: bool = conn
             .exists(&inv_key)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         if !exists {
@@ -190,23 +391,26 @@ impl ExecutionLog for RedisExecutionLog {
             .atomic()
             .hset(&inv_key, "status", "Complete")
             .hset(&inv_key, "return_value", return_value)
-            .query(&mut *conn)
+            .query_async(&mut *conn)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         // Fetch and reconstruct invocation
         let data: HashMap<String, Vec<u8>> = conn
             .hgetall(&inv_key)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         self.parse_invocation(data)
     }
 
     async fn get_invocation(&self, id: Uuid, step: i32) -> Result<Option<Invocation>> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let inv_key = Self::invocation_key(id, step);
 
         let exists: bool = conn
             .exists(&inv_key)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         if !exists {
@@ -215,6 +419,7 @@ impl ExecutionLog for RedisExecutionLog {
 
         let data: HashMap<String, Vec<u8>> = conn
             .hgetall(&inv_key)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(Some(self.parse_invocation(data)?))
@@ -226,18 +431,20 @@ impl ExecutionLog for RedisExecutionLog {
     }
 
     async fn get_invocations_for_flow(&self, id: Uuid) -> Result<Vec<Invocation>> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let inv_list_key = Self::invocations_key(id);
 
         // Get all invocation keys for this flow
         let inv_keys: Vec<String> = conn
             .lrange(&inv_list_key, 0, -1)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         let mut invocations = Vec::new();
         for key in inv_keys {
             let data: HashMap<String, Vec<u8>> = conn
                 .hgetall(&key)
+                .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
             invocations.push(self.parse_invocation(data)?);
         }
@@ -247,22 +454,48 @@ impl ExecutionLog for RedisExecutionLog {
     }
 
     async fn get_incomplete_flows(&self) -> Result<Vec<Invocation>> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
 
-        // Scan for all invocation keys and filter incomplete
-        let keys: Vec<String> = conn
-            .keys("ergon:inv:*")
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        // Scan for all flow invocation lists
+        let mut cursor = 0u64;
+        let mut all_flows = Vec::new();
 
-        let mut incomplete = Vec::new();
-        for key in keys {
-            let data: HashMap<String, Vec<u8>> = conn
-                .hgetall(&key)
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .cursor_arg(cursor)
+                .arg("MATCH")
+                .arg("ergon:invocations:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut *conn)
+                .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-            if let Ok(inv) = self.parse_invocation(data) {
-                if inv.status() != InvocationStatus::Complete {
-                    incomplete.push(inv);
+            all_flows.extend(keys);
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        // For each flow, check if incomplete
+        let mut incomplete = Vec::new();
+        for inv_list_key in all_flows {
+            // Get first invocation (step 0) from the list
+            let inv_keys: Vec<String> = conn
+                .lrange(&inv_list_key, 0, 0)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            if let Some(first_key) = inv_keys.first() {
+                let data: HashMap<String, Vec<u8>> = conn
+                    .hgetall(first_key)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                let invocation = self.parse_invocation(data)?;
+                if invocation.status() != InvocationStatus::Complete {
+                    incomplete.push(invocation);
                 }
             }
         }
@@ -271,62 +504,58 @@ impl ExecutionLog for RedisExecutionLog {
     }
 
     async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
-        let mut conn = self.get_connection()?;
-        let inv_list_key = Self::invocations_key(flow_id);
-
-        // Get all invocation keys for this flow
-        let inv_keys: Vec<String> = conn
-            .lrange(&inv_list_key, 0, -1)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        // Check if any invocation has is_retryable = "0"
-        for key in inv_keys {
-            let is_retryable: String = conn
-                .hget(&key, "is_retryable")
-                .unwrap_or_else(|_| String::new());
-
-            if is_retryable == "0" {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+        let invocations = self.get_invocations_for_flow(flow_id).await?;
+        Ok(invocations
+            .iter()
+            .any(|inv| inv.is_retryable() == Some(false)))
     }
 
     async fn update_is_retryable(&self, id: Uuid, step: i32, is_retryable: bool) -> Result<()> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let inv_key = Self::invocation_key(id, step);
 
-        // Check if invocation exists
-        let exists: bool = conn
-            .exists(&inv_key)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        if !exists {
-            return Err(StorageError::InvocationNotFound { id, step });
-        }
-
-        // Update is_retryable field
         let value = if is_retryable { "1" } else { "0" };
         let _: () = conn
             .hset(&inv_key, "is_retryable", value)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(())
     }
 
     async fn reset(&self) -> Result<()> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
 
-        // Delete all ergon keys
-        let keys: Vec<String> = conn
-            .keys("ergon:*")
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        // Use SCAN to find all ergon keys, then delete in batches
+        let mut cursor = 0u64;
+        let mut all_keys = Vec::new();
 
-        if !keys.is_empty() {
-            let _: () = conn
-                .del(keys)
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .cursor_arg(cursor)
+                .arg("MATCH")
+                .arg("ergon:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut *conn)
+                .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            all_keys.extend(keys);
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        // Delete all found keys in batches
+        if !all_keys.is_empty() {
+            for chunk in all_keys.chunks(100) {
+                let _: () = conn
+                    .del(chunk)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+            }
         }
 
         Ok(())
@@ -340,56 +569,71 @@ impl ExecutionLog for RedisExecutionLog {
     // ===== Distributed Queue Operations =====
 
     async fn enqueue_flow(&self, flow: super::ScheduledFlow) -> Result<Uuid> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let task_id = flow.task_id;
         let flow_key = Self::flow_key(task_id);
 
-        // Atomically store flow metadata and enqueue
-        let _: () = redis::pipe()
-            .atomic()
-            // Store flow metadata as HASH
-            .hset(&flow_key, "task_id", task_id.to_string())
-            .hset(&flow_key, "flow_id", flow.flow_id.to_string())
-            .hset(&flow_key, "flow_type", &flow.flow_type)
-            .hset(&flow_key, "status", "Pending")
-            .hset(&flow_key, "created_at", flow.created_at.timestamp())
-            .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
-            .hset(&flow_key, "flow_data", flow.flow_data.as_slice())
-            // Add to pending queue (FIFO)
-            .rpush("ergon:queue:pending", task_id.to_string())
-            .query(&mut *conn)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        // Check if flow should be delayed
+        if let Some(scheduled_for) = flow.scheduled_for {
+            let scheduled_ts = scheduled_for.timestamp_millis();
+
+            // Store flow metadata and add to delayed queue
+            let _: () = redis::pipe()
+                .atomic()
+                .hset(&flow_key, "task_id", task_id.to_string())
+                .hset(&flow_key, "flow_id", flow.flow_id.to_string())
+                .hset(&flow_key, "flow_type", &flow.flow_type)
+                .hset(&flow_key, "status", "Pending")
+                .hset(&flow_key, "created_at", flow.created_at.timestamp())
+                .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
+                .hset(&flow_key, "scheduled_for", scheduled_ts)
+                .hset(&flow_key, "flow_data", flow.flow_data.as_slice())
+                // Add to delayed queue (sorted by scheduled_for timestamp)
+                .zadd("ergon:queue:delayed", task_id.to_string(), scheduled_ts)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+        } else {
+            // Immediate execution - add to pending queue
+            let _: () = redis::pipe()
+                .atomic()
+                .hset(&flow_key, "task_id", task_id.to_string())
+                .hset(&flow_key, "flow_id", flow.flow_id.to_string())
+                .hset(&flow_key, "flow_type", &flow.flow_type)
+                .hset(&flow_key, "status", "Pending")
+                .hset(&flow_key, "created_at", flow.created_at.timestamp())
+                .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
+                .hset(&flow_key, "flow_data", flow.flow_data.as_slice())
+                // Add to pending queue (FIFO)
+                .rpush("ergon:queue:pending", task_id.to_string())
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+        }
 
         Ok(task_id)
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
 
         // Blocking pop with 1 second timeout (efficient!)
-        let result: Option<(String, String)> = conn
+        let result: Option<Vec<String>> = conn
             .blpop("ergon:queue:pending", 1.0)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        if let Some((_queue_name, task_id_str)) = result {
-            let task_id = Uuid::parse_str(&task_id_str)
+        if let Some(values) = result {
+            if values.len() < 2 {
+                return Ok(None);
+            }
+
+            let task_id_str = &values[1];
+            let task_id = Uuid::parse_str(task_id_str)
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
             let flow_key = Self::flow_key(task_id);
             let now = Utc::now().timestamp();
-
-            // Check if flow is ready to execute (scheduled_for has passed)
-            let scheduled_for: Option<i64> = conn.hget(&flow_key, "scheduled_for").ok();
-
-            if let Some(scheduled_ts) = scheduled_for {
-                if scheduled_ts > now {
-                    // Flow not ready yet, push back to queue
-                    let _: () = conn
-                        .rpush("ergon:queue:pending", task_id.to_string())
-                        .map_err(|e| StorageError::Connection(e.to_string()))?;
-                    return Ok(None);
-                }
-            }
 
             // Atomically update status and lock
             let _: () = redis::pipe()
@@ -397,49 +641,83 @@ impl ExecutionLog for RedisExecutionLog {
                 .hset(&flow_key, "status", "Running")
                 .hset(&flow_key, "locked_by", worker_id)
                 .hset(&flow_key, "updated_at", now)
-                .zadd("ergon:running", &task_id_str, now)
-                .query(&mut *conn)
+                // Add to running set with current timestamp for stale lock detection
+                .zadd("ergon:running", task_id_str, Utc::now().timestamp_millis())
+                .query_async(&mut *conn)
+                .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
             // Fetch flow metadata
             let data: HashMap<String, Vec<u8>> = conn
                 .hgetall(&flow_key)
+                .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-            let flow = self.parse_scheduled_flow(data)?;
-            return Ok(Some(flow));
-        }
+            // Parse flow
+            let flow_id = Uuid::parse_str(
+                &String::from_utf8_lossy(data.get("flow_id").ok_or_else(|| {
+                    StorageError::Connection("Missing flow_id".to_string())
+                })?),
+            )
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(None)
+            let flow_type =
+                String::from_utf8_lossy(data.get("flow_type").ok_or_else(|| {
+                    StorageError::Connection("Missing flow_type".to_string())
+                })?)
+                .to_string();
+
+            let flow_data = data
+                .get("flow_data")
+                .ok_or_else(|| StorageError::Connection("Missing flow_data".to_string()))?
+                .clone();
+
+            let created_at_ts: i64 = String::from_utf8_lossy(
+                data.get("created_at").ok_or_else(|| {
+                    StorageError::Connection("Missing created_at".to_string())
+                })?,
+            )
+            .parse()
+            .unwrap_or(0);
+            let created_at =
+                chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
+
+            let updated_at =
+                chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
+
+            Ok(Some(super::ScheduledFlow {
+                task_id,
+                flow_id,
+                flow_type,
+                flow_data,
+                status: super::TaskStatus::Running,
+                locked_by: Some(worker_id.to_string()),
+                created_at,
+                updated_at,
+                retry_count: 0,
+                error_message: None,
+                scheduled_for: None,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let flow_key = Self::flow_key(task_id);
+        let now = Utc::now().timestamp();
 
-        // Check if flow exists
-        let exists: bool = conn
-            .exists(&flow_key)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        if !exists {
-            return Err(StorageError::ScheduledFlowNotFound(task_id));
-        }
-
-        let status_str = match status {
-            super::TaskStatus::Pending => "Pending",
-            super::TaskStatus::Running => "Running",
-            super::TaskStatus::Complete => "Complete",
-            super::TaskStatus::Failed => "Failed",
-        };
-
-        // Atomically update status and remove from running index
+        // Update flow status and remove from running set
         let _: () = redis::pipe()
             .atomic()
-            .hset(&flow_key, "status", status_str)
-            .hset(&flow_key, "updated_at", Utc::now().timestamp())
+            .hset(&flow_key, "status", status.as_str())
+            .hset(&flow_key, "updated_at", now)
             .zrem("ergon:running", task_id.to_string())
-            .query(&mut *conn)
+            // Set TTL on completed flow for automatic cleanup
+            .expire(&flow_key, self.completed_ttl)
+            .query_async(&mut *conn)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(())
@@ -449,49 +727,39 @@ impl ExecutionLog for RedisExecutionLog {
         &self,
         task_id: Uuid,
         error_message: String,
-        delay: std::time::Duration,
+        delay: Duration,
     ) -> Result<()> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let flow_key = Self::flow_key(task_id);
-
-        // Check if flow exists
-        let exists: bool = conn
-            .exists(&flow_key)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        if !exists {
-            return Err(StorageError::ScheduledFlowNotFound(task_id));
-        }
-
-        // Get current retry_count
-        let retry_count: u32 = conn.hget(&flow_key, "retry_count").unwrap_or(0);
-
-        // Calculate scheduled_for timestamp (current time + delay)
         let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
+        let scheduled_ts = scheduled_for.timestamp_millis();
 
-        // Atomically update flow for retry
+        // Update flow and add to delayed queue
         let _: () = redis::pipe()
             .atomic()
-            .hset(&flow_key, "retry_count", retry_count + 1)
+            .hincr(&flow_key, "retry_count", 1)
             .hset(&flow_key, "error_message", error_message)
             .hset(&flow_key, "status", "Pending")
+            .hset(&flow_key, "scheduled_for", scheduled_ts)
             .hdel(&flow_key, "locked_by")
-            .hset(&flow_key, "scheduled_for", scheduled_for.timestamp())
             .hset(&flow_key, "updated_at", Utc::now().timestamp())
             .zrem("ergon:running", task_id.to_string())
-            .rpush("ergon:queue:pending", task_id.to_string())
-            .query(&mut *conn)
+            // Add to delayed queue
+            .zadd("ergon:queue:delayed", task_id.to_string(), scheduled_ts)
+            .query_async(&mut *conn)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(())
     }
 
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<super::ScheduledFlow>> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let flow_key = Self::flow_key(task_id);
 
         let exists: bool = conn
             .exists(&flow_key)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         if !exists {
@@ -500,56 +768,108 @@ impl ExecutionLog for RedisExecutionLog {
 
         let data: HashMap<String, Vec<u8>> = conn
             .hgetall(&flow_key)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(Some(self.parse_scheduled_flow(data)?))
+        // Parse flow
+        let flow_id = Uuid::parse_str(
+            &String::from_utf8_lossy(data.get("flow_id").ok_or_else(|| {
+                StorageError::Connection("Missing flow_id".to_string())
+            })?),
+        )
+        .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        let flow_type =
+            String::from_utf8_lossy(data.get("flow_type").ok_or_else(|| {
+                StorageError::Connection("Missing flow_type".to_string())
+            })?)
+            .to_string();
+
+        let flow_data = data
+            .get("flow_data")
+            .ok_or_else(|| StorageError::Connection("Missing flow_data".to_string()))?
+            .clone();
+
+        let status_str =
+            String::from_utf8_lossy(data.get("status").ok_or_else(|| {
+                StorageError::Connection("Missing status".to_string())
+            })?);
+        let status: super::TaskStatus = status_str
+            .parse()
+            .map_err(|e: String| StorageError::Connection(e))?;
+
+        let locked_by = data
+            .get("locked_by")
+            .map(|v| String::from_utf8_lossy(v).to_string());
+
+        let created_at_ts: i64 = String::from_utf8_lossy(
+            data.get("created_at").ok_or_else(|| {
+                StorageError::Connection("Missing created_at".to_string())
+            })?,
+        )
+        .parse()
+        .unwrap_or(0);
+        let created_at =
+            chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
+
+        let updated_at_ts: i64 = String::from_utf8_lossy(
+            data.get("updated_at").ok_or_else(|| {
+                StorageError::Connection("Missing updated_at".to_string())
+            })?,
+        )
+        .parse()
+        .unwrap_or(0);
+        let updated_at =
+            chrono::DateTime::from_timestamp(updated_at_ts, 0).unwrap_or_else(Utc::now);
+
+        let retry_count: u32 =
+            String::from_utf8_lossy(data.get("retry_count").unwrap_or(&vec![]))
+                .parse()
+                .unwrap_or(0);
+
+        let error_message = data
+            .get("error_message")
+            .map(|v| String::from_utf8_lossy(v).to_string());
+
+        let scheduled_for_ms: Option<i64> =
+            String::from_utf8_lossy(data.get("scheduled_for").unwrap_or(&vec![]))
+                .parse()
+                .ok();
+        let scheduled_for = scheduled_for_ms.and_then(chrono::DateTime::from_timestamp_millis);
+
+        Ok(Some(super::ScheduledFlow {
+            task_id,
+            flow_id,
+            flow_type,
+            flow_data,
+            status,
+            locked_by,
+            created_at,
+            updated_at,
+            retry_count,
+            error_message,
+            scheduled_for,
+        }))
     }
 
-    async fn log_timer(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        fire_at: chrono::DateTime<Utc>,
-        timer_name: Option<&str>,
-    ) -> Result<()> {
-        let mut conn = self.get_connection()?;
-        let inv_key = Self::invocation_key(flow_id, step);
-        let fire_at_millis = fire_at.timestamp_millis();
-
-        // Update invocation to WAITING_FOR_TIMER status and add to sorted set
-        let _: () = redis::pipe()
-            .atomic()
-            .hset(&inv_key, "status", "WaitingForTimer")
-            .hset(&inv_key, "timer_fire_at", fire_at_millis)
-            .hset(&inv_key, "timer_name", timer_name.unwrap_or(""))
-            // Add to sorted set for efficient expiry queries (score = fire_at_millis)
-            .zadd(
-                "ergon:timers:pending",
-                format!("{}:{}", flow_id, step),
-                fire_at_millis,
-            )
-            .query(&mut *conn)
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        Ok(())
-    }
+    // ===== Timer Operations =====
 
     async fn get_expired_timers(
         &self,
-        now: chrono::DateTime<Utc>,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<super::TimerInfo>> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let now_millis = now.timestamp_millis();
 
-        // Query sorted set for timers with score <= now_millis
-        let expired: Vec<String> = conn
-            .zrangebyscore_limit("ergon:timers:pending", 0, now_millis, 0, 100)
+        // Get expired timers from sorted set
+        let timer_keys: Vec<String> = conn
+            .zrangebyscore("ergon:timers:pending", 0, now_millis)
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         let mut timers = Vec::new();
-
-        for key in expired {
-            // key format: "flow_id:step"
+        for key in timer_keys {
+            // Parse key format: "flow_id:step"
             let parts: Vec<&str> = key.split(':').collect();
             if parts.len() != 2 {
                 continue;
@@ -560,231 +880,207 @@ impl ExecutionLog for RedisExecutionLog {
                 Err(_) => continue,
             };
 
-            let step: i32 = match parts[1].parse() {
+            let step = match parts[1].parse::<i32>() {
                 Ok(s) => s,
                 Err(_) => continue,
             };
 
+            // Get timer details from invocation
             let inv_key = Self::invocation_key(flow_id, step);
-
-            // Get timer details from invocation hash
-            let fire_at_millis: Option<i64> = conn
-                .hget(&inv_key, "timer_fire_at")
+            let data: HashMap<String, Vec<u8>> = conn
+                .hgetall(&inv_key)
+                .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-            let timer_name: Option<String> = conn
-                .hget(&inv_key, "timer_name")
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
+            let default_vec = vec![b'0'];
+            let fire_at_bytes = data.get("timer_fire_at").unwrap_or(&default_vec);
+            let fire_at_str = String::from_utf8_lossy(fire_at_bytes);
+            let fire_at_ms: i64 = fire_at_str.parse().unwrap_or(0);
+            let fire_at = chrono::DateTime::from_timestamp_millis(fire_at_ms)
+                .unwrap_or_else(Utc::now);
 
-            if let Some(millis) = fire_at_millis {
-                if let Some(fire_at) = chrono::DateTime::from_timestamp_millis(millis) {
-                    timers.push(super::TimerInfo {
-                        flow_id,
-                        step,
-                        fire_at,
-                        timer_name: timer_name.filter(|s| !s.is_empty()),
-                    });
-                }
-            }
+            let timer_name = data
+                .get("timer_name")
+                .map(|v| String::from_utf8_lossy(v).to_string())
+                .filter(|s| !s.is_empty());
+
+            timers.push(super::TimerInfo {
+                flow_id,
+                step,
+                fire_at,
+                timer_name,
+            });
         }
 
         Ok(timers)
     }
 
     async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
-        let mut conn = self.get_connection()?;
+        let mut conn = self.get_connection().await?;
         let inv_key = Self::invocation_key(flow_id, step);
+        let timer_key = format!("{}:{}", flow_id, step);
 
-        // Lua script for atomic claim: check status and update
-        let script = r#"
-            local inv_key = KEYS[1]
-            local timer_key = KEYS[2]
-            local member = ARGV[1]
-
-            local status = redis.call('HGET', inv_key, 'status')
-
-            if status == 'WaitingForTimer' then
-                redis.call('HSET', inv_key, 'status', 'Complete')
-                redis.call('HSET', inv_key, 'return_value', ARGV[2])
-                redis.call('ZREM', timer_key, member)
-                return 1
-            else
-                return 0
-            end
-        "#;
-
-        // Unit value for timer completion
-        let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
-            .map_err(|_| StorageError::Serialization)?;
-
-        let claimed: i32 = redis::Script::new(script)
-            .key(&inv_key)
-            .key("ergon:timers:pending")
-            .arg(format!("{}:{}", flow_id, step))
-            .arg(unit_value)
-            .invoke(&mut *conn)
+        // Get current status
+        let status: Option<String> = conn
+            .hget(&inv_key, "status")
+            .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(claimed == 1)
-    }
-}
+        if status.as_deref() != Some("WaitingForTimer") {
+            return Ok(false); // Already claimed or not waiting
+        }
 
-// Helper methods for parsing
-impl RedisExecutionLog {
-    /// Helper function to get a UTF-8 string from binary data
-    fn get_string(data: &HashMap<String, Vec<u8>>, key: &str) -> Result<String> {
-        let bytes = data.get(key).ok_or(StorageError::Serialization)?;
-        String::from_utf8(bytes.clone()).map_err(|_| StorageError::Serialization)
-    }
+        // Atomically update status and remove from timers set
+        let unit_value = bincode::serde::encode_to_vec((), bincode::config::standard())
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-    /// Helper function to get binary data
-    fn get_bytes(data: &HashMap<String, Vec<u8>>, key: &str) -> Result<Vec<u8>> {
-        data.get(key).cloned().ok_or(StorageError::Serialization)
-    }
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&inv_key, "status", "Complete")
+            .hset(&inv_key, "return_value", unit_value)
+            .zrem("ergon:timers:pending", &timer_key)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-    fn parse_invocation(&self, data: HashMap<String, Vec<u8>>) -> Result<Invocation> {
-        let id = Uuid::parse_str(&Self::get_string(&data, "id")?)
-            .map_err(|_| StorageError::Serialization)?;
-
-        let step: i32 = Self::get_string(&data, "step")?
-            .parse()
-            .map_err(|_| StorageError::Serialization)?;
-
-        let timestamp_secs: i64 = Self::get_string(&data, "timestamp")?
-            .parse()
-            .map_err(|_| StorageError::Serialization)?;
-
-        let timestamp = chrono::DateTime::from_timestamp(timestamp_secs, 0)
-            .ok_or(StorageError::Serialization)?;
-
-        let class_name = Self::get_string(&data, "class_name")?;
-        let method_name = Self::get_string(&data, "method_name")?;
-
-        let status_str = Self::get_string(&data, "status")?;
-        let status = match status_str.as_str() {
-            "Pending" => InvocationStatus::Pending,
-            "WaitingForSignal" => InvocationStatus::WaitingForSignal,
-            "Complete" => InvocationStatus::Complete,
-            _ => return Err(StorageError::Serialization),
-        };
-
-        let attempts: i32 = Self::get_string(&data, "attempts")?
-            .parse()
-            .map_err(|_| StorageError::Serialization)?;
-
-        // Parameters are stored as binary
-        let parameters = Self::get_bytes(&data, "parameters")?;
-
-        let params_hash: u64 = Self::get_string(&data, "params_hash")?
-            .parse()
-            .map_err(|_| StorageError::Serialization)?;
-
-        // Return value is optional and binary
-        let return_value = data.get("return_value").cloned();
-
-        let delay_ms: i64 = Self::get_string(&data, "delay_ms")?
-            .parse()
-            .map_err(|_| StorageError::Serialization)?;
-
-        let delay_ms = if delay_ms > 0 { Some(delay_ms) } else { None };
-
-        // Parse retry_policy from JSON if present
-        let retry_policy = Self::get_string(&data, "retry_policy")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|json| serde_json::from_str(&json).ok());
-
-        // Parse is_retryable (empty string = None, "0" = false, "1" = true)
-        let is_retryable = Self::get_string(&data, "is_retryable")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| s == "1");
-
-        Ok(Invocation::new(
-            id,
-            step,
-            timestamp,
-            class_name,
-            method_name,
-            status,
-            attempts,
-            parameters,
-            params_hash,
-            return_value,
-            delay_ms,
-            retry_policy,
-            is_retryable,
-        ))
+        Ok(true)
     }
 
-    fn parse_scheduled_flow(&self, data: HashMap<String, Vec<u8>>) -> Result<super::ScheduledFlow> {
-        let task_id = Uuid::parse_str(&Self::get_string(&data, "task_id")?)
-            .map_err(|_| StorageError::Serialization)?;
+    async fn log_timer(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        fire_at: chrono::DateTime<chrono::Utc>,
+        timer_name: Option<&str>,
+    ) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let inv_key = Self::invocation_key(flow_id, step);
+        let timer_key = format!("{}:{}", flow_id, step);
+        let fire_at_ms = fire_at.timestamp_millis();
 
-        let flow_id = Uuid::parse_str(&Self::get_string(&data, "flow_id")?)
-            .map_err(|_| StorageError::Serialization)?;
+        // Update invocation and add to timers sorted set
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&inv_key, "status", "WaitingForTimer")
+            .hset(&inv_key, "timer_fire_at", fire_at_ms)
+            .hset(&inv_key, "timer_name", timer_name.unwrap_or(""))
+            // Add to timers sorted set (score = fire_at timestamp)
+            .zadd("ergon:timers:pending", &timer_key, fire_at_ms)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        let flow_type = Self::get_string(&data, "flow_type")?;
+        Ok(())
+    }
 
-        let status_str = Self::get_string(&data, "status")?;
-        let status = match status_str.as_str() {
-            "Pending" => super::TaskStatus::Pending,
-            "Running" => super::TaskStatus::Running,
-            "Complete" => super::TaskStatus::Complete,
-            "Failed" => super::TaskStatus::Failed,
-            _ => return Err(StorageError::Serialization),
-        };
+    // ===== Signal Operations =====
 
-        let created_at_secs: i64 = Self::get_string(&data, "created_at")?
-            .parse()
-            .map_err(|_| StorageError::Serialization)?;
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        params: &[u8],
+    ) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let signal_key = Self::signal_key(flow_id, step);
 
-        let created_at = chrono::DateTime::from_timestamp(created_at_secs, 0)
-            .ok_or(StorageError::Serialization)?;
+        // Store signal params with TTL
+        let _: () = redis::pipe()
+            .atomic()
+            .set(&signal_key, params)
+            .expire(&signal_key, self.signal_ttl)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        let updated_at_secs: i64 = Self::get_string(&data, "updated_at")?
-            .parse()
-            .map_err(|_| StorageError::Serialization)?;
+        debug!("Stored signal params: flow_id={}, step={}", flow_id, step);
+        Ok(())
+    }
 
-        let updated_at = chrono::DateTime::from_timestamp(updated_at_secs, 0)
-            .ok_or(StorageError::Serialization)?;
+    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
+        let mut conn = self.get_connection().await?;
+        let signal_key = Self::signal_key(flow_id, step);
 
-        let locked_by = data
-            .get("locked_by")
-            .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+        let params: Option<Vec<u8>> = conn
+            .get(&signal_key)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        // flow_data is stored as binary
-        let flow_data = Self::get_bytes(&data, "flow_data")?;
+        Ok(params)
+    }
 
-        // Parse retry fields (optional, default to 0/None if not present)
-        let retry_count: u32 = data
-            .get("retry_count")
-            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let signal_key = Self::signal_key(flow_id, step);
 
-        let error_message = data
-            .get("error_message")
-            .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+        let _: () = conn
+            .del(&signal_key)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        let scheduled_for = data
-            .get("scheduled_for")
-            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
-            .and_then(|s| s.parse::<i64>().ok())
-            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
+        debug!(
+            "Removed signal params: flow_id={}, step={}",
+            flow_id, step
+        );
+        Ok(())
+    }
 
-        Ok(super::ScheduledFlow {
-            task_id,
-            flow_id,
-            flow_type,
-            status,
-            created_at,
-            updated_at,
-            locked_by,
-            flow_data,
-            retry_count,
-            error_message,
-            scheduled_for,
-        })
+    // ===== Cleanup Operations =====
+
+    async fn cleanup_completed(&self, older_than: Duration) -> Result<u64> {
+        let mut conn = self.get_connection().await?;
+        let cutoff = Utc::now() - chrono::Duration::from_std(older_than).unwrap();
+        let cutoff_ts = cutoff.timestamp();
+
+        // Scan for all flow keys
+        let mut cursor = 0u64;
+        let mut deleted = 0u64;
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .cursor_arg(cursor)
+                .arg("MATCH")
+                .arg("ergon:flow:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            for flow_key in keys {
+                // Check if flow is completed and old
+                let status: Option<String> = conn
+                    .hget(&flow_key, "status")
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                let updated_at: Option<i64> = conn
+                    .hget(&flow_key, "updated_at")
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                if let (Some(s), Some(ts)) = (status, updated_at) {
+                    if (s == "Complete" || s == "Failed") && ts < cutoff_ts {
+                        // Delete the flow key
+                        let _: () = conn
+                            .del(&flow_key)
+                            .await
+                            .map_err(|e| StorageError::Connection(e.to_string()))?;
+                        deleted += 1;
+                    }
+                }
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        info!(
+            "Cleaned up {} completed flows older than {:?}",
+            deleted, older_than
+        );
+        Ok(deleted)
     }
 }

@@ -151,7 +151,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
     let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
 
     println!("1. Creating scheduler...");
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     println!("2. Scheduling jobs for distributed execution...\n");
 
@@ -209,7 +209,7 @@ async fn run_worker(redis_url: &str, worker_id: &str) -> Result<(), Box<dyn std:
 
     // Create worker with faster polling for demo
     let worker =
-        FlowWorker::new(storage.clone(), worker_id).with_poll_interval(Duration::from_millis(100));
+        Worker::new(storage.clone(), worker_id).with_poll_interval(Duration::from_millis(100));
 
     // Register flow types this worker can handle
     worker

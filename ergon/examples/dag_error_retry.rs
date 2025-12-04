@@ -255,9 +255,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for run in 1..=5 {
         println!("Run {}", run);
-        let instance = Ergon::new_flow(Arc::clone(&processor), flow_id, Arc::clone(&storage1));
+        let instance = Executor::new(flow_id, Arc::clone(&processor), Arc::clone(&storage1));
         let result = instance
-            .executor()
             .execute(|f| Box::pin(f.clone().process_order()))
             .await;
         println!("Result: {:?}\n", result);
@@ -301,9 +300,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for run in 1..=3 {
         println!("Run {}", run);
-        let instance = Ergon::new_flow(Arc::clone(&processor_oos), flow_id2, Arc::clone(&storage2));
+        let instance = Executor::new(flow_id2, Arc::clone(&processor_oos), Arc::clone(&storage2));
         let result = instance
-            .executor()
             .execute(|f| Box::pin(f.clone().process_order()))
             .await;
         println!("Result: {:?}\n", result);
@@ -347,9 +345,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for run in 1..=5 {
         println!("Run {}", run);
-        let instance = Ergon::new_flow(Arc::clone(&processor_nsf), flow_id3, Arc::clone(&storage3));
+        let instance = Executor::new(flow_id3, Arc::clone(&processor_nsf), Arc::clone(&storage3));
         let result = instance
-            .executor()
             .execute(|f| Box::pin(f.clone().process_order()))
             .await;
         println!("Result: {:?}\n", result);

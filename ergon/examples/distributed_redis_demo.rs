@@ -200,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("PHASE 1: Scheduling Jobs");
     println!("─────────────────────────────────────────────────────────");
 
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // Schedule data pipeline jobs
     for i in 1..=5 {
@@ -250,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   Starting {}", worker_id);
 
         let handle = tokio::spawn(async move {
-            let worker = FlowWorker::new(storage_clone.clone(), &worker_id)
+            let worker = Worker::new(storage_clone.clone(), &worker_id)
                 .with_poll_interval(Duration::from_millis(50));
 
             // Register flow types

@@ -139,14 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for all flows to complete
     for handle in handles {
         match handle.await? {
-            (i, Ok(Ok(result)), elapsed) => {
+            (i, Ok(result), elapsed) => {
                 println!("[OK] Flow {} completed: {} (took {:?})", i, result, elapsed);
             }
-            (i, Ok(Err(e)), elapsed) => {
-                println!("[ERR] Flow {} failed: {} (took {:?})", i, e, elapsed);
-            }
             (i, Err(e), elapsed) => {
-                println!("[ERR] Flow {} error: {} (took {:?})", i, e, elapsed);
+                println!("[ERR] Flow {} failed: {} (took {:?})", i, e, elapsed);
             }
         }
     }

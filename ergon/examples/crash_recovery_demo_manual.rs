@@ -201,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("========================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // Schedule an order
     let order = OrderProcessor {
@@ -224,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_clone = storage.clone();
     let worker1 = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_clone.clone(), "worker-1")
+        let worker = Worker::new(storage_clone.clone(), "worker-1")
             .with_poll_interval(Duration::from_millis(50));
 
         worker
@@ -296,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_clone = storage.clone();
     let worker2 = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_clone.clone(), "worker-2")
+        let worker = Worker::new(storage_clone.clone(), "worker-2")
             .with_poll_interval(Duration::from_millis(50));
 
         worker

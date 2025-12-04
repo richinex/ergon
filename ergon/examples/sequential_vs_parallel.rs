@@ -156,9 +156,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id1 = Uuid::new_v4();
 
     let start1 = Instant::now();
-    let instance1 = Ergon::new_flow(Arc::clone(&workflow1), flow_id1, Arc::clone(&storage1));
+    let instance1 = Executor::new(flow_id1, Arc::clone(&workflow1), Arc::clone(&storage1));
     let result1 = instance1
-        .executor()
         .execute(|f| Box::pin(f.clone().run_sequential()))
         .await;
     let elapsed1 = start1.elapsed();
@@ -181,9 +180,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id2 = Uuid::new_v4();
 
     let start2 = Instant::now();
-    let instance2 = Ergon::new_flow(Arc::clone(&workflow2), flow_id2, Arc::clone(&storage2));
+    let instance2 = Executor::new(flow_id2, Arc::clone(&workflow2), Arc::clone(&storage2));
     let result2 = instance2
-        .executor()
         .execute(|f| Box::pin(f.clone().run_parallel()))
         .await;
     let elapsed2 = start2.elapsed();
@@ -205,11 +203,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workflow3 = Arc::new(Workflow::new("inputs".to_string()));
     let flow_id3 = Uuid::new_v4();
 
-    let instance3 = Ergon::new_flow(Arc::clone(&workflow3), flow_id3, Arc::clone(&storage3));
+    let instance3 = Executor::new(flow_id3, Arc::clone(&workflow3), Arc::clone(&storage3));
     let result3 = instance3
-        .executor()
         .execute(|f| Box::pin(f.clone().run_with_inputs()))
-        .await??;
+        .await?;
 
     println!("\nResult: {:?}", result3);
 

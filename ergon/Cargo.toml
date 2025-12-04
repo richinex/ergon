@@ -12,8 +12,8 @@ categories = ["asynchronous", "workflow"]
 
 [features]
 default = ["sqlite"]
-sqlite = ["dep:rusqlite", "dep:r2d2", "dep:r2d2_sqlite"]
-redis = ["dep:redis"]
+sqlite = ["dep:sqlx"]
+redis = ["dep:redis", "dep:deadpool-redis"]
 
 [dependencies]
 # Core dependencies
@@ -27,10 +27,9 @@ seahash = { workspace = true }
 
 # Storage dependencies
 async-trait = { workspace = true }
-r2d2 = { workspace = true, optional = true }
-r2d2_sqlite = { workspace = true, optional = true }
-rusqlite = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
+deadpool-redis = { workspace = true, optional = true }
 
 # Graph dependencies
 petgraph = { workspace = true }

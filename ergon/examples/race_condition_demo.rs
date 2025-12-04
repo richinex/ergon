@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==============================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     let tasks = vec![
         ("TASK-001", "Transfer $10,000 to Account B"),
@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let handle = tokio::spawn(async move {
             println!("[START] {} racing for work", worker_name);
 
-            let worker = FlowWorker::new(storage_clone.clone(), &worker_name)
+            let worker = Worker::new(storage_clone.clone(), &worker_name)
                 .with_poll_interval(Duration::from_millis(10));
 
             let worker_name_final = worker_name.clone();
