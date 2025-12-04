@@ -36,6 +36,7 @@ petgraph = { workspace = true }
 
 # Executor dependencies
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 lazy_static = { workspace = true }
 futures = { workspace = true }
@@ -81,6 +82,10 @@ required-features = ["redis"]
 
 [[example]]
 name = "timer_race_condition_redis"
+required-features = ["redis"]
+
+[[example]]
+name = "redis_automatic_maintenance"
 required-features = ["redis"]
 
 [[example]]

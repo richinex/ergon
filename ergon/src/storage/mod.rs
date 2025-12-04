@@ -66,6 +66,22 @@ pub struct TimerInfo {
 ///
 /// Using `async_trait` allows truly async storage backends (e.g., async
 /// database drivers) without forcing blocking calls in async contexts.
+///
+/// # Automatic Maintenance
+///
+/// The trait includes maintenance methods that are called automatically
+/// by workers when using the `Worker` type:
+///
+/// - **`move_ready_delayed_tasks()`**: Called every 1 second to move delayed
+///   tasks to the pending queue (primarily for Redis distributed scheduling)
+/// - **`recover_stale_locks()`**: Called every 60 seconds to recover flows
+///   from crashed workers (distributed systems only)
+/// - **`cleanup_completed()`**: Should be called periodically (e.g., daily)
+///   to remove old completed flow data
+///
+/// Most backends use the default no-op implementations where maintenance
+/// isn't needed (e.g., SQLite handles scheduling atomically, single-node
+/// systems don't need crash recovery).
 #[async_trait]
 pub trait ExecutionLog: Send + Sync {
     /// Log the start of a step invocation.
@@ -360,6 +376,56 @@ pub trait ExecutionLog: Send + Sync {
         let _ = older_than;
         Ok(0)
     }
+
+    /// Moves ready delayed tasks from delayed queue to pending queue.
+    ///
+    /// This method is called automatically by workers to move tasks from a
+    /// delayed execution queue to the pending queue once their scheduled time
+    /// has arrived. This is primarily used by distributed backends like Redis.
+    ///
+    /// # Implementation Notes
+    ///
+    /// - **Redis**: Moves tasks from `ergon:queue:delayed` (sorted set) to
+    ///   `ergon:queue:pending` (list) when `score <= now`
+    /// - **SQLite**: No-op (scheduling handled atomically in dequeue query)
+    /// - **In-Memory**: No-op (no separate delayed queue)
+    ///
+    /// # Returns
+    ///
+    /// The number of tasks moved to the pending queue.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns 0 by default (no-op). Override for distributed backends that
+    /// maintain separate delayed task queues.
+    async fn move_ready_delayed_tasks(&self) -> Result<u64> {
+        Ok(0) // No-op by default
+    }
+
+    /// Recovers flows locked by crashed workers.
+    ///
+    /// This method is called automatically by workers to detect and recover
+    /// flows that have been in the `Running` state for too long, indicating
+    /// the worker that was processing them likely crashed.
+    ///
+    /// # Implementation Notes
+    ///
+    /// - **Redis**: Checks `ergon:running` sorted set for flows with
+    ///   `start_time < (now - stale_timeout)` and resets them to pending
+    /// - **SQLite**: No-op (single-node, no distributed lock management needed)
+    /// - **In-Memory**: No-op (single-process, no crash recovery needed)
+    ///
+    /// # Returns
+    ///
+    /// The number of stale locks recovered and flows reset to pending.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns 0 by default (no-op). Override for distributed backends that
+    /// need to handle worker crashes across multiple machines.
+    async fn recover_stale_locks(&self) -> Result<u64> {
+        Ok(0) // No-op by default
+    }
 }
 
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage
@@ -474,5 +540,13 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
 
     async fn cleanup_completed(&self, older_than: Duration) -> Result<u64> {
         (**self).cleanup_completed(older_than).await
+    }
+
+    async fn move_ready_delayed_tasks(&self) -> Result<u64> {
+        (**self).move_ready_delayed_tasks().await
+    }
+
+    async fn recover_stale_locks(&self) -> Result<u64> {
+        (**self).recover_stale_locks().await
     }
 }

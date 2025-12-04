@@ -19,7 +19,20 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 lazy_static::lazy_static! {
+    /// Notifiers for flows waiting for external signals.
+    /// Maps flow_id -> Notify for waking waiting flows.
+    ///
+    /// SAFETY: DashMap references must not be held across .await points or during
+    /// iteration with modification. Always clone the Arc<Notify> before awaiting.
+    /// See: https://github.com/xacrimon/dashmap/issues/74
     pub(super) static ref WAIT_NOTIFIERS: DashMap<Uuid, Arc<Notify>> = DashMap::new();
+
+    /// Parameters passed when resuming flows from external signals.
+    /// Maps flow_id -> serialized params.
+    ///
+    /// SAFETY: DashMap references must not be held across .await points or during
+    /// iteration with modification. Extract values with .remove() or .clone() immediately.
+    /// See: https://github.com/xacrimon/dashmap/issues/74
     pub(super) static ref RESUME_PARAMS: DashMap<Uuid, Vec<u8>> = DashMap::new();
 }
 

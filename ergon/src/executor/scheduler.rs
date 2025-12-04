@@ -32,7 +32,7 @@ use uuid::Uuid;
 /// }
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
+/// let storage = Arc::new(SqliteExecutionLog::new("flows.db").await?);
 /// let scheduler = Scheduler::new(storage);
 ///
 /// let flow = MyFlow { data: "test".to_string() };
@@ -88,7 +88,7 @@ impl<S: ExecutionLog> Scheduler<S> {
     /// # struct OrderProcessor { order_id: String }
     /// #
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
+    /// # let storage = Arc::new(SqliteExecutionLog::new("flows.db").await?);
     /// let scheduler = Scheduler::new(storage);
     ///
     /// let order = OrderProcessor { order_id: "12345".to_string() };

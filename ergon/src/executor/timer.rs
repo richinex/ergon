@@ -21,6 +21,10 @@ use uuid::Uuid;
 lazy_static::lazy_static! {
     /// Notifiers for timers that have fired.
     /// Maps (flow_id, step) -> Notify for waking waiting flows.
+    ///
+    /// SAFETY: DashMap references must not be held across .await points or during
+    /// iteration with modification. Always clone the Arc<Notify> before awaiting.
+    /// See: https://github.com/xacrimon/dashmap/issues/74
     pub(super) static ref TIMER_NOTIFIERS: DashMap<(Uuid, i32), Arc<Notify>> = DashMap::new();
 }
 

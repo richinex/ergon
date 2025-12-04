@@ -23,6 +23,14 @@
 //! - **TTL cleanup**: Automatic expiration of completed flows
 //! - **Stale lock recovery**: Detects and recovers crashed workers
 //!
+//! # Automatic Maintenance
+//!
+//! When using the `Worker` type, Redis maintenance is **automatically handled**:
+//! - **Every 1 second**: `move_ready_delayed_tasks()` checks for ready delayed tasks
+//! - **Every 60 seconds**: `recover_stale_locks()` checks for stale locks
+//!
+//! No manual setup required! The Worker integrates these calls internally.
+//!
 //! # Performance Characteristics
 //!
 //! - Enqueue: O(log N) with ZADD to sorted set
@@ -235,85 +243,6 @@ impl RedisExecutionLog {
 
         Ok(invocation)
     }
-
-    /// Moves ready delayed tasks to the pending queue.
-    ///
-    /// This is called periodically by a background worker to check for
-    /// tasks in `ergon:queue:delayed` that are ready to execute.
-    pub async fn move_ready_delayed_tasks(&self) -> Result<u64> {
-        let mut conn = self.get_connection().await?;
-        let now = Utc::now().timestamp_millis();
-
-        // Get all tasks ready to execute (score <= now)
-        let ready_tasks: Vec<String> = conn
-            .zrangebyscore("ergon:queue:delayed", 0, now)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        if ready_tasks.is_empty() {
-            return Ok(0);
-        }
-
-        // Atomically move tasks from delayed to pending
-        let count = ready_tasks.len() as u64;
-        for task_id in &ready_tasks {
-            let _: () = redis::pipe()
-                .atomic()
-                .zrem("ergon:queue:delayed", task_id)
-                .rpush("ergon:queue:pending", task_id)
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
-        }
-
-        debug!("Moved {} delayed tasks to pending queue", count);
-        Ok(count)
-    }
-
-    /// Recovers stale locks from crashed workers.
-    ///
-    /// Finds flows that have been running for too long and resets them to pending.
-    pub async fn recover_stale_locks(&self) -> Result<u64> {
-        let mut conn = self.get_connection().await?;
-        let now = Utc::now().timestamp_millis();
-        let stale_cutoff = now - self.stale_lock_timeout_ms;
-
-        // Find flows that started before the cutoff
-        let stale_tasks: Vec<String> = conn
-            .zrangebyscore("ergon:running", 0, stale_cutoff)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        if stale_tasks.is_empty() {
-            return Ok(0);
-        }
-
-        let count = stale_tasks.len() as u64;
-        for task_id_str in &stale_tasks {
-            let task_id = match Uuid::parse_str(task_id_str) {
-                Ok(id) => id,
-                Err(_) => continue,
-            };
-
-            let flow_key = Self::flow_key(task_id);
-
-            // Reset flow to pending
-            let _: () = redis::pipe()
-                .atomic()
-                .hset(&flow_key, "status", "Pending")
-                .hdel(&flow_key, "locked_by")
-                .zrem("ergon:running", task_id_str)
-                .rpush("ergon:queue:pending", task_id_str)
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-            warn!("Recovered stale lock for flow: {}", task_id);
-        }
-
-        info!("Recovered {} stale locks", count);
-        Ok(count)
-    }
 }
 
 #[async_trait]
@@ -359,7 +288,7 @@ impl ExecutionLog for RedisExecutionLog {
             .hset(&inv_key, "is_retryable", "") // Empty = None
             .hset(&inv_key, "timer_fire_at", 0)
             .hset(&inv_key, "timer_name", "")
-            .lpush(Self::invocations_key(id), &inv_key)
+            .rpush(Self::invocations_key(id), &inv_key)
             .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
@@ -1082,5 +1011,77 @@ impl ExecutionLog for RedisExecutionLog {
             deleted, older_than
         );
         Ok(deleted)
+    }
+
+    async fn move_ready_delayed_tasks(&self) -> Result<u64> {
+        let mut conn = self.get_connection().await?;
+        let now = Utc::now().timestamp_millis();
+
+        // Get all tasks ready to execute (score <= now)
+        let ready_tasks: Vec<String> = conn
+            .zrangebyscore("ergon:queue:delayed", 0, now)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if ready_tasks.is_empty() {
+            return Ok(0);
+        }
+
+        // Atomically move tasks from delayed to pending
+        let count = ready_tasks.len() as u64;
+        for task_id in &ready_tasks {
+            let _: () = redis::pipe()
+                .atomic()
+                .zrem("ergon:queue:delayed", task_id)
+                .rpush("ergon:queue:pending", task_id)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+        }
+
+        debug!("Moved {} delayed tasks to pending queue", count);
+        Ok(count)
+    }
+
+    async fn recover_stale_locks(&self) -> Result<u64> {
+        let mut conn = self.get_connection().await?;
+        let now = Utc::now().timestamp_millis();
+        let stale_cutoff = now - self.stale_lock_timeout_ms;
+
+        // Find flows that started before the cutoff
+        let stale_tasks: Vec<String> = conn
+            .zrangebyscore("ergon:running", 0, stale_cutoff)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if stale_tasks.is_empty() {
+            return Ok(0);
+        }
+
+        let count = stale_tasks.len() as u64;
+        for task_id_str in &stale_tasks {
+            let task_id = match Uuid::parse_str(task_id_str) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            let flow_key = Self::flow_key(task_id);
+
+            // Reset flow to pending
+            let _: () = redis::pipe()
+                .atomic()
+                .hset(&flow_key, "status", "Pending")
+                .hdel(&flow_key, "locked_by")
+                .zrem("ergon:running", task_id_str)
+                .rpush("ergon:queue:pending", task_id_str)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            warn!("Recovered stale lock for flow: {}", task_id);
+        }
+
+        info!("Recovered {} stale locks", count);
+        Ok(count)
     }
 }

@@ -8,7 +8,7 @@
 //! them in a distributed manner.
 
 use crate::core::{deserialize_value, FlowType};
-use crate::storage::{ExecutionLog, ScheduledFlow, TaskStatus};
+use crate::storage::{ExecutionLog, TaskStatus};
 use crate::Executor;
 use chrono::Utc;
 use serde::de::DeserializeOwned;
@@ -17,8 +17,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument};
 use uuid::Uuid;
 
@@ -227,7 +228,9 @@ impl TracingBehavior for WithStructuredTracing {
 ///
 /// This trait allows us to store executors for different flow types in a
 /// single registry without knowing their concrete types at compile time.
-type BoxedExecutor<S> = Box<
+///
+/// Wrapped in Arc to allow cloning without holding the registry lock during execution.
+type BoxedExecutor<S> = Arc<
     dyn Fn(Vec<u8>, Uuid, Arc<S>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>
         + Send
         + Sync,
@@ -319,7 +322,7 @@ impl<S: ExecutionLog + 'static> Registry<S> {
         let type_name = T::type_id().to_string();
 
         let boxed: BoxedExecutor<S> =
-            Box::new(move |data: Vec<u8>, flow_id: Uuid, storage: Arc<S>| {
+            Arc::new(move |data: Vec<u8>, flow_id: Uuid, storage: Arc<S>| {
                 // Clone the executor for this invocation
                 let executor = executor.clone();
 
@@ -344,16 +347,12 @@ impl<S: ExecutionLog + 'static> Registry<S> {
         self.executors.insert(type_name, boxed);
     }
 
-    /// Executes a scheduled flow using the registered executor for its type.
+    /// Gets an executor for a flow type.
     ///
-    /// Returns an error if the flow type is not registered.
-    async fn execute(&self, flow: &ScheduledFlow, storage: Arc<S>) -> Result<(), String> {
-        let executor = self
-            .executors
-            .get(&flow.flow_type)
-            .ok_or_else(|| format!("no executor registered for type: {}", flow.flow_type))?;
-
-        executor(flow.flow_data.clone(), flow.flow_id, storage).await
+    /// Returns None if the flow type is not registered.
+    /// The Arc clone is cheap and allows releasing the lock before execution.
+    fn get_executor(&self, flow_type: &str) -> Option<BoxedExecutor<S>> {
+        self.executors.get(flow_type).cloned()
     }
 
     /// Returns the number of registered flow types.
@@ -406,7 +405,7 @@ impl<S: ExecutionLog + 'static> Default for Registry<S> {
 /// }
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
+/// let storage = Arc::new(SqliteExecutionLog::new("flows.db").await?);
 ///
 /// // Basic worker (no timers, no structured tracing)
 /// let worker = Worker::new(storage.clone(), "worker-1");
@@ -434,6 +433,8 @@ pub struct Worker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStru
     poll_interval: Duration,
     timer_state: T,
     tracing_state: Tr,
+    /// Optional semaphore for backpressure control (limits concurrent flow execution)
+    max_concurrent_flows: Option<Arc<Semaphore>>,
 }
 
 impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
@@ -462,6 +463,7 @@ impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
                 timer_poll_interval: Duration::from_secs(1),
             },
             tracing_state: self.tracing_state,
+            max_concurrent_flows: self.max_concurrent_flows,
         }
     }
 }
@@ -483,7 +485,7 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracin
     /// # use ergon::storage::SqliteExecutionLog;
     /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let storage = Arc::new(SqliteExecutionLog::new("flows.db")?);
+    /// let storage = Arc::new(SqliteExecutionLog::new("flows.db").await?);
     /// let worker = Worker::new(storage, "worker-1");
     /// # Ok(())
     /// # }
@@ -496,6 +498,7 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracin
             poll_interval: Duration::from_secs(1),
             timer_state: WithoutTimers,
             tracing_state: WithoutStructuredTracing,
+            max_concurrent_flows: None,
         }
     }
 }
@@ -549,6 +552,7 @@ impl<S: ExecutionLog + 'static, T> Worker<S, T, WithoutStructuredTracing> {
             poll_interval: self.poll_interval,
             timer_state: self.timer_state,
             tracing_state: WithStructuredTracing,
+            max_concurrent_flows: self.max_concurrent_flows,
         }
     }
 }
@@ -562,6 +566,35 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
     /// Default is 1 second.
     pub fn with_poll_interval(mut self, interval: Duration) -> Self {
         self.poll_interval = interval;
+        self
+    }
+
+    /// Enables backpressure control by limiting maximum concurrent flow executions.
+    ///
+    /// This prevents unbounded task spawning and provides flow control for high-load
+    /// scenarios. When the limit is reached, the worker will wait for a slot to
+    /// become available before picking up new flows.
+    ///
+    /// # Arguments
+    ///
+    /// * `max` - Maximum number of flows that can execute concurrently
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let worker = Worker::new(storage, "worker-1")
+    ///     .with_max_concurrent_flows(100)  // Limit to 100 concurrent flows
+    ///     .start()
+    ///     .await;
+    /// ```
+    ///
+    /// # Performance Considerations
+    ///
+    /// - **No limit** (default): Natural rate limiting via poll interval
+    /// - **With limit**: Explicit backpressure, prevents resource exhaustion
+    /// - Recommended for production: 50-500 depending on flow complexity
+    pub fn with_max_concurrent_flows(mut self, max: usize) -> Self {
+        self.max_concurrent_flows = Some(Arc::new(Semaphore::new(max)));
         self
     }
 
@@ -589,7 +622,8 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
     where
         Tr: Clone,
     {
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let cancellation_token = CancellationToken::new();
+        let worker_token = cancellation_token.clone();
         let worker_id_for_handle = self.worker_id.clone();
 
         info!("Starting worker: {}", self.worker_id);
@@ -598,37 +632,75 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             // Track spawned flow tasks for graceful shutdown
             let mut active_flows: JoinSet<()> = JoinSet::new();
 
+            // Maintenance intervals
+            let mut delayed_task_interval = tokio::time::interval(Duration::from_secs(1));
+            let mut stale_lock_interval = tokio::time::interval(Duration::from_secs(60));
+
+            // Don't fire immediately on startup - wait for first tick
+            delayed_task_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            stale_lock_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
             loop {
                 // Create worker loop span (no-op for WithoutStructuredTracing)
                 let loop_span = self.tracing_state.worker_loop_span(&self.worker_id);
                 let _loop_guard = loop_span.as_ref().map(|span| span.enter());
 
-                // Check for shutdown signal
-                match shutdown_rx.try_recv() {
-                    Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                // Use select! to handle multiple concurrent concerns
+                // biased; ensures shutdown and task cleanup are prioritized over accepting new work
+                tokio::select! {
+                    biased;
+
+                    // Shutdown signal (highest priority)
+                    // CancellationToken is cancel-safe and supports hierarchical cancellation
+                    _ = worker_token.cancelled() => {
                         info!("Worker {} received shutdown signal", self.worker_id);
                         break;
                     }
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
-                }
 
-                // Reap completed flow tasks (non-blocking)
-                while let Some(Ok(_)) = active_flows.try_join_next() {
-                    // Task completed, continue reaping
-                }
+                    // Maintenance: Move ready delayed tasks (every 1s)
+                    _ = delayed_task_interval.tick() => {
+                        match self.storage.move_ready_delayed_tasks().await {
+                            Ok(count) if count > 0 => {
+                                debug!("Worker {} moved {} delayed tasks to pending", self.worker_id, count);
+                            }
+                            Err(e) => {
+                                warn!("Worker {} failed to move delayed tasks: {}", self.worker_id, e);
+                            }
+                            _ => {}
+                        }
+                    }
 
-                // Process expired timers with optional span
-                {
-                    let timer_span = self.tracing_state.timer_processing_span(&self.worker_id);
-                    let _timer_guard = timer_span.as_ref().map(|span| span.enter());
+                    // Maintenance: Recover stale locks (every 60s)
+                    _ = stale_lock_interval.tick() => {
+                        match self.storage.recover_stale_locks().await {
+                            Ok(count) if count > 0 => {
+                                info!("Worker {} recovered {} stale locks", self.worker_id, count);
+                            }
+                            Err(e) => {
+                                warn!("Worker {} failed to recover stale locks: {}", self.worker_id, e);
+                            }
+                            _ => {}
+                        }
+                    }
 
-                    self.timer_state
-                        .process_timers(&self.storage, &self.worker_id)
-                        .await;
-                }
+                    // Main work: Poll for a flow
+                    result = self.storage.dequeue_flow(&self.worker_id) => {
+                        // Reap completed flow tasks (non-blocking)
+                        while let Some(Ok(_)) = active_flows.try_join_next() {
+                            // Task completed, continue reaping
+                        }
 
-                // Poll for a flow
-                match self.storage.dequeue_flow(&self.worker_id).await {
+                        // Process expired timers with optional span
+                        {
+                            let timer_span = self.tracing_state.timer_processing_span(&self.worker_id);
+                            let _timer_guard = timer_span.as_ref().map(|span| span.enter());
+
+                            self.timer_state
+                                .process_timers(&self.storage, &self.worker_id)
+                                .await;
+                        }
+
+                        match result {
                     Ok(Some(flow)) => {
                         debug!(
                             "Worker {} picked up flow: task_id={}, flow_type={}",
@@ -652,17 +724,45 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             flow_task_id,
                         );
 
+                        // Acquire semaphore permit for backpressure control (if enabled)
+                        // This limits concurrent flow execution and provides flow control
+                        let permit = if let Some(ref semaphore) = self.max_concurrent_flows {
+                            match semaphore.clone().acquire_owned().await {
+                                Ok(permit) => Some(permit),
+                                Err(_) => {
+                                    // Semaphore closed - should not happen in normal operation
+                                    error!("Worker {} semaphore closed unexpectedly", worker_id);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
                         // Instrument the spawned task with the span (proper async way)
                         let task = async move {
+                            // Hold permit during entire flow execution (RAII - released on drop)
+                            let _permit = permit;
                             info!(
                                 "Worker {} executing flow: task_id={}",
                                 worker_id, flow_task_id
                             );
 
-                            // Execute the flow
-                            let registry = registry.read().await;
-                            let result = registry.execute(&flow, storage.clone()).await;
-                            drop(registry);
+                            // Get executor with brief lock, then release before execution
+                            let executor = {
+                                let registry = registry.read().await;
+                                registry.get_executor(&flow.flow_type)
+                            };
+                            // RwLock released here!
+
+                            let result = match executor {
+                                Some(exec) => {
+                                    exec(flow.flow_data.clone(), flow.flow_id, storage.clone()).await
+                                }
+                                None => {
+                                    Err(format!("no executor registered for type: {}", flow.flow_type))
+                                }
+                            };
 
                             // Handle completion or retry
                             match result {
@@ -812,15 +912,16 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             active_flows.spawn(task);
                         }
                     }
-                    Ok(None) => {
-                        // No work available - sleep before next poll
-                        tokio::time::sleep(self.poll_interval).await;
+                            Ok(None) => {
+                                // No work available - the select! will loop and check other branches
+                            }
+                            Err(e) => {
+                                warn!("Worker {} failed to dequeue flow: {}", self.worker_id, e);
+                                tokio::time::sleep(self.poll_interval).await;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        warn!("Worker {} failed to dequeue flow: {}", self.worker_id, e);
-                        tokio::time::sleep(self.poll_interval).await;
-                    }
-                }
+                } // End of tokio::select!
             }
 
             // Gracefully wait for all in-flight flows to complete
@@ -845,7 +946,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         WorkerHandle {
             worker_id: worker_id_for_handle,
             handle,
-            shutdown: Some(shutdown_tx),
+            cancellation_token,
         }
     }
 }
@@ -853,11 +954,12 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
 /// Handle for controlling a running worker.
 ///
 /// The `WorkerHandle` provides methods to check the worker's status and
-/// request a graceful shutdown.
+/// request a graceful shutdown. Uses `CancellationToken` for hierarchical
+/// cancellation support.
 pub struct WorkerHandle {
     worker_id: String,
     handle: JoinHandle<()>,
-    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    cancellation_token: CancellationToken,
 }
 
 impl WorkerHandle {
@@ -866,15 +968,28 @@ impl WorkerHandle {
         &self.worker_id
     }
 
+    /// Returns a reference to the cancellation token.
+    ///
+    /// This allows creating child tokens for hierarchical cancellation:
+    ///
+    /// ```ignore
+    /// let child_token = handle.cancellation_token().child_token();
+    /// // Child token will be cancelled when parent is cancelled
+    /// ```
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
+    }
+
     /// Requests the worker to shut down gracefully.
     ///
     /// This signals the worker to stop polling for new flows. The worker
-    /// will complete any currently executing flow before shutting down.
-    pub async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
-            let _ = self.handle.await;
-        }
+    /// will complete any currently executing flows before shutting down.
+    ///
+    /// Uses `CancellationToken` which is cancel-safe and supports hierarchical
+    /// cancellation patterns.
+    pub async fn shutdown(self) {
+        self.cancellation_token.cancel();
+        let _ = self.handle.await;
     }
 
     /// Returns true if the worker task is still running.
@@ -883,6 +998,9 @@ impl WorkerHandle {
     }
 
     /// Aborts the worker immediately without waiting for completion.
+    ///
+    /// Note: This bypasses graceful shutdown and may leave flows in an
+    /// inconsistent state. Prefer `shutdown()` for normal termination.
     pub fn abort(&self) {
         self.handle.abort();
     }
