@@ -189,21 +189,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
 
     // Wait for flow to complete by checking task status
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(_task_id).await? {
-            match task.status {
-                ergon::storage::TaskStatus::Complete => break,
-                ergon::storage::TaskStatus::Failed => {
-                    println!("\n[WARNING] Flow failed");
-                    break;
-                }
-                _ => {
-                    // Still running or pending
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
+    while let Some(task) = storage.get_scheduled_flow(_task_id).await? {
+        match task.status {
+            ergon::storage::TaskStatus::Complete => break,
+            ergon::storage::TaskStatus::Failed => {
+                println!("\n[WARNING] Flow failed");
+                break;
             }
-        } else {
-            break; // Task not found
+            _ => {
+                // Still running or pending
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         }
     }
 

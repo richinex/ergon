@@ -413,24 +413,9 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Generate result handling for fallback (no context) case
-    // Same logic but without logging
-    let fallback_result_handling = if returns_result {
-        if cache_errors {
-            quote! {
-                // cache_errors: Always return Ok (can't log without context)
-                Ok(__result)
-            }
-        } else {
-            quote! {
-                // Without context, just propagate the error as-is
-                // (No caching logic since there's no storage)
-                Ok(__result)
-            }
-        }
-    } else {
-        quote! {
-            Ok(__result)
-        }
+    // Without context, we can't cache errors, so just return the result
+    let fallback_result_handling = quote! {
+        Ok(__result)
     };
 
     // Build params tuple for serialization

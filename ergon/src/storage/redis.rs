@@ -209,8 +209,7 @@ impl RedisExecutionLog {
 
         // Parse timer fields
         let timer_fire_at_millis = get_i64("timer_fire_at").ok();
-        let timer_fire_at =
-            timer_fire_at_millis.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms));
+        let timer_fire_at = timer_fire_at_millis.and_then(chrono::DateTime::from_timestamp_millis);
         let timer_name = get_str("timer_name").ok();
 
         let mut invocation = Invocation::new(
@@ -1076,10 +1075,9 @@ impl ExecutionLog for RedisExecutionLog {
                         // Parse key format: "ergon:inv:flow_id:step"
                         let parts: Vec<&str> = inv_key.split(':').collect();
                         if parts.len() == 4 {
-                            if let (Ok(flow_id), Ok(step)) = (
-                                Uuid::parse_str(parts[2]),
-                                parts[3].parse::<i32>(),
-                            ) {
+                            if let (Ok(flow_id), Ok(step)) =
+                                (Uuid::parse_str(parts[2]), parts[3].parse::<i32>())
+                            {
                                 let signal_name: Option<String> = conn
                                     .hget(&inv_key, "timer_name")
                                     .await

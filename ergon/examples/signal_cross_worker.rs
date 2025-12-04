@@ -225,10 +225,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("✓ Worker ready and waiting for flows");
             println!();
             println!("Open another terminal and send commands:");
-            println!("  {} {} schedule alice   # Schedule a flow", args[0], args[1]);
-            println!("  {} {} list             # View flow status", args[0], args[1]);
-            println!("  {} {} resume           # Resume waiting flows", args[0], args[1]);
-            println!("  {} {} cancel           # Cancel waiting flows", args[0], args[1]);
+            println!(
+                "  {} {} schedule alice   # Schedule a flow",
+                args[0], args[1]
+            );
+            println!(
+                "  {} {} list             # View flow status",
+                args[0], args[1]
+            );
+            println!(
+                "  {} {} resume           # Resume waiting flows",
+                args[0], args[1]
+            );
+            println!(
+                "  {} {} cancel           # Cancel waiting flows",
+                args[0], args[1]
+            );
             println!();
             println!("Press Ctrl+C to stop");
             println!();
@@ -241,7 +253,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Command::Schedule => {
-            let name = args.get(3).ok_or("Missing flow name. Usage: schedule <name>")?;
+            let name = args
+                .get(3)
+                .ok_or("Missing flow name. Usage: schedule <name>")?;
 
             let scheduler = Scheduler::new(storage.clone());
             let flow = DistributedApprovalFlow {
@@ -284,7 +298,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Command::Resume => {
             // Resume needs approval message from args
-            let message = args.get(3).cloned().unwrap_or_else(|| "approved".to_string());
+            let message = args
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| "approved".to_string());
 
             // Find all flows waiting for signals using the new method
             let waiting_signals = storage.get_waiting_signals().await?;
@@ -292,7 +309,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if waiting_signals.is_empty() {
                 println!("No flows waiting for signals");
                 println!();
-                println!("Schedule a flow first: {} {} schedule <name>", args[0], args[1]);
+                println!(
+                    "Schedule a flow first: {} {} schedule <name>",
+                    args[0], args[1]
+                );
                 return Ok(());
             }
 
@@ -323,10 +343,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Watch Terminal 1 - workers will process the flows!");
         }
 
-
         Command::Cancel => {
             // Cancel needs cancellation reason from args
-            let reason = args.get(3).cloned().unwrap_or_else(|| "cancelled".to_string());
+            let reason = args
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| "cancelled".to_string());
 
             // Find all flows waiting for signals using the new method
             let waiting_signals = storage.get_waiting_signals().await?;
@@ -334,7 +356,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if waiting_signals.is_empty() {
                 println!("No flows waiting for signals");
                 println!();
-                println!("Schedule a flow first: {} {} schedule <name>", args[0], args[1]);
+                println!(
+                    "Schedule a flow first: {} {} schedule <name>",
+                    args[0], args[1]
+                );
                 return Ok(());
             }
 
@@ -365,7 +390,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("Watch Terminal 1 - workers will fail the flows!");
         }
-
 
         Command::Stop => {
             println!("Stopping worker...");

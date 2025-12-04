@@ -818,7 +818,6 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                     // Note: Task remains in database with all its step history intact.
                                     // When timer fires, resume_flow() will re-enqueue it, and the flow
                                     // will resume from where it left off (using cached step results).
-                                    return;
                                 }
                                 crate::executor::FlowOutcome::Completed(result) => {
                             // Handle completion or retry

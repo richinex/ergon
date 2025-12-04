@@ -33,7 +33,7 @@
 //! ```
 
 use chrono::Utc;
-use ergon::executor::schedule_timer;
+use ergon::executor::{schedule_timer, FlowOutcome};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -138,11 +138,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for all flows to complete
     for handle in handles {
         match handle.await? {
-            (i, Ok(result), elapsed) => {
+            (i, FlowOutcome::Completed(Ok(result)), elapsed) => {
                 println!("[OK] Flow {} completed: {} (took {:?})", i, result, elapsed);
             }
-            (i, Err(e), elapsed) => {
+            (i, FlowOutcome::Completed(Err(e)), elapsed) => {
                 println!("[ERR] Flow {} failed: {} (took {:?})", i, e, elapsed);
+            }
+            (i, FlowOutcome::Suspended(reason), elapsed) => {
+                println!(
+                    "[SUSPENDED] Flow {} suspended: {:?} (took {:?})",
+                    i, reason, elapsed
+                );
             }
         }
     }
