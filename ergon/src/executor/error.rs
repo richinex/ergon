@@ -37,13 +37,6 @@ pub enum ExecutionError {
     /// An external signal timed out while waiting.
     #[error("signal timeout: {message}")]
     SignalTimeout { message: String },
-
-    /// Flow suspended, waiting for timer or signal.
-    ///
-    /// This is not an error - it indicates the flow should exit and be
-    /// re-enqueued when the condition is met (timer fires, signal received).
-    #[error("flow suspended")]
-    Suspend(SuspendReason),
 }
 
 // Manual From implementations to convert nested errors to strings
@@ -71,7 +64,23 @@ pub enum SuspendReason {
     /// Waiting for a timer to fire.
     Timer { flow_id: uuid::Uuid, step: i32 },
     /// Waiting for an external signal.
-    Signal { flow_id: uuid::Uuid, step: i32, signal_name: String },
+    Signal {
+        flow_id: uuid::Uuid,
+        step: i32,
+        signal_name: String,
+    },
+}
+
+/// A flow can complete or suspend. Be honest about it.
+///
+/// This enum makes suspension explicit, following Dave Cheney's principle:
+/// "If your function can suspend, you must tell the caller."
+#[derive(Debug, Clone)]
+pub enum FlowOutcome<R> {
+    /// Flow ran to completion (success or failure in R).
+    Completed(R),
+    /// Flow suspended, waiting for external event (timer or signal).
+    Suspended(SuspendReason),
 }
 
 impl From<String> for ExecutionError {

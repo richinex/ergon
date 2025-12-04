@@ -393,10 +393,11 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let _ = __ctx.log_step_completion(__step, &__result).await;
                             Ok(__result)
                         } else {
-                            // Transient error: DON'T cache, return Err so step retries
-                            // Step remains PENDING, will retry on next execution
+                            // Transient error (or Suspend): DON'T cache, stop execution
+                            // All framework decisions (suspend/retry) already made on original type
+                            // This conversion just preserves error message for logging/debugging
                             Err(ergon::ExecutionError::Failed(
-                                format!("Step {} returned retryable error (will retry)", #method_name_str)
+                                format!("Step {} failed (retryable): {:?}", #method_name_str, __e)
                             ))
                         }
                     }
@@ -421,23 +422,9 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         } else {
             quote! {
-                match &__result {
-                    Ok(_) => Ok(__result),
-                    Err(__e) => {
-                        #[allow(unused_imports)]
-                        use ::ergon::kind::*;
-
-                        let __should_cache = (__e).error_kind().should_cache(__e);
-
-                        if __should_cache {
-                            Ok(__result)
-                        } else {
-                            Err(ergon::ExecutionError::Failed(
-                                format!("Step {} returned retryable error (will retry)", #method_name_str)
-                            ))
-                        }
-                    }
-                }
+                // Without context, just propagate the error as-is
+                // (No caching logic since there's no storage)
+                Ok(__result)
             }
         }
     } else {
@@ -512,7 +499,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     ))?;
                                 // Try to deserialize as Result<T, String> first (steps return Result)
                                 let __result: std::result::Result<#input_param_types, String> = ergon::deserialize_value(__bytes)
-                                    .map_err(ergon::ExecutionError::Core)?;
+                                    .map_err(|e| ergon::ExecutionError::Core(e.to_string()))?;
                                 // Extract the Ok value (step must have succeeded to be cached)
                                 __result.map_err(|e| ergon::ExecutionError::Failed(
                                     format!("Dependency step {} returned error: {}", #input_step_names, e)

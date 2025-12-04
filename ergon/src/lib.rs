@@ -135,7 +135,7 @@ pub mod prelude {
 
     pub use crate::executor::{
         await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt,
-        DeferredRegistry, ExecutionContext, ExecutionError, Executor, Registry,
+        DeferredRegistry, ExecutionContext, ExecutionError, Executor, FlowOutcome, Registry,
         Result as ExecutionResult, Scheduler, StepFuture, StepHandle, Worker, WorkerHandle,
     };
 

@@ -50,7 +50,7 @@
 //! ```
 
 use chrono::Utc;
-use ergon::executor::{schedule_timer, Worker};
+use ergon::executor::{schedule_timer, Scheduler, Worker};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -119,51 +119,87 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = Worker::new(storage.clone(), "timer-race-worker")
         .with_timers()
         .with_timer_interval(Duration::from_millis(10))
-        .start()
+        .with_poll_interval(Duration::from_millis(100)); // Poll for flows frequently
+
+    // Register flow type
+    worker
+        .register(|flow: Arc<RaceConditionFlow>| flow.test_race())
         .await;
+
+    let worker = worker.start().await;
 
     println!("Worker with timer processing started (timer_interval=10ms - aggressive)\n");
 
-    // Run 3 flows CONCURRENTLY to increase race condition likelihood
-    // This is the realistic scenario - multiple flows competing for timers
-    let mut handles = vec![];
+    // Schedule 3 flows CONCURRENTLY to increase race condition likelihood
+    // Use Scheduler so Worker can process them to completion
+    let scheduler = Scheduler::new(storage.clone());
+    let mut task_ids = vec![];
 
     for i in 1..=3 {
-        let storage_clone = storage.clone();
-        let handle = tokio::spawn(async move {
-            let flow = RaceConditionFlow {
-                id: format!("flow-{}", i),
-            };
-
-            let flow_id = uuid::Uuid::new_v4();
-            let instance = Executor::new(flow_id, flow, storage_clone);
-
-            let start = std::time::Instant::now();
-            let result = instance
-                .execute(|f| Box::pin(Arc::new(f.clone()).test_race()))
-                .await;
-            let elapsed = start.elapsed();
-            (i, result, elapsed)
-        });
-
-        handles.push(handle);
+        let flow = RaceConditionFlow {
+            id: format!("flow-{}", i),
+        };
+        let flow_id = uuid::Uuid::new_v4();
+        let task_id = scheduler.schedule(flow, flow_id).await?;
+        task_ids.push((i, task_id));
+        println!("[SCHEDULED] Flow {} with task_id {}", i, task_id);
     }
 
-    // Wait for all flows to complete
-    for handle in handles {
-        match handle.await? {
-            (i, Ok(result), elapsed) => {
-                println!("[OK] Flow {} completed: {} (took {:?})", i, result, elapsed);
+    println!("\nWorker processing flows (5 timers each × 1ms + overhead)...\n");
+
+    // Give worker time to pick up flows from queue
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Wait for all flows to complete with timeout
+    let timeout_duration = Duration::from_secs(5);
+    match tokio::time::timeout(timeout_duration, async {
+        loop {
+            let incomplete = storage.get_incomplete_flows().await?;
+            if incomplete.is_empty() {
+                break;
             }
-            (i, Err(e), elapsed) => {
-                println!("[ERR] Flow {} failed: {} (took {:?})", i, e, elapsed);
-            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await
+    {
+        Ok(_) => println!("All flows completed!\n"),
+        Err(_) => {
+            println!("Timeout waiting for flows to complete\n");
+            let incomplete = storage.get_incomplete_flows().await?;
+            println!("Incomplete flows: {}", incomplete.len());
         }
     }
 
     // Shutdown
     worker.shutdown().await;
-    println!("\n[OK] All 15 timers completed successfully!");
+
+    // Check final status
+    println!("=== Final Results ===\n");
+
+    let incomplete = storage.get_incomplete_flows().await?;
+    if incomplete.is_empty() {
+        println!("✓ All 3 flows completed successfully (15 timers total)");
+    } else {
+        println!("✗ {} flows incomplete", incomplete.len());
+    }
+
+    println!("\nWorker Distribution:\n");
+    for (i, task_id) in task_ids {
+        if let Some(scheduled_flow) = storage.get_scheduled_flow(task_id).await? {
+            let worker = scheduled_flow.locked_by.as_deref().unwrap_or("unknown");
+            let status = match scheduled_flow.status {
+                TaskStatus::Complete => "COMPLETE",
+                TaskStatus::Running => "RUNNING",
+                TaskStatus::Failed => "FAILED",
+                TaskStatus::Pending => "PENDING",
+            };
+            println!("  Flow {} -> {} (status: {})", i, worker, status);
+        }
+    }
+
+    println!("\n[OK] Race condition handling demonstrated successfully!");
 
     Ok(())
 }

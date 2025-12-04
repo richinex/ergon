@@ -157,10 +157,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start1 = Instant::now();
     let instance1 = Executor::new(flow_id1, Arc::clone(&workflow1), Arc::clone(&storage1));
-    let result1 = instance1
+    let (result1, elapsed1) = match instance1
         .execute(|f| Box::pin(f.clone().run_sequential()))
-        .await;
-    let elapsed1 = start1.elapsed();
+        .await
+    {
+        FlowOutcome::Completed(result) => (result, start1.elapsed()),
+        FlowOutcome::Suspended(reason) => {
+            return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
+        }
+    };
 
     println!("\nResult: {:?}", result1);
     println!(
@@ -181,10 +186,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start2 = Instant::now();
     let instance2 = Executor::new(flow_id2, Arc::clone(&workflow2), Arc::clone(&storage2));
-    let result2 = instance2
+    let (result2, elapsed2) = match instance2
         .execute(|f| Box::pin(f.clone().run_parallel()))
-        .await;
-    let elapsed2 = start2.elapsed();
+        .await
+    {
+        FlowOutcome::Completed(result) => (result, start2.elapsed()),
+        FlowOutcome::Suspended(reason) => {
+            return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
+        }
+    };
 
     println!("\nResult: {:?}", result2);
     println!(
@@ -203,17 +213,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workflow3 = Arc::new(Workflow::new("inputs".to_string()));
     let flow_id3 = Uuid::new_v4();
 
+    let start3 = Instant::now();
+
     let instance3 = Executor::new(flow_id3, Arc::clone(&workflow3), Arc::clone(&storage3));
-    let result3 = instance3
+    let (result3, elapsed3) = match instance3
         .execute(|f| Box::pin(f.clone().run_with_inputs()))
-        .await?;
+        .await
+    {
+        FlowOutcome::Completed(result) => (result, start3.elapsed()),
+        FlowOutcome::Suspended(reason) => {
+            return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
+        }
+    };
 
     println!("\nResult: {:?}", result3);
-
-    println!("\n=== Summary ===\n");
-    println!("1. Without depends_on: Sequential (safe default)");
-    println!("2. With explicit depends_on: Parallel (opt-in)");
-    println!("3. Use inputs for data wiring between steps");
+    println!(
+        "Time: {:?} (expect ~150ms: root(50) + parallel_branches(50) + merge(50))",
+        elapsed3
+    );
 
     Ok(())
 }

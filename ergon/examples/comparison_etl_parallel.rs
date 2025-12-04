@@ -694,10 +694,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     let executor = Executor::new(flow_id, pipeline, Arc::clone(&storage));
 
-    let result = executor
+    let (result, elapsed) = match executor
         .execute(|p| Box::pin(p.clone().run_etl_pipeline()))
-        .await?;
-    let elapsed = start.elapsed();
+        .await
+    {
+        FlowOutcome::Completed(Ok(result)) => (result, start.elapsed()),
+        FlowOutcome::Completed(Err(e)) => return Err(e.into()),
+        FlowOutcome::Suspended(reason) => {
+            return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
+        }
+    };
 
     // Retrieve the analytics report from storage for JSON export
     let report_invocation = storage

@@ -604,7 +604,10 @@ impl ExecutionLog for SqliteExecutionLog {
         .execute(&self.pool)
         .await?;
 
-        debug!("Enqueued flow: task_id={}, flow_type={}", task_id, flow_type);
+        debug!(
+            "Enqueued flow: task_id={}, flow_type={}",
+            task_id, flow_type
+        );
         Ok(task_id)
     }
 
@@ -840,12 +843,28 @@ impl ExecutionLog for SqliteExecutionLog {
         Ok(())
     }
 
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        params: &[u8],
-    ) -> Result<()> {
+    async fn log_signal(&self, flow_id: Uuid, step: i32, signal_name: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE execution_log
+             SET status = 'WAITING_FOR_SIGNAL',
+                 timer_name = ?
+             WHERE id = ? AND step = ?",
+        )
+        .bind(signal_name)
+        .bind(flow_id.to_string())
+        .bind(step)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(
+            "Logged signal wait: flow_id={}, step={}, signal_name={}",
+            flow_id, step, signal_name
+        );
+
+        Ok(())
+    }
+
+    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
         sqlx::query(
             "INSERT INTO signal_params (flow_id, step, params, created_at)
              VALUES (?, ?, ?, ?)
@@ -859,22 +878,18 @@ impl ExecutionLog for SqliteExecutionLog {
         .execute(&self.pool)
         .await?;
 
-        debug!(
-            "Stored signal params: flow_id={}, step={}",
-            flow_id, step
-        );
+        debug!("Stored signal params: flow_id={}, step={}", flow_id, step);
 
         Ok(())
     }
 
     async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
-        let params: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT params FROM signal_params WHERE flow_id = ? AND step = ?",
-        )
-        .bind(flow_id.to_string())
-        .bind(step)
-        .fetch_optional(&self.pool)
-        .await?;
+        let params: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT params FROM signal_params WHERE flow_id = ? AND step = ?")
+                .bind(flow_id.to_string())
+                .bind(step)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(params)
     }
@@ -886,12 +901,42 @@ impl ExecutionLog for SqliteExecutionLog {
             .execute(&self.pool)
             .await?;
 
-        debug!(
-            "Removed signal params: flow_id={}, step={}",
-            flow_id, step
-        );
+        debug!("Removed signal params: flow_id={}, step={}", flow_id, step);
 
         Ok(())
+    }
+
+    async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
+        let rows = sqlx::query(
+            "SELECT id, step, timer_name
+             FROM execution_log
+             WHERE status = 'WAITING_FOR_SIGNAL'
+             ORDER BY timestamp ASC
+             LIMIT 100",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let signals = rows
+            .iter()
+            .map(|row| {
+                let flow_id_str: String = row.try_get("id")?;
+                let flow_id = Uuid::parse_str(&flow_id_str)
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                let step: i32 = row.try_get("step")?;
+
+                let signal_name: Option<String> = row.try_get("timer_name")?;
+
+                Ok(super::SignalInfo {
+                    flow_id,
+                    step,
+                    signal_name,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(signals)
     }
 
     async fn cleanup_completed(&self, older_than: std::time::Duration) -> Result<u64> {

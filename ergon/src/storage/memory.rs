@@ -355,12 +355,19 @@ impl ExecutionLog for InMemoryExecutionLog {
         }
     }
 
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        params: &[u8],
-    ) -> Result<()> {
+    async fn log_signal(&self, flow_id: Uuid, step: i32, signal_name: &str) -> Result<()> {
+        let key = (flow_id, step);
+
+        if let Some(mut entry) = self.invocations.get_mut(&key) {
+            entry.set_status(InvocationStatus::WaitingForSignal);
+            entry.set_timer_name(Some(signal_name.to_string()));
+            Ok(())
+        } else {
+            Err(StorageError::InvocationNotFound { id: flow_id, step })
+        }
+    }
+
+    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
         let key = (flow_id, step);
         self.signal_params.insert(key, params.to_vec());
         Ok(())
@@ -375,6 +382,26 @@ impl ExecutionLog for InMemoryExecutionLog {
         let key = (flow_id, step);
         self.signal_params.remove(&key);
         Ok(())
+    }
+
+    async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
+        let mut signals = Vec::new();
+
+        for entry in self.invocations.iter() {
+            let (flow_id, step) = *entry.key();
+            let inv = entry.value();
+
+            // Check if this invocation is waiting for a signal
+            if inv.status() == InvocationStatus::WaitingForSignal {
+                signals.push(super::SignalInfo {
+                    flow_id,
+                    step,
+                    signal_name: inv.timer_name().map(|s| s.to_string()),
+                });
+            }
+        }
+
+        Ok(signals)
     }
 
     async fn cleanup_completed(&self, older_than: std::time::Duration) -> Result<u64> {

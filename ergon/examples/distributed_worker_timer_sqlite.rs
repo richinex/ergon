@@ -82,7 +82,10 @@ impl TimedOrderProcessor {
         );
 
         if self.amount <= 0.0 {
-            return Err(ExecutionError::Failed(format!("Invalid amount: {}", self.amount)));
+            return Err(ExecutionError::Failed(format!(
+                "Invalid amount: {}",
+                self.amount
+            )));
         }
 
         Ok(true)

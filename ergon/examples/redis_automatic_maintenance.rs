@@ -17,10 +17,10 @@
 //! RUST_LOG=ergon=debug cargo run --example redis_automatic_maintenance --features redis
 //! ```
 
+use chrono::Utc;
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::Utc;
 
 #[derive(Serialize, Deserialize, Clone, FlowType)]
 struct DelayedTaskFlow {
@@ -113,7 +113,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!(
             "   Task {} scheduled for {} (in {}s)",
-            i, scheduled_at.format("%H:%M:%S"), delay_seconds
+            i,
+            scheduled_at.format("%H:%M:%S"),
+            delay_seconds
         );
     }
 

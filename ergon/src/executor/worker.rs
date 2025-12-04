@@ -25,6 +25,17 @@ use tracing::{debug, error, info, warn, Instrument};
 use uuid::Uuid;
 
 // ============================================================================
+// Type Aliases
+// ============================================================================
+
+/// A boxed error that can be sent across threads.
+///
+/// This is the standard error type used throughout async Rust ecosystems
+/// (tokio, tower, axum, etc.). Any error implementing `std::error::Error`
+/// can be automatically converted to this type.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+// ============================================================================
 // Timer Typestates
 // ============================================================================
 
@@ -227,10 +238,20 @@ impl TracingBehavior for WithStructuredTracing {
 /// This trait allows us to store executors for different flow types in a
 /// single registry without knowing their concrete types at compile time.
 ///
+/// Returns `FlowOutcome` which makes suspension explicit (per Dave Cheney's principle).
+///
 /// Wrapped in Arc to allow cloning without holding the registry lock during execution.
 type BoxedExecutor<S> = Arc<
-    dyn Fn(Vec<u8>, Uuid, Arc<S>) -> Pin<Box<dyn Future<Output = Result<(), ExecutionError>> + Send>>
-        + Send
+    dyn Fn(
+            Vec<u8>,
+            Uuid,
+            Arc<S>,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = crate::executor::FlowOutcome<Result<(), ExecutionError>>>
+                    + Send,
+            >,
+        > + Send
         + Sync,
 >;
 
@@ -313,7 +334,7 @@ impl<S: ExecutionLog + 'static> Registry<S> {
         F: Fn(Arc<T>) -> Fut + Send + Sync + Clone + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
         R: Send + 'static,
-        E: Into<ExecutionError> + Send + 'static,
+        E: Into<BoxError> + Send + 'static,
     {
         // Use stable type ID instead of std::any::type_name()
         // This ensures compatibility across different compiler versions
@@ -325,22 +346,40 @@ impl<S: ExecutionLog + 'static> Registry<S> {
                 let executor = executor.clone();
 
                 Box::pin(async move {
+                    use crate::executor::FlowOutcome;
+
                     // Deserialize the flow
                     let flow: T = match deserialize_value(&data) {
                         Ok(f) => f,
-                        Err(e) => return Err(ExecutionError::Failed(format!("failed to deserialize flow: {}", e))),
+                        Err(e) => {
+                            return FlowOutcome::Completed(Err(ExecutionError::Failed(format!(
+                                "failed to deserialize flow: {}",
+                                e
+                            ))))
+                        }
                     };
 
                     // Create executor
                     let exec = Executor::new(flow_id, flow, storage);
 
-                    // Execute the flow using the registered executor
+                    // Execute the flow - returns FlowOutcome
                     // The executor expects Arc<T>, so we clone &T to create owned T, then wrap in Arc
-                    let result = exec.execute(move |f: &T| Box::pin(executor(Arc::new(f.clone()))))
+                    let outcome = exec
+                        .execute(move |f: &T| Box::pin(executor(Arc::new(f.clone()))))
                         .await;
 
-                    // Convert user's error type E to ExecutionError (preserves Suspend variant)
-                    result.map(|_| ()).map_err(|e| e.into())
+                    // Map FlowOutcome<Result<R, E>> to FlowOutcome<Result<(), ExecutionError>>
+                    match outcome {
+                        FlowOutcome::Suspended(reason) => FlowOutcome::Suspended(reason),
+                        FlowOutcome::Completed(result) => {
+                            // Convert user's error type E to ExecutionError
+                            let converted_result = result.map(|_| ()).map_err(|e| {
+                                let boxed: BoxError = e.into();
+                                ExecutionError::Failed(boxed.to_string())
+                            });
+                            FlowOutcome::Completed(converted_result)
+                        }
+                    }
                 })
             });
 
@@ -610,7 +649,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         F: Fn(Arc<Flow>) -> Fut + Send + Sync + Clone + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
         R: Send + 'static,
-        E: Into<ExecutionError> + Send + 'static,
+        E: Into<BoxError> + Send + 'static,
     {
         let mut registry = self.registry.write().await;
         registry.register(executor);
@@ -756,16 +795,33 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             };
                             // RwLock released here!
 
-                            let result = match executor {
+                            let outcome = match executor {
                                 Some(exec) => {
                                     exec(flow.flow_data.clone(), flow.flow_id, storage.clone()).await
                                 }
                                 None => {
-                                    Err(ExecutionError::Failed(format!("no executor registered for type: {}", flow.flow_type)))
+                                    use crate::executor::FlowOutcome;
+                                    FlowOutcome::Completed(Err(ExecutionError::Failed(format!("no executor registered for type: {}", flow.flow_type))))
                                 }
                             };
 
-                            // Handle completion, suspension, or retry
+                            // Handle FlowOutcome - suspension is explicit per Dave Cheney's principle
+                            match outcome {
+                                crate::executor::FlowOutcome::Suspended(reason) => {
+                                    // Flow suspended - just log it and do nothing
+                                    // The task stays in its current state (locked_by is cleared implicitly
+                                    // when the tokio task ends)
+                                    info!(
+                                        "Worker {} flow suspended: task_id={}, reason={:?}",
+                                        worker_id, flow_task_id, reason
+                                    );
+                                    // Note: Task remains in database with all its step history intact.
+                                    // When timer fires, resume_flow() will re-enqueue it, and the flow
+                                    // will resume from where it left off (using cached step results).
+                                    return;
+                                }
+                                crate::executor::FlowOutcome::Completed(result) => {
+                            // Handle completion or retry
                             match result {
                                 Ok(_) => {
                                     info!(
@@ -781,18 +837,6 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                             worker_id, e
                                         );
                                     }
-                                }
-                                Err(ExecutionError::Suspend(reason)) => {
-                                    // Flow suspended - just log it and do nothing
-                                    // The task stays in its current state (locked_by is cleared implicitly
-                                    // when the tokio task ends)
-                                    info!(
-                                        "Worker {} flow suspended: task_id={}, reason={:?}",
-                                        worker_id, flow_task_id, reason
-                                    );
-                                    // Note: Task remains in database with all its step history intact.
-                                    // When timer fires, resume_flow() will re-enqueue it, and the flow
-                                    // will resume from where it left off (using cached step results).
                                 }
                                 Err(error) => {
                                     let error_msg = error.to_string();
@@ -914,6 +958,8 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                             }
                                         }
                                     }
+                                }
+                            }
                                 }
                             }
                         };

@@ -289,9 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id2 = Uuid::new_v4();
 
     let instance2 = Executor::new(flow_id2, Arc::clone(&enrichment), Arc::clone(&storage2));
-    let result2 = instance2
-        .execute(|f| Box::pin(f.clone().process()))
-        .await;
+    let result2 = instance2.execute(|f| Box::pin(f.clone().process())).await;
 
     println!("\nResult:");
     println!("{:?}", result2);

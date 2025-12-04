@@ -42,7 +42,7 @@ mod worker;
 // Re-export public types
 pub use context::{ExecutionContext, LogStepStartParams, CALL_TYPE, EXECUTION_CONTEXT};
 pub use dag::{DagSummary, DeferredRegistry, StepHandle};
-pub use error::{ExecutionError, Result, SuspendReason};
+pub use error::{ExecutionError, FlowOutcome, Result, SuspendReason};
 pub use instance::Executor;
 pub use retry_helper::retry_with_policy;
 pub use scheduler::Scheduler;

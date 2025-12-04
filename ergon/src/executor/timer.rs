@@ -91,10 +91,16 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
             }
 
             // Timer not fired yet - suspend the flow
-            return Err(ExecutionError::Suspend(SuspendReason::Timer {
+            // Set suspension in context (authoritative - survives error type conversion)
+            let reason = SuspendReason::Timer {
                 flow_id: ctx.id,
                 step: current_step,
-            }));
+            };
+            ctx.set_suspend_reason(reason);
+            // Return error to prevent step caching; worker checks context to detect suspension
+            return Err(ExecutionError::Failed(
+                "Flow suspended for timer".to_string(),
+            ));
         }
     }
 
@@ -109,8 +115,14 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
         .map_err(ExecutionError::from)?;
 
     // Suspend the flow - it will be resumed when the timer fires
-    Err(ExecutionError::Suspend(SuspendReason::Timer {
+    // Set suspension in context (authoritative - survives error type conversion)
+    let reason = SuspendReason::Timer {
         flow_id: ctx.id,
         step: current_step,
-    }))
+    };
+    ctx.set_suspend_reason(reason);
+    // Return error to prevent step caching; worker checks context to detect suspension
+    Err(ExecutionError::Failed(
+        "Flow suspended for timer".to_string(),
+    ))
 }

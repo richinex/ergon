@@ -241,8 +241,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  - Simple info/debug/warn/error messages\n");
 
         // Create worker WITHOUT structured tracing (default)
-        let worker = Worker::new(storage.clone(), "worker-1")
-            .with_poll_interval(Duration::from_millis(100));
+        let worker =
+            Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(100));
 
         worker
             .register(|flow: Arc<OrderFlow>| flow.process_order())

@@ -120,9 +120,7 @@ impl RedisExecutionLog {
     }
 
     /// Gets an async connection from the pool.
-    async fn get_connection(
-        &self,
-    ) -> Result<deadpool_redis::Connection> {
+    async fn get_connection(&self) -> Result<deadpool_redis::Connection> {
         self.pool
             .get()
             .await
@@ -176,8 +174,8 @@ impl RedisExecutionLog {
             .map_err(|e| StorageError::Connection(e.to_string()))?;
         let step = get_i32("step")?;
         let timestamp_secs = get_i64("timestamp")?;
-        let timestamp = chrono::DateTime::from_timestamp(timestamp_secs, 0)
-            .unwrap_or_else(Utc::now);
+        let timestamp =
+            chrono::DateTime::from_timestamp(timestamp_secs, 0).unwrap_or_else(Utc::now);
         let class_name = get_str("class_name")?;
         let method_name = get_str("method_name")?;
         let status_str = get_str("status")?;
@@ -185,9 +183,7 @@ impl RedisExecutionLog {
             .map_err(|e| StorageError::Connection(e.to_string()))?;
         let attempts = get_i32("attempts")?;
         let parameters = data.get("parameters").cloned().unwrap_or_default();
-        let params_hash = get_str("params_hash")?
-            .parse::<u64>()
-            .unwrap_or(0);
+        let params_hash = get_str("params_hash")?.parse::<u64>().unwrap_or(0);
         let return_value = data.get("return_value").cloned();
         let delay_ms = get_i64("delay_ms").ok();
 
@@ -213,9 +209,8 @@ impl RedisExecutionLog {
 
         // Parse timer fields
         let timer_fire_at_millis = get_i64("timer_fire_at").ok();
-        let timer_fire_at = timer_fire_at_millis.and_then(|ms| {
-            chrono::DateTime::from_timestamp_millis(ms)
-        });
+        let timer_fire_at =
+            timer_fire_at_millis.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms));
         let timer_name = get_str("timer_name").ok();
 
         let mut invocation = Invocation::new(
@@ -604,18 +599,17 @@ impl ExecutionLog for RedisExecutionLog {
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
             // Parse flow
-            let flow_id = Uuid::parse_str(
-                &String::from_utf8_lossy(data.get("flow_id").ok_or_else(|| {
-                    StorageError::Connection("Missing flow_id".to_string())
-                })?),
-            )
+            let flow_id = Uuid::parse_str(&String::from_utf8_lossy(
+                data.get("flow_id")
+                    .ok_or_else(|| StorageError::Connection("Missing flow_id".to_string()))?,
+            ))
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-            let flow_type =
-                String::from_utf8_lossy(data.get("flow_type").ok_or_else(|| {
-                    StorageError::Connection("Missing flow_type".to_string())
-                })?)
-                .to_string();
+            let flow_type = String::from_utf8_lossy(
+                data.get("flow_type")
+                    .ok_or_else(|| StorageError::Connection("Missing flow_type".to_string()))?,
+            )
+            .to_string();
 
             let flow_data = data
                 .get("flow_data")
@@ -623,17 +617,15 @@ impl ExecutionLog for RedisExecutionLog {
                 .clone();
 
             let created_at_ts: i64 = String::from_utf8_lossy(
-                data.get("created_at").ok_or_else(|| {
-                    StorageError::Connection("Missing created_at".to_string())
-                })?,
+                data.get("created_at")
+                    .ok_or_else(|| StorageError::Connection("Missing created_at".to_string()))?,
             )
             .parse()
             .unwrap_or(0);
             let created_at =
                 chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
 
-            let updated_at =
-                chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
+            let updated_at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
 
             Ok(Some(super::ScheduledFlow {
                 task_id,
@@ -722,28 +714,27 @@ impl ExecutionLog for RedisExecutionLog {
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         // Parse flow
-        let flow_id = Uuid::parse_str(
-            &String::from_utf8_lossy(data.get("flow_id").ok_or_else(|| {
-                StorageError::Connection("Missing flow_id".to_string())
-            })?),
-        )
+        let flow_id = Uuid::parse_str(&String::from_utf8_lossy(
+            data.get("flow_id")
+                .ok_or_else(|| StorageError::Connection("Missing flow_id".to_string()))?,
+        ))
         .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        let flow_type =
-            String::from_utf8_lossy(data.get("flow_type").ok_or_else(|| {
-                StorageError::Connection("Missing flow_type".to_string())
-            })?)
-            .to_string();
+        let flow_type = String::from_utf8_lossy(
+            data.get("flow_type")
+                .ok_or_else(|| StorageError::Connection("Missing flow_type".to_string()))?,
+        )
+        .to_string();
 
         let flow_data = data
             .get("flow_data")
             .ok_or_else(|| StorageError::Connection("Missing flow_data".to_string()))?
             .clone();
 
-        let status_str =
-            String::from_utf8_lossy(data.get("status").ok_or_else(|| {
-                StorageError::Connection("Missing status".to_string())
-            })?);
+        let status_str = String::from_utf8_lossy(
+            data.get("status")
+                .ok_or_else(|| StorageError::Connection("Missing status".to_string()))?,
+        );
         let status: super::TaskStatus = status_str
             .parse()
             .map_err(|e: String| StorageError::Connection(e))?;
@@ -753,9 +744,8 @@ impl ExecutionLog for RedisExecutionLog {
             .map(|v| String::from_utf8_lossy(v).to_string());
 
         let created_at_ts: i64 = String::from_utf8_lossy(
-            data.get("created_at").ok_or_else(|| {
-                StorageError::Connection("Missing created_at".to_string())
-            })?,
+            data.get("created_at")
+                .ok_or_else(|| StorageError::Connection("Missing created_at".to_string()))?,
         )
         .parse()
         .unwrap_or(0);
@@ -763,19 +753,17 @@ impl ExecutionLog for RedisExecutionLog {
             chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
 
         let updated_at_ts: i64 = String::from_utf8_lossy(
-            data.get("updated_at").ok_or_else(|| {
-                StorageError::Connection("Missing updated_at".to_string())
-            })?,
+            data.get("updated_at")
+                .ok_or_else(|| StorageError::Connection("Missing updated_at".to_string()))?,
         )
         .parse()
         .unwrap_or(0);
         let updated_at =
             chrono::DateTime::from_timestamp(updated_at_ts, 0).unwrap_or_else(Utc::now);
 
-        let retry_count: u32 =
-            String::from_utf8_lossy(data.get("retry_count").unwrap_or(&vec![]))
-                .parse()
-                .unwrap_or(0);
+        let retry_count: u32 = String::from_utf8_lossy(data.get("retry_count").unwrap_or(&vec![]))
+            .parse()
+            .unwrap_or(0);
 
         let error_message = data
             .get("error_message")
@@ -846,8 +834,8 @@ impl ExecutionLog for RedisExecutionLog {
             let fire_at_bytes = data.get("timer_fire_at").unwrap_or(&default_vec);
             let fire_at_str = String::from_utf8_lossy(fire_at_bytes);
             let fire_at_ms: i64 = fire_at_str.parse().unwrap_or(0);
-            let fire_at = chrono::DateTime::from_timestamp_millis(fire_at_ms)
-                .unwrap_or_else(Utc::now);
+            let fire_at =
+                chrono::DateTime::from_timestamp_millis(fire_at_ms).unwrap_or_else(Utc::now);
 
             let timer_name = data
                 .get("timer_name")
@@ -930,6 +918,27 @@ impl ExecutionLog for RedisExecutionLog {
         Ok(())
     }
 
+    async fn log_signal(&self, flow_id: Uuid, step: i32, signal_name: &str) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let inv_key = Self::invocation_key(flow_id, step);
+
+        // Update invocation status to WAITING_FOR_SIGNAL
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&inv_key, "status", "WaitingForSignal")
+            .hset(&inv_key, "timer_name", signal_name)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        debug!(
+            "Logged signal wait: flow_id={}, step={}, signal_name={}",
+            flow_id, step, signal_name
+        );
+
+        Ok(())
+    }
+
     async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
         let mut conn = self.get_connection().await?;
 
@@ -995,12 +1004,7 @@ impl ExecutionLog for RedisExecutionLog {
 
     // ===== Signal Operations =====
 
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        params: &[u8],
-    ) -> Result<()> {
+    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let signal_key = Self::signal_key(flow_id, step);
 
@@ -1038,11 +1042,69 @@ impl ExecutionLog for RedisExecutionLog {
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        debug!(
-            "Removed signal params: flow_id={}, step={}",
-            flow_id, step
-        );
+        debug!("Removed signal params: flow_id={}, step={}", flow_id, step);
         Ok(())
+    }
+
+    async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
+        let mut conn = self.get_connection().await?;
+
+        // Scan for all invocation keys and check status
+        let mut cursor = 0u64;
+        let mut signals = Vec::new();
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .cursor_arg(cursor)
+                .arg("MATCH")
+                .arg("ergon:inv:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            for inv_key in keys {
+                // Get status from invocation
+                let status: Option<String> = conn
+                    .hget(&inv_key, "status")
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                if let Some(s) = status {
+                    if s == "WaitingForSignal" {
+                        // Parse key format: "ergon:inv:flow_id:step"
+                        let parts: Vec<&str> = inv_key.split(':').collect();
+                        if parts.len() == 4 {
+                            if let (Ok(flow_id), Ok(step)) = (
+                                Uuid::parse_str(parts[2]),
+                                parts[3].parse::<i32>(),
+                            ) {
+                                let signal_name: Option<String> = conn
+                                    .hget(&inv_key, "timer_name")
+                                    .await
+                                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                                let signal_name = signal_name.filter(|s| !s.is_empty());
+
+                                signals.push(super::SignalInfo {
+                                    flow_id,
+                                    step,
+                                    signal_name,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        Ok(signals)
     }
 
     // ===== Cleanup Operations =====

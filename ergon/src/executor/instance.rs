@@ -8,12 +8,10 @@
 //! since the `ergon::` namespace already indicates this is flow-related.
 
 use super::context::{ExecutionContext, CALL_TYPE, EXECUTION_CONTEXT};
-use super::error::{ExecutionError, Result};
-use super::signal::{RESUME_PARAMS, WAIT_NOTIFIERS};
+use super::error::{ExecutionError, FlowOutcome, Result};
 use crate::core::{serialize_value, CallType, InvocationStatus};
 use crate::storage::ExecutionLog;
 use std::sync::Arc;
-use tokio::sync::Notify;
 use uuid::Uuid;
 
 /// Executes flow instances with various execution strategies.
@@ -72,33 +70,41 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
     ///
     /// # Return Value
     ///
-    /// Returns `R` directly - the flow's return value. If your flow can fail, have it
-    /// return `Result<T, E>` as the `R` type.
+    /// Returns `FlowOutcome<R>` which makes suspension explicit:
+    /// - `FlowOutcome::Completed(result)` - Flow ran to completion (success or failure)
+    /// - `FlowOutcome::Suspended(reason)` - Flow suspended, waiting for timer/signal
+    ///
+    /// Following Dave Cheney's principle: "If your function can suspend, you must tell the caller."
     ///
     /// # Example
     ///
     /// ```ignore
-    /// // Flow returns Result<Order, String>
-    /// let result = executor
-    ///     .execute(|f| Box::pin(f.process_order("Alice", 149.99)))
-    ///     .await;  // Note: no ? operator needed here
-    /// match result {
-    ///     Ok(order) => println!("Order processed: {:?}", order),
-    ///     Err(e) => println!("Flow error: {}", e),
+    /// use ergon::FlowOutcome;
+    ///
+    /// match executor.execute(|f| Box::pin(f.process_order())).await {
+    ///     FlowOutcome::Completed(Ok(result)) => println!("Done: {:?}", result),
+    ///     FlowOutcome::Completed(Err(e)) => println!("Failed: {:?}", e),
+    ///     FlowOutcome::Suspended(reason) => println!("Waiting for {:?}", reason),
     /// }
     /// ```
-    pub async fn execute<F, R>(&self, f: F) -> R
+    pub async fn execute<F, R>(&self, f: F) -> FlowOutcome<R>
     where
         F: FnOnce(&T) -> std::pin::Pin<Box<dyn std::future::Future<Output = R> + Send + '_>>,
         R: Send + 'static,
     {
         let context = Arc::new(ExecutionContext::new(self.id, self.storage.clone()));
-        EXECUTION_CONTEXT
+        let result = EXECUTION_CONTEXT
             .scope(
                 Arc::clone(&context),
                 CALL_TYPE.scope(CallType::Run, async { f(&self.flow).await }),
             )
-            .await
+            .await;
+
+        // Check if flow suspended (taken from context before scope ends)
+        match context.take_suspend_reason() {
+            Some(reason) => FlowOutcome::Suspended(reason),
+            None => FlowOutcome::Completed(result),
+        }
     }
 
     /// Executes a synchronous flow function that returns a value.
@@ -202,8 +208,8 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
 
     /// Sends a signal to resume a waiting flow with the given parameters.
     ///
-    /// This method persists the resume parameters to storage and notifies any waiting tasks.
-    /// Parameters are stored both in-memory and in persistent storage for crash recovery.
+    /// This method persists the resume parameters to storage and re-enqueues the flow.
+    /// Parameters are stored in persistent storage for crash recovery.
     ///
     /// # Example
     ///
@@ -213,23 +219,35 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
     pub async fn signal_resume<P: serde::Serialize>(&self, params: &P) -> Result<()> {
         let params_bytes = serialize_value(params)?;
 
-        // Store in-memory for immediate notification
-        RESUME_PARAMS.insert(self.id, params_bytes.clone());
+        // Get the step number of the waiting invocation
+        let latest = self
+            .storage
+            .get_latest_invocation(self.id)
+            .await
+            .map_err(ExecutionError::from)?;
+
+        let step = if let Some(inv) = latest {
+            if inv.status() != InvocationStatus::WaitingForSignal {
+                return Err(ExecutionError::Failed(
+                    "No waiting step to resume".to_string(),
+                ));
+            }
+            inv.step()
+        } else {
+            return Err(ExecutionError::Failed("No invocation found".to_string()));
+        };
 
         // Persist to storage for crash recovery
-        // We use step=0 as a convention for flow-level signals (not step-specific)
-        let _ = self
-            .storage
-            .store_signal_params(self.id, 0, &params_bytes)
-            .await;
+        self.storage
+            .store_signal_params(self.id, step, &params_bytes)
+            .await
+            .map_err(ExecutionError::from)?;
 
-        let notifier = WAIT_NOTIFIERS
-            .entry(self.id)
-            .or_insert_with(|| Arc::new(Notify::new()))
-            .value()
-            .clone();
-
-        notifier.notify_one();
+        // Re-enqueue the flow so a worker can pick it up
+        self.storage
+            .resume_flow(self.id)
+            .await
+            .map_err(ExecutionError::from)?;
 
         Ok(())
     }

@@ -240,7 +240,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         items: vec!["Widget".to_string(), "Gadget".to_string()],
         total_amount: 99.99,
     };
-    scheduler.schedule(order, Uuid::new_v4()).await?;
+    let parent_flow_id = Uuid::new_v4();
+    scheduler.schedule(order.clone(), parent_flow_id).await?;
 
     // Worker only needs to handle the parent flow type
     // Child flows are executed inline, not scheduled separately
@@ -267,6 +268,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Order processing complete!");
     println!("\nPattern: Parent step executes child flow inline.");
     println!("Child flow's steps are tracked in parent's context.\n");
+
+    // NOW LET'S VERIFY: Check what flow IDs are actually used
+    println!("=========================================");
+    println!("DATABASE VERIFICATION:");
+    println!("=========================================\n");
+
+    println!("Parent flow_id: {}\n", parent_flow_id);
+    println!("Checking all stored invocations...\n");
+
+    // Get all invocations for the parent flow
+    if let Ok(invocations) = storage.get_invocations_for_flow(parent_flow_id).await {
+        println!("Found {} invocations\n", invocations.len());
+
+        for inv in &invocations {
+            println!("  flow_id: {}", inv.id());
+            println!("  step:    {}", inv.step());
+            println!("  class:   {}", inv.class_name());
+            println!("  method:  {}", inv.method_name());
+            println!("  status:  {:?}", inv.status());
+            println!();
+        }
+
+        if invocations.len() > 1 {
+            let first_id = invocations[0].id();
+            let all_same = invocations.iter().all(|inv| inv.id() == first_id);
+
+            println!("=========================================");
+            if all_same {
+                println!("✅ RESULT: All steps share the SAME flow_id");
+                println!("   This means: Child steps are cached in parent's context");
+                println!("   Pattern: Local-context composition (not independent flows)");
+                println!("\n   Reviewer's note: Child flows CANNOT be independently");
+                println!("   retried or suspended - they're part of parent's execution");
+            } else {
+                println!("✅ RESULT: Steps have DIFFERENT flow_ids");
+                println!("   This means: Child flows have independent contexts");
+                println!("   Pattern: True function tree with independent retry/suspension");
+            }
+            println!("=========================================");
+        }
+    } else {
+        println!("Note: No invocations found (flow may have completed)");
+    }
 
     Ok(())
 }

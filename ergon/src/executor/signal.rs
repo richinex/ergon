@@ -1,116 +1,28 @@
 //! External signal handling module.
 //!
-//! This module hides the complexity of:
-//! - External signal coordination (wait/resume mechanism)
-//! - StepFuture wrapping for await_external_signal
-//! - Global state management for waiting flows
+//! This module provides a simple API for awaiting external signals,
+//! following the same pattern as timer.rs.
 //!
-//! Following Parnas's information hiding principle, this module encapsulates
-//! decisions about how signals are coordinated across flow executions.
+//! # Example
+//!
+//! ```ignore
+//! #[step]
+//! async fn wait_for_approval(self: Arc<Self>) -> Result<String, ExecutionError> {
+//!     let approval: String = await_external_signal("approval").await?;
+//!     println!("Received approval: {}", approval);
+//!     Ok(approval)
+//! }
+//! ```
 
-use super::context::{ExecutionContext, CALL_TYPE, EXECUTION_CONTEXT};
-use super::error::{ExecutionError, Result};
-use crate::core::{deserialize_value, CallType, InvocationStatus};
-use dashmap::DashMap;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Notify;
-use uuid::Uuid;
+use super::context::EXECUTION_CONTEXT;
+use super::error::{ExecutionError, Result, SuspendReason};
+use crate::core::{deserialize_value, InvocationStatus};
 
-lazy_static::lazy_static! {
-    /// Notifiers for flows waiting for external signals.
-    /// Maps flow_id -> Notify for waking waiting flows.
-    ///
-    /// SAFETY: DashMap references must not be held across .await points or during
-    /// iteration with modification. Always clone the Arc<Notify> before awaiting.
-    /// See: https://github.com/xacrimon/dashmap/issues/74
-    pub(super) static ref WAIT_NOTIFIERS: DashMap<Uuid, Arc<Notify>> = DashMap::new();
-
-    /// Parameters passed when resuming flows from external signals.
-    /// Maps flow_id -> serialized params.
-    ///
-    /// SAFETY: DashMap references must not be held across .await points or during
-    /// iteration with modification. Extract values with .remove() or .clone() immediately.
-    /// See: https://github.com/xacrimon/dashmap/issues/74
-    pub(super) static ref RESUME_PARAMS: DashMap<Uuid, Vec<u8>> = DashMap::new();
-}
-
-/// Wrapper type for step futures that return Option<R>.
-/// This allows steps to safely return None in Await mode without using unsafe code.
+/// Wrapper type for step futures (for backwards compatibility with step macro).
 ///
-/// When used in normal flow execution (not through await_external_signal), this Future resolves to R.
-/// When used through await_external_signal, the Option<R> inner value is exposed for special handling.
+/// This is used internally by the #[step] macro and should not be used directly.
 pub struct StepFuture<Fut> {
     pub(crate) inner: Fut,
-}
-
-/// Builder for configuring signal timeouts.
-///
-/// Allows per-signal timeout configuration with explicit opt-out.
-pub struct SignalBuilder<Fut, R>
-where
-    Fut: std::future::Future<Output = Option<R>>,
-{
-    future: StepFuture<Fut>,
-    timeout: Option<Duration>,
-}
-
-impl<Fut, R> SignalBuilder<Fut, R>
-where
-    Fut: std::future::Future<Output = Option<R>>,
-    R: serde::Serialize + for<'de> serde::Deserialize<'de>,
-{
-    /// Create a new signal builder.
-    pub fn new(future: StepFuture<Fut>) -> Self {
-        Self {
-            future,
-            timeout: Some(Duration::from_secs(3600 * 24 * 7)), // Default: 7 days
-        }
-    }
-
-    /// Set a custom timeout for this signal.
-    ///
-    /// # Example
-    /// ```ignore
-    /// await_external_signal(self.confirm_email())
-    ///     .with_timeout(Duration::from_hours(48))
-    ///     .await?;
-    /// ```
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
-    /// Disable timeout for this signal (wait indefinitely).
-    ///
-    /// Use this for critical flows that must wait for external events
-    /// regardless of how long it takes.
-    ///
-    /// # Example
-    /// ```ignore
-    /// await_external_signal(self.legal_review())
-    ///     .no_timeout()
-    ///     .await?;
-    /// ```
-    pub fn no_timeout(mut self) -> Self {
-        self.timeout = None;
-        self
-    }
-
-    /// Execute the signal wait with the configured timeout.
-    pub async fn await_signal(self) -> Result<R> {
-        if let Some(timeout) = self.timeout {
-            match tokio::time::timeout(timeout, await_external_signal_impl(self.future)).await {
-                Ok(result) => result,
-                Err(_) => Err(ExecutionError::SignalTimeout {
-                    message: format!("Signal timed out after {:?}", timeout),
-                }),
-            }
-        } else {
-            await_external_signal_impl(self.future).await
-        }
-    }
 }
 
 impl<Fut> StepFuture<Fut> {
@@ -138,173 +50,110 @@ where
         match inner.poll(cx) {
             std::task::Poll::Ready(Some(value)) => std::task::Poll::Ready(value),
             std::task::Poll::Ready(None) => {
-                panic!("Step returned None outside of await_external_signal context")
+                panic!("Step returned None outside of signal context (this should not happen with the new signal API)")
             }
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
 }
 
-/// Awaits an external signal before continuing flow execution.
+/// Awaits an external signal with the given name.
 ///
-/// Returns a builder that allows configuring timeout behavior.
-/// By default, signals timeout after 7 days.
+/// The signal is persisted to storage and will resume even if the worker
+/// crashes. When the signal arrives, execution resumes from this point.
 ///
-/// # Example - Basic usage (default 7-day timeout)
-/// ```ignore
-/// let confirmed_at = await_external_signal(self.confirm_email())
-///     .await_signal().await?;
-/// ```
-///
-/// # Example - Custom timeout
-/// ```ignore
-/// let confirmed_at = await_external_signal(self.confirm_email())
-///     .with_timeout(Duration::from_hours(48))
-///     .await_signal().await?;
-/// ```
-///
-/// # Example - No timeout for critical flows
-/// ```ignore
-/// let approval = await_external_signal(self.legal_review())
-///     .no_timeout()
-///     .await_signal().await?;
-/// ```
-pub fn await_external_signal<Fut, R>(step_future: StepFuture<Fut>) -> SignalBuilder<Fut, R>
-where
-    Fut: std::future::Future<Output = Option<R>>,
-    R: serde::Serialize + for<'de> serde::Deserialize<'de>,
-{
-    SignalBuilder::new(step_future)
-}
-
-/// Internal implementation of signal waiting.
-///
-/// This function is used when a step needs to wait for an external event
-/// (like email confirmation, payment webhook, manual approval, etc.)
-/// before continuing. It:
-///
-/// 1. Logs the step as `WAITING_FOR_SIGNAL` in the database
-/// 2. Pauses execution until `signal_resume()` is called
-/// 3. Returns the value provided in the resume signal
-///
-/// # Panics
-/// - Panics if called outside of an execution context (i.e., not within a flow)
-/// - Panics if the step returns None in Resume mode (framework error)
+/// # Guarantees
+/// - **Durable**: Signal survives worker crashes
+/// - **Type-safe**: Signal data is deserialized to the expected type
+/// - **Idempotent**: If signal arrives multiple times, only first arrival proceeds (step caching)
 ///
 /// # Errors
-/// Returns an error if storage operations fail or signal parameters cannot be deserialized.
-async fn await_external_signal_impl<Fut, R>(step_future: StepFuture<Fut>) -> Result<R>
+/// Returns an error if storage operations fail or signal data cannot be deserialized.
+///
+/// # Example
+/// ```ignore
+/// #[step]
+/// async fn wait_for_payment(self: Arc<Self>) -> Result<PaymentDetails, ExecutionError> {
+///     let payment: PaymentDetails = await_external_signal("payment-received").await?;
+///     Ok(payment)
+/// }
+/// ```
+pub async fn await_external_signal<T>(signal_name: &str) -> Result<T>
 where
-    Fut: std::future::Future<Output = Option<R>>,
-    R: serde::Serialize + for<'de> serde::Deserialize<'de>,
+    T: serde::Serialize + for<'de> serde::Deserialize<'de>,
 {
-    let ctx = EXECUTION_CONTEXT.try_with(|c| c.clone()).expect(
-        "BUG: await_external_signal called outside execution context - this is a framework error",
-    );
+    let ctx = EXECUTION_CONTEXT
+        .try_with(|c| c.clone())
+        .expect("await_external_signal called outside execution context");
 
-    // Get the current step number (peek without incrementing)
-    let current_step = ctx.step_counter.load(Ordering::SeqCst);
+    // Get the step number that was just allocated by the step macro
+    let current_step = ctx
+        .last_allocated_step()
+        .expect("await_external_signal called but no step allocated");
 
-    // Check if this step is already waiting for a signal
+    // Check if we're resuming from a signal
     let existing_inv = ctx
         .storage
         .get_invocation(ctx.id, current_step)
         .await
-        .ok()
-        .flatten();
+        .map_err(ExecutionError::from)?;
 
     if let Some(inv) = existing_inv {
-        if inv.status() == InvocationStatus::WaitingForSignal {
-            // We're resuming - execute the step
-            let result = CALL_TYPE.scope(CallType::Resume, step_future.inner).await;
-            // In Resume mode, step should return Some(value)
-            return result.ok_or_else(|| {
-                ExecutionError::Failed(
-                    "BUG: Step returned None in Resume mode - step implementation error"
-                        .to_string(),
-                )
-            });
-        }
-    }
-
-    // First time calling this await - set up waiting state
-    CALL_TYPE
-        .scope(CallType::Await, async {
-            // Execute the step - it will return None in Await mode
-            let result = step_future.inner.await;
-
-            match result {
-                None => {
-                    // Step is awaiting - wait for external signal
-                    ctx.await_signal().await
-                }
-                Some(value) => {
-                    // Step completed immediately (shouldn't happen in Await mode)
-                    Ok(value)
-                }
+        if inv.status() == InvocationStatus::Complete {
+            // Signal already received and step completed - we're resuming
+            if let Some(bytes) = inv.return_value() {
+                let result: T = deserialize_value(bytes)?;
+                return Ok(result);
             }
-        })
-        .await
-}
-
-impl ExecutionContext {
-    /// Wait for an external signal to resume flow execution.
-    ///
-    /// This method is called internally by `await_external_signal` to block
-    /// until a signal is received via `signal_resume`.
-    ///
-    /// Uses the defensive notified() pattern to avoid missing signals.
-    /// Signal parameters are persisted to storage for crash recovery.
-    pub(super) async fn await_signal<R: for<'de> serde::Deserialize<'de>>(&self) -> Result<R> {
-        let current_step = self.step_counter.load(std::sync::atomic::Ordering::SeqCst);
-
-        // Defensive pattern: Register for notification FIRST (like timer.rs)
-        let notifier = WAIT_NOTIFIERS
-            .entry(self.id)
-            .or_insert_with(|| Arc::new(Notify::new()))
-            .value()
-            .clone();
-
-        // Register for notification BEFORE checking if signal already arrived
-        let notified = notifier.notified();
-
-        // Check if signal parameters already exist in storage (signal arrived before we started waiting)
-        if let Ok(Some(params)) = self.storage.get_signal_params(self.id, current_step).await {
-            // Signal already arrived - clean up and return immediately
-            WAIT_NOTIFIERS.remove(&self.id);
-            RESUME_PARAMS.remove(&self.id);
-            let _ = self.storage.remove_signal_params(self.id, current_step).await;
-            let result: R = deserialize_value(&params)?;
-            return Ok(result);
+            // If no return value stored, this is an error
+            return Err(ExecutionError::Failed(
+                "Signal step completed but no return value found".to_string(),
+            ));
         }
 
-        // Also check in-memory cache for backwards compatibility
-        if let Some((_, params)) = RESUME_PARAMS.remove(&self.id) {
-            // Signal already arrived - clean up and return immediately
-            WAIT_NOTIFIERS.remove(&self.id);
-            let _ = self.storage.remove_signal_params(self.id, current_step).await;
-            let result: R = deserialize_value(&params)?;
-            return Ok(result);
+        if inv.status() == InvocationStatus::WaitingForSignal {
+            // We're waiting for this signal - check if it's arrived
+            if let Some(params) = ctx.storage.get_signal_params(ctx.id, current_step).await? {
+                // Signal arrived! Deserialize and return the data
+                let result: T = deserialize_value(&params)?;
+                // Clean up signal params
+                ctx.storage
+                    .remove_signal_params(ctx.id, current_step)
+                    .await?;
+                return Ok(result);
+            }
+
+            // Signal not arrived yet - suspend the flow
+            // Set suspension in context (authoritative - survives error type conversion)
+            let reason = SuspendReason::Signal {
+                flow_id: ctx.id,
+                step: current_step,
+                signal_name: signal_name.to_string(),
+            };
+            ctx.set_suspend_reason(reason);
+            // Return error to prevent step caching; worker checks context to detect suspension
+            return Err(ExecutionError::Failed(
+                "Flow suspended for signal".to_string(),
+            ));
         }
-
-        // Wait for signal notification
-        notified.await;
-
-        // Signal arrived - try storage first, then in-memory
-        let params = if let Ok(Some(params)) = self.storage.get_signal_params(self.id, current_step).await {
-            let _ = self.storage.remove_signal_params(self.id, current_step).await;
-            params
-        } else {
-            RESUME_PARAMS
-                .remove(&self.id)
-                .map(|(_, v)| v)
-                .ok_or_else(|| ExecutionError::Failed("No resume parameters found".to_string()))?
-        };
-
-        // Clean up notifier
-        WAIT_NOTIFIERS.remove(&self.id);
-
-        let result: R = deserialize_value(&params)?;
-        Ok(result)
     }
+
+    // First time - log signal wait
+    ctx.storage
+        .log_signal(ctx.id, current_step, signal_name)
+        .await
+        .map_err(ExecutionError::from)?;
+
+    // Suspend the flow - it will be resumed when the signal arrives
+    // Set suspension in context (authoritative - survives error type conversion)
+    let reason = SuspendReason::Signal {
+        flow_id: ctx.id,
+        step: current_step,
+        signal_name: signal_name.to_string(),
+    };
+    ctx.set_suspend_reason(reason);
+    // Return error to prevent step caching; worker checks context to detect suspension
+    Err(ExecutionError::Failed(
+        "Flow suspended for signal".to_string(),
+    ))
 }

@@ -59,6 +59,14 @@ pub struct TimerInfo {
     pub timer_name: Option<String>,
 }
 
+/// Information about a flow waiting for a signal.
+#[derive(Debug, Clone)]
+pub struct SignalInfo {
+    pub flow_id: Uuid,
+    pub step: i32,
+    pub signal_name: Option<String>,
+}
+
 /// Trait for execution log storage backends.
 ///
 /// This trait defines the async interface for persisting and retrieving
@@ -321,6 +329,21 @@ pub trait ExecutionLog: Send + Sync {
     // ===== External Signal Operations =====
     // These methods support durable external signals that survive crashes.
 
+    /// Log a signal that the flow is waiting for.
+    ///
+    /// Called by await_external_signal() to persist the signal wait to storage.
+    /// Updates the invocation with WAITING_FOR_SIGNAL status and signal name.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn log_signal(&self, flow_id: Uuid, step: i32, signal_name: &str) -> Result<()> {
+        let _ = (flow_id, step, signal_name);
+        Err(StorageError::Unsupported(
+            "signals not implemented for this storage backend".to_string(),
+        ))
+    }
+
     /// Store signal parameters for a waiting flow.
     ///
     /// Called when a signal arrives for a flow that is (or will be)
@@ -330,12 +353,7 @@ pub trait ExecutionLog: Send + Sync {
     /// # Default Implementation
     ///
     /// Returns `StorageError::Unsupported` by default.
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        params: &[u8],
-    ) -> Result<()> {
+    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
         let _ = (flow_id, step, params);
         Err(StorageError::Unsupported(
             "signals not implemented for this storage backend".to_string(),
@@ -366,6 +384,19 @@ pub trait ExecutionLog: Send + Sync {
     async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
         let _ = (flow_id, step);
         Ok(())
+    }
+
+    /// Get all flows currently waiting for signals.
+    ///
+    /// Returns flows with status=WAITING_FOR_SIGNAL.
+    /// Used by examples and tools to find flows that need signal resumption.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns an empty vector by default. Storage backends that support
+    /// signals should override this method.
+    async fn get_waiting_signals(&self) -> Result<Vec<SignalInfo>> {
+        Ok(Vec::new())
     }
 
     // ===== Cleanup Operations =====
@@ -548,12 +579,11 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self).resume_flow(flow_id).await
     }
 
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        params: &[u8],
-    ) -> Result<()> {
+    async fn log_signal(&self, flow_id: Uuid, step: i32, signal_name: &str) -> Result<()> {
+        (**self).log_signal(flow_id, step, signal_name).await
+    }
+
+    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
         (**self).store_signal_params(flow_id, step, params).await
     }
 
@@ -563,6 +593,10 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
 
     async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
         (**self).remove_signal_params(flow_id, step).await
+    }
+
+    async fn get_waiting_signals(&self) -> Result<Vec<SignalInfo>> {
+        (**self).get_waiting_signals().await
     }
 
     async fn cleanup_completed(&self, older_than: Duration) -> Result<u64> {

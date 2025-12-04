@@ -7,8 +7,7 @@
 //! Following Parnas's information hiding principle, this module encapsulates
 //! decisions about how execution context is managed and propagated.
 
-use super::error::{format_params_preview, ExecutionError, Result};
-use super::signal::{RESUME_PARAMS, WAIT_NOTIFIERS};
+use super::error::{format_params_preview, ExecutionError, Result, SuspendReason};
 use crate::core::{
     deserialize_value, hash_params, serialize_value, CallType, Invocation, InvocationStatus,
     RetryPolicy,
@@ -16,7 +15,7 @@ use crate::core::{
 use crate::graph::{Graph, GraphResult, StepId};
 use crate::storage::{ExecutionLog, InvocationStartParams};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -60,6 +59,12 @@ pub struct ExecutionContext {
     /// Dependency graph for steps (built at runtime from step registrations).
     /// Uses RwLock for interior mutability since steps register during execution.
     dependency_graph: RwLock<Graph>,
+    /// Runtime suspension tracking (in-memory only, not persisted).
+    /// Set by schedule_timer()/await_external_signal() before returning error.
+    /// This survives error type conversion (e.g., ExecutionError -> String),
+    /// allowing the worker to detect suspension regardless of error type.
+    /// Uses Mutex for thread-safety (required for Send + Sync).
+    suspend_reason: Mutex<Option<SuspendReason>>,
 }
 
 impl ExecutionContext {
@@ -70,6 +75,7 @@ impl ExecutionContext {
             storage,
             step_counter: AtomicI32::new(0),
             dependency_graph: RwLock::new(Graph::new()),
+            suspend_reason: Mutex::new(None),
         }
     }
 
@@ -329,18 +335,44 @@ impl ExecutionContext {
     pub fn storage(&self) -> &Arc<dyn ExecutionLog> {
         &self.storage
     }
-}
 
-impl Drop for ExecutionContext {
-    /// Clean up notifiers when the execution context is dropped.
+    /// Sets the suspension reason for this flow execution.
     ///
-    /// This prevents memory leaks when flows are cancelled or aborted
-    /// before completion. Without this cleanup, notifiers would remain
-    /// in the global maps indefinitely.
-    fn drop(&mut self) {
-        // Clean up signal-related notifiers
-        WAIT_NOTIFIERS.remove(&self.id);
-        RESUME_PARAMS.remove(&self.id);
+    /// This is called by `schedule_timer()` and `await_external_signal()` before
+    /// returning an error. The suspension reason is stored in the context and
+    /// survives error type conversion (e.g., ExecutionError -> String via map_err).
+    ///
+    /// The worker checks this suspension reason before handling the result,
+    /// allowing suspension to work with any error type.
+    ///
+    /// If the mutex is poisoned (panic while holding lock), this logs an error
+    /// but does not panic. The suspension will not be recorded in this case.
+    pub fn set_suspend_reason(&self, reason: SuspendReason) {
+        match self.suspend_reason.lock() {
+            Ok(mut guard) => *guard = Some(reason),
+            Err(e) => {
+                // Mutex poisoned - log error but don't panic
+                // This is a serious issue but we shouldn't cascade failures
+                tracing::error!("Failed to set suspend reason: mutex poisoned - {:?}", e);
+            }
+        }
+    }
+
+    /// Takes and clears the suspension reason.
+    ///
+    /// This is called by the worker after flow execution to check if the flow
+    /// was suspended. Returns Some(reason) if suspended, None otherwise.
+    ///
+    /// Taking clears the value, ensuring each suspension is handled only once.
+    ///
+    /// If the mutex is poisoned, returns None (treats as not suspended).
+    pub fn take_suspend_reason(&self) -> Option<SuspendReason> {
+        self.suspend_reason
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
     }
 }
 
+// Note: No Drop implementation needed for ExecutionContext with the new signal API.
+// The database-backed signal system doesn't require in-memory cleanup.

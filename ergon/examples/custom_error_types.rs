@@ -421,8 +421,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
         .await
     {
-        Ok(result) => println!("\nResult: {} - {}", result.order_id, result.status),
-        Err(e) => println!("\nOrder failed: {}", e),
+        FlowOutcome::Completed(Ok(result)) => {
+            println!("\nResult: {} - {}", result.order_id, result.status)
+        }
+        FlowOutcome::Completed(Err(e)) => println!("\nOrder failed: {}", e),
+        FlowOutcome::Suspended(reason) => println!("\nOrder suspended: {:?}", reason),
     }
 
     // ==========================================================================
@@ -446,8 +449,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
         .await
     {
-        Ok(result) => println!("\nResult: {} - {}", result.order_id, result.status),
-        Err(e) => println!("\nOrder failed: {}", e),
+        FlowOutcome::Completed(Ok(result)) => {
+            println!("\nResult: {} - {}", result.order_id, result.status)
+        }
+        FlowOutcome::Completed(Err(e)) => println!("\nOrder failed: {}", e),
+        FlowOutcome::Suspended(reason) => println!("\nOrder suspended: {:?}", reason),
     }
 
     // ==========================================================================
@@ -471,8 +477,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(|f| Box::pin(Arc::new(f.clone()).process_order()))
         .await
     {
-        Ok(result) => println!("\nResult: {} - {}", result.order_id, result.status),
-        Err(e) => println!("\nOrder failed: {}", e),
+        FlowOutcome::Completed(Ok(result)) => {
+            println!("\nResult: {} - {}", result.order_id, result.status)
+        }
+        FlowOutcome::Completed(Err(e)) => println!("\nOrder failed: {}", e),
+        FlowOutcome::Suspended(reason) => println!("\nOrder suspended: {:?}", reason),
     }
 
     // ==========================================================================
