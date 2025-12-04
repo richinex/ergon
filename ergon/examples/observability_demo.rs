@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==============================================================\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     // Schedule mix of orders: some will complete, some will fail at authorization
     let orders = vec![
@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {
-        let worker = FlowWorker::new(storage_clone.clone(), "payment-worker")
+        let worker = Worker::new(storage_clone.clone(), "payment-worker")
             .with_poll_interval(Duration::from_millis(50));
 
         worker

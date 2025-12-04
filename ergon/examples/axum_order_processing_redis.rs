@@ -390,7 +390,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     println!("Connecting to Redis at: {}", redis_url);
 
-    let storage = Arc::new(RedisExecutionLog::new(&redis_url)?);
+    let storage = Arc::new(RedisExecutionLog::new(&redis_url).await?);
 
     // Optional: Reset Redis state for clean testing
     // storage.reset().await?;

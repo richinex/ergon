@@ -42,7 +42,7 @@
 //!
 //! Run with: cargo run --example distributed_worker_timer_tracing --features=redis
 
-use ergon::executor::{schedule_timer_named, FlowScheduler};
+use ergon::executor::{schedule_timer_named, Scheduler};
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -231,10 +231,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Initializing Redis storage");
     let redis_url = "redis://127.0.0.1:6379";
-    let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+    let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
     storage.reset().await?;
 
-    let scheduler = FlowScheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone());
 
     println!("Starting workers with TIMER PROCESSING + STRUCTURED TRACING...\n");
     println!("Expected span hierarchy:");
@@ -243,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  └── flow_execution [worker.id, flow.id, flow.type, task.id]\n");
 
     // Start worker 1 with BOTH timer processing AND structured tracing
-    let worker1 = FlowWorker::new(storage.clone(), "worker-1")
+    let worker1 = Worker::new(storage.clone(), "worker-1")
         .with_timers() // Enable timer processing
         .with_timer_interval(Duration::from_millis(100))
         .with_structured_tracing() // ← Enable structured spans
@@ -259,7 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Started worker-1 with timers + structured tracing");
 
     // Start worker 2 with BOTH timer processing AND structured tracing
-    let worker2 = FlowWorker::new(storage.clone(), "worker-2")
+    let worker2 = Worker::new(storage.clone(), "worker-2")
         .with_timers()
         .with_timer_interval(Duration::from_millis(100))
         .with_structured_tracing() // ← Enable structured spans

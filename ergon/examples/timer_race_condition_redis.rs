@@ -33,7 +33,7 @@
 //! ```
 
 use chrono::Utc;
-use ergon::executor::{schedule_timer, FlowWorker};
+use ergon::executor::schedule_timer;
 use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,14 +95,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - ergon handles this correctly via Redis check\n");
 
     // Setup Redis storage
-    let storage = Arc::new(RedisExecutionLog::new("redis://127.0.0.1:6379")?);
+    let storage = Arc::new(RedisExecutionLog::new("redis://127.0.0.1:6379").await?);
 
     // Clear any previous state
     storage.reset().await?;
 
     // Start worker with timer processing enabled and VERY frequent polling (10ms)
     // This makes the race condition MORE likely to occur
-    let worker = FlowWorker::new(storage.clone(), "timer-race-worker-redis")
+    let worker = Worker::new(storage.clone(), "timer-race-worker-redis")
         .with_timers()
         .with_timer_interval(Duration::from_millis(10))
         .start()
@@ -122,11 +122,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let flow_id = uuid::Uuid::new_v4();
-            let instance = FlowInstance::new(flow_id, flow, storage_clone);
+            let instance = Executor::new(flow_id, flow, storage_clone);
 
             let start = std::time::Instant::now();
             let result = instance
-                .executor()
                 .execute(|f| Box::pin(Arc::new(f.clone()).test_race()))
                 .await;
             let elapsed = start.elapsed();

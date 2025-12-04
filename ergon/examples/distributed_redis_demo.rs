@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Redis storage
     println!("Connecting to Redis at {}...", redis_url);
-    let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+    let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
 
     // Clear any previous data
     storage.reset().await?;

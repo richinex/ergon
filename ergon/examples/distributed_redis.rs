@@ -148,7 +148,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
     println!("Redis URL: {}\n", redis_url);
 
     // Create Redis storage (network-accessible!)
-    let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+    let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
 
     println!("1. Creating scheduler...");
     let scheduler = Scheduler::new(storage.clone());
@@ -203,7 +203,7 @@ async fn run_worker(redis_url: &str, worker_id: &str) -> Result<(), Box<dyn std:
     println!("Redis URL: {}\n", redis_url);
 
     // Create Redis storage (same Redis, different machine!)
-    let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+    let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
 
     println!("1. Starting worker...");
 

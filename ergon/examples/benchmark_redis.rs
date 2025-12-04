@@ -192,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("========================================\n");
 
     let redis_url = "redis://127.0.0.1:6379";
-    let storage = Arc::new(RedisExecutionLog::new(redis_url)?);
+    let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
     storage.reset().await?;
 
     let start = Instant::now();
