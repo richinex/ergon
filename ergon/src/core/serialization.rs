@@ -1,5 +1,6 @@
 use super::error::{Error, Result};
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 /// Compute a stable hash of serialized bytes for parameter comparison.
 ///
@@ -30,7 +31,7 @@ pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 ///
 /// # Errors
 /// Returns `Error::Deserialization` if the bytes cannot be deserialized.
-pub fn deserialize_value<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T> {
+pub fn deserialize_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     bincode::serde::decode_from_slice(bytes, bincode::config::standard())
         .map(|(value, _len)| value)
         .map_err(Error::Deserialization)

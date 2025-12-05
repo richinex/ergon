@@ -33,24 +33,23 @@ use super::context::EXECUTION_CONTEXT;
 use super::error::{ExecutionError, Result};
 use crate::core::FlowType;
 use crate::storage::{ScheduledFlow, TaskStatus};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Result of a child flow execution.
+/// Signal payload for child flow completion.
 ///
-/// This wrapper allows the worker to signal both success and failure to the parent.
-/// Child errors are converted to strings since arbitrary error types aren't Serialize.
-///
-/// Following Dave Cheney's principle: "Only handle an error once."
-/// The child signals completion (success or failure), and the parent decides how to handle it.
+/// This flat structure avoids nested enum serialization issues when the worker
+/// signals completion. The worker doesn't need to know the result type R - it just
+/// passes raw bytes. The parent knows R and handles type-specific deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ChildResult<T> {
-    /// Child completed successfully with a result
-    Ok(T),
-    /// Child failed with an error message
-    Err(String),
+pub struct SignalPayload {
+    /// Whether the child succeeded (true) or failed (false)
+    pub success: bool,
+    /// The serialized data: either the result (if success=true) or error message (if success=false)
+    pub data: Vec<u8>,
 }
 
 /// A pending child flow invocation.
@@ -71,7 +70,7 @@ pub struct PendingChild<R> {
 
 impl<R> PendingChild<R>
 where
-    R: for<'de> Deserialize<'de> + Serialize,
+    R: DeserializeOwned + Serialize,
 {
     /// Wait for the child flow to complete and return its result.
     ///
@@ -94,9 +93,28 @@ where
         use std::hash::{Hash, Hasher};
 
         // Get current context and storage
-        let (parent_id, storage) = EXECUTION_CONTEXT
-            .try_with(|ctx| (ctx.id, Arc::clone(&ctx.storage)))
+        let ctx = EXECUTION_CONTEXT
+            .try_with(|c| c.clone())
             .expect("result called outside execution context");
+        let parent_id = ctx.id;
+        let storage = Arc::clone(&ctx.storage);
+
+        // Allocate a step for this child invocation
+        let step = ctx.next_step();
+
+        // Log invocation start - this creates the invocation in storage
+        // Required before await_external_signal can call log_signal
+        let _ = ctx
+            .log_step_start(crate::executor::LogStepStartParams {
+                step,
+                class_name: "<child_flow>",
+                method_name: &format!("invoke({})", self.child_type),
+                delay: None,
+                status: crate::core::InvocationStatus::Pending,
+                params: &(),
+                retry_policy: None,
+            })
+            .await;
 
         // Generate deterministic child UUID based on parent + child_type + child_data_hash
         // This ensures uniqueness regardless of step counter state (important on replay
@@ -121,45 +139,45 @@ where
 
         // Only schedule child on first execution (not replay)
         if !child_already_scheduled {
-            let storage_clone = Arc::clone(&storage);
-            let child_bytes = self.child_bytes;
-            let child_type = self.child_type;
+            // Create ScheduledFlow with parent metadata
+            let now = Utc::now();
+            let scheduled = ScheduledFlow {
+                task_id: child_flow_id,
+                flow_id: child_flow_id,
+                flow_type: self.child_type,
+                flow_data: self.child_bytes,
+                status: TaskStatus::Pending,
+                locked_by: None,
+                created_at: now,
+                updated_at: now,
+                retry_count: 0,
+                error_message: None,
+                scheduled_for: None, // Execute immediately
+                // Level 3 metadata: parent and token
+                parent_flow_id: Some(parent_id),
+                signal_token: Some(child_flow_id.to_string()),
+            };
 
-            tokio::spawn(async move {
-                // Create ScheduledFlow with parent metadata
-                let now = Utc::now();
-                let scheduled = ScheduledFlow {
-                    task_id: child_flow_id,
-                    flow_id: child_flow_id,
-                    flow_type: child_type,
-                    flow_data: child_bytes,
-                    status: TaskStatus::Pending,
-                    locked_by: None,
-                    created_at: now,
-                    updated_at: now,
-                    retry_count: 0,
-                    error_message: None,
-                    scheduled_for: None, // Execute immediately
-                    // Level 3 metadata: parent and token
-                    parent_flow_id: Some(parent_id),
-                    signal_token: Some(child_flow_id.to_string()),
-                };
-
-                // Enqueue the flow
-                let _ = storage_clone.enqueue_flow(scheduled).await;
-            });
+            // Enqueue synchronously - must succeed before we wait
+            // This ensures child is guaranteed to be enqueued before parent suspends
+            storage.enqueue_flow(scheduled).await.map_err(|e| {
+                ExecutionError::Failed(format!("Failed to enqueue child flow: {}", e))
+            })?;
         }
 
         // Await child completion - cached on replay
-        // Worker signals with ChildResult<R> (wrapping both success and error)
+        // Worker signals with SignalPayload (flat structure: success flag + raw bytes)
         let signal_name = child_flow_id.to_string();
-        let child_result: ChildResult<R> =
+        let payload: SignalPayload =
             crate::executor::await_external_signal(&signal_name).await?;
 
-        // Unwrap ChildResult: map Ok(value) or convert Err(msg) to ExecutionError
-        match child_result {
-            ChildResult::Ok(value) => Ok(value),
-            ChildResult::Err(error_msg) => Err(ExecutionError::Failed(error_msg)),
+        // Parent handles type-specific deserialization (parent knows R, worker doesn't)
+        if payload.success {
+            let result: R = crate::core::deserialize_value(&payload.data)?;
+            Ok(result)
+        } else {
+            let error_msg: String = crate::core::deserialize_value(&payload.data)?;
+            Err(ExecutionError::Failed(error_msg))
         }
     }
 }

@@ -2,6 +2,7 @@ use super::error::{Error, Result};
 use super::retry::RetryPolicy;
 use super::serialization::deserialize_value;
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::Duration;
@@ -182,11 +183,11 @@ impl Invocation {
         self.attempts += 1;
     }
 
-    pub fn deserialize_parameters<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
+    pub fn deserialize_parameters<T: DeserializeOwned>(&self) -> Result<T> {
         deserialize_value(&self.parameters)
     }
 
-    pub fn deserialize_return_value<T: for<'de> Deserialize<'de>>(&self) -> Result<Option<T>> {
+    pub fn deserialize_return_value<T: DeserializeOwned>(&self) -> Result<Option<T>> {
         match &self.return_value {
             Some(bytes) => deserialize_value(bytes).map(Some),
             None => Ok(None),

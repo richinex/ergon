@@ -41,7 +41,7 @@ mod timer;
 mod worker;
 
 // Re-export public types
-pub use child_flow::{ChildResult, InvokeChild, PendingChild};
+pub use child_flow::{InvokeChild, PendingChild};
 pub use context::{ExecutionContext, LogStepStartParams, CALL_TYPE, EXECUTION_CONTEXT};
 pub use dag::{DagSummary, DeferredRegistry, StepHandle};
 pub use error::{ExecutionError, FlowOutcome, Result, SuspendReason};

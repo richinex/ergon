@@ -14,6 +14,8 @@ pub enum TaskStatus {
     Pending,
     /// Flow is currently being executed by a worker.
     Running,
+    /// Flow is suspended, waiting for an external signal or child flow completion.
+    Suspended,
     /// Flow has completed successfully.
     Complete,
     /// Flow execution failed.
@@ -26,6 +28,7 @@ impl TaskStatus {
         match self {
             TaskStatus::Pending => "PENDING",
             TaskStatus::Running => "RUNNING",
+            TaskStatus::Suspended => "SUSPENDED",
             TaskStatus::Complete => "COMPLETE",
             TaskStatus::Failed => "FAILED",
         }
@@ -43,10 +46,11 @@ impl std::str::FromStr for TaskStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "PENDING" => Ok(TaskStatus::Pending),
-            "RUNNING" => Ok(TaskStatus::Running),
-            "COMPLETE" => Ok(TaskStatus::Complete),
-            "FAILED" => Ok(TaskStatus::Failed),
+            "PENDING" | "Pending" => Ok(TaskStatus::Pending),  // Accept both (Redis uses PascalCase in some places)
+            "RUNNING" | "Running" => Ok(TaskStatus::Running),
+            "SUSPENDED" | "Suspended" => Ok(TaskStatus::Suspended),
+            "COMPLETE" | "Complete" => Ok(TaskStatus::Complete),
+            "FAILED" | "Failed" => Ok(TaskStatus::Failed),
             _ => Err(format!("unknown task status: {}", s)),
         }
     }

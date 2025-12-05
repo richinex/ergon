@@ -202,7 +202,7 @@ impl SqliteExecutionLog {
                 flow_id TEXT NOT NULL,
                 flow_type TEXT NOT NULL,
                 flow_data BLOB NOT NULL,
-                status TEXT CHECK( status IN ('PENDING','RUNNING','COMPLETE','FAILED') ) NOT NULL,
+                status TEXT CHECK( status IN ('PENDING','RUNNING','SUSPENDED','COMPLETE','FAILED') ) NOT NULL,
                 parent_flow_id TEXT,
                 signal_token TEXT,
                 locked_by TEXT,
@@ -581,7 +581,13 @@ impl ExecutionLog for SqliteExecutionLog {
         sqlx::query("DELETE FROM execution_log")
             .execute(&self.pool)
             .await?;
-        info!("Reset execution log database");
+        sqlx::query("DELETE FROM flow_queue")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM signal_params")
+            .execute(&self.pool)
+            .await?;
+        info!("Reset execution log database (cleared execution_log, flow_queue, signal_params)");
         Ok(())
     }
 
@@ -623,66 +629,40 @@ impl ExecutionLog for SqliteExecutionLog {
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        // Start a transaction for atomic dequeue operation
-        let mut tx = self.pool.begin().await?;
-
-        // Find the oldest pending flow that's ready to execute
+        // Single atomic operation using UPDATE...RETURNING (SQLite 3.35+)
+        // This eliminates the race condition where multiple workers SELECT the same row
         let now = Utc::now().timestamp_millis();
+
         let flow_opt = sqlx::query(
-            "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
-                    retry_count, error_message, scheduled_for, parent_flow_id, signal_token
-             FROM flow_queue
-             WHERE status = 'PENDING'
-               AND (scheduled_for IS NULL OR scheduled_for <= ?)
-             ORDER BY created_at ASC
-             LIMIT 1",
+            "UPDATE flow_queue
+             SET status = 'RUNNING', locked_by = ?1, updated_at = ?2
+             WHERE task_id = (
+                 SELECT task_id FROM flow_queue
+                 WHERE status = 'PENDING'
+                   AND (scheduled_for IS NULL OR scheduled_for <= ?3)
+                 ORDER BY created_at ASC
+                 LIMIT 1
+             )
+             RETURNING task_id, flow_id, flow_type, flow_data, status, locked_by,
+                       created_at, updated_at, retry_count, error_message,
+                       scheduled_for, parent_flow_id, signal_token"
         )
+        .bind(worker_id)
         .bind(now)
-        .fetch_optional(&mut *tx)
+        .bind(now)
+        .fetch_optional(&self.pool)
         .await?
         .map(|row| Self::row_to_scheduled_flow(&row))
         .transpose()?;
 
-        if let Some(flow) = flow_opt {
-            // Lock it by updating status and locked_by
-            let result = sqlx::query(
-                "UPDATE flow_queue
-                 SET status = 'RUNNING', locked_by = ?, updated_at = ?
-                 WHERE task_id = ? AND status = 'PENDING'",
-            )
-            .bind(worker_id)
-            .bind(Utc::now().timestamp_millis())
-            .bind(flow.task_id.to_string())
-            .execute(&mut *tx)
-            .await?;
-
-            // Check if we actually locked the flow (another worker may have grabbed it)
-            if result.rows_affected() == 0 {
-                // Another worker already locked this flow, return None
-                debug!(
-                    "Flow already locked by another worker: task_id={}",
-                    flow.task_id
-                );
-                return Ok(None);
-            }
-
-            tx.commit().await?;
-
+        if let Some(flow) = &flow_opt {
             debug!(
                 "Dequeued flow: task_id={}, flow_type={}, worker={}",
                 flow.task_id, flow.flow_type, worker_id
             );
-
-            // Return the flow with updated status
-            Ok(Some(super::ScheduledFlow {
-                status: super::TaskStatus::Running,
-                locked_by: Some(worker_id.to_string()),
-                updated_at: Utc::now(),
-                ..flow
-            }))
-        } else {
-            Ok(None)
         }
+
+        Ok(flow_opt)
     }
 
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
@@ -1000,14 +980,15 @@ impl ExecutionLog for SqliteExecutionLog {
 
     async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
         // Find the task_id for this flow_id and re-enqueue it
+        // ONLY resume flows that are SUSPENDED (waiting for signals/child flows)
+        // DO NOT resume RUNNING flows - this causes race conditions with multiple workers
         let result = sqlx::query(
             "UPDATE flow_queue
              SET status = 'PENDING',
                  locked_by = NULL,
                  updated_at = ?
              WHERE flow_id = ?
-               AND status != 'COMPLETE'
-               AND status != 'FAILED'",
+               AND status = 'SUSPENDED'",
         )
         .bind(Utc::now().timestamp_millis())
         .bind(flow_id.to_string())
@@ -1016,7 +997,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         if result.rows_affected() == 0 {
             return Err(StorageError::Connection(format!(
-                "Task not found for flow_id: {}",
+                "Task not found or not in SUSPENDED state for flow_id: {}",
                 flow_id
             )));
         }

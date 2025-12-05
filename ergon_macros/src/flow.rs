@@ -213,8 +213,13 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Execute the user's DAG setup and execution block
                     let __result: #return_type = #wrapped_block;
 
-                    // Log completion
-                    #log_completion_code
+                    // Don't log completion if flow is suspending
+                    // await_external_signal sets suspend_reason before returning its error
+                    // This prevents caching the suspension error as a "completed" step
+                    if !__ctx.has_suspend_reason() {
+                        // Log completion (only for real completions, not suspensions)
+                        #log_completion_code
+                    }
 
                     __result
                 }

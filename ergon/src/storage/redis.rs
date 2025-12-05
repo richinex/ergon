@@ -119,6 +119,27 @@ impl RedisExecutionLog {
         })
     }
 
+    /// Creates a connection pool with full configuration including stale lock timeout.
+    /// Useful for testing with shorter timeouts.
+    pub async fn with_full_config(
+        redis_url: &str,
+        completed_ttl_secs: i64,
+        signal_ttl_secs: i64,
+        stale_lock_timeout_ms: i64,
+    ) -> Result<Self> {
+        let cfg = Config::from_url(redis_url);
+        let pool = cfg
+            .create_pool(Some(Runtime::Tokio1))
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(Self {
+            pool,
+            completed_ttl: completed_ttl_secs,
+            signal_ttl: signal_ttl_secs,
+            stale_lock_timeout_ms,
+        })
+    }
+
     /// Gets an async connection from the pool.
     async fn get_connection(&self) -> Result<deadpool_redis::Connection> {
         self.pool
@@ -264,26 +285,50 @@ impl ExecutionLog for RedisExecutionLog {
             .and_then(|p| serde_json::to_string(&p).ok())
             .unwrap_or_default();
 
-        // Store invocation as HASH
         let inv_key = Self::invocation_key(id, step);
-        let _: () = redis::pipe()
-            .atomic()
-            .hset(&inv_key, "id", id.to_string())
-            .hset(&inv_key, "step", step)
-            .hset(&inv_key, "timestamp", timestamp)
-            .hset(&inv_key, "class_name", class_name)
-            .hset(&inv_key, "method_name", method_name)
-            .hset(&inv_key, "status", status.as_str())
-            .hset(&inv_key, "attempts", 1)
-            .hset(&inv_key, "parameters", parameters)
-            .hset(&inv_key, "params_hash", params_hash.to_string())
-            .hset(&inv_key, "delay_ms", delay_ms)
-            .hset(&inv_key, "retry_policy", retry_policy_json)
-            .hset(&inv_key, "is_retryable", "") // Empty = None
-            .hset(&inv_key, "timer_fire_at", 0)
-            .hset(&inv_key, "timer_name", "")
-            .rpush(Self::invocations_key(id), &inv_key)
-            .query_async(&mut *conn)
+        let invocations_list = Self::invocations_key(id);
+
+        // Atomic operation using Lua script to match SQLite's "ON CONFLICT DO UPDATE SET attempts = attempts + 1"
+        // If the invocation exists (has 'id' field), only increment attempts; otherwise create it
+        let script = r#"
+            if redis.call('HEXISTS', KEYS[1], 'id') == 1 then
+                return redis.call('HINCRBY', KEYS[1], 'attempts', 1)
+            else
+                redis.call('HSET', KEYS[1],
+                    'id', ARGV[1],
+                    'step', ARGV[2],
+                    'timestamp', ARGV[3],
+                    'class_name', ARGV[4],
+                    'method_name', ARGV[5],
+                    'status', ARGV[6],
+                    'attempts', 1,
+                    'parameters', ARGV[7],
+                    'params_hash', ARGV[8],
+                    'delay_ms', ARGV[9],
+                    'retry_policy', ARGV[10],
+                    'is_retryable', '',
+                    'timer_fire_at', 0,
+                    'timer_name', ''
+                )
+                redis.call('RPUSH', KEYS[2], KEYS[1])
+                return 1
+            end
+        "#;
+
+        let _: i32 = redis::Script::new(script)
+            .key(&inv_key)
+            .key(&invocations_list)
+            .arg(id.to_string())
+            .arg(step)
+            .arg(timestamp)
+            .arg(class_name)
+            .arg(method_name)
+            .arg(status.as_str())
+            .arg(parameters)
+            .arg(params_hash.to_string())
+            .arg(delay_ms)
+            .arg(retry_policy_json)
+            .invoke_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
@@ -312,7 +357,7 @@ impl ExecutionLog for RedisExecutionLog {
         // Update status and return value
         let _: () = redis::pipe()
             .atomic()
-            .hset(&inv_key, "status", "Complete")
+            .hset(&inv_key, "status", InvocationStatus::Complete.as_str())
             .hset(&inv_key, "return_value", return_value)
             .query_async(&mut *conn)
             .await
@@ -492,13 +537,21 @@ impl ExecutionLog for RedisExecutionLog {
             }
         }
 
+        debug!("Found {} keys to delete", all_keys.len());
+
         // Delete all found keys in batches
         if !all_keys.is_empty() {
             for chunk in all_keys.chunks(100) {
-                let _: () = conn
-                    .del(chunk)
+                // Use redis::cmd with explicit DEL command
+                let mut cmd = redis::cmd("DEL");
+                for key in chunk {
+                    cmd.arg(key);
+                }
+                let deleted: usize = cmd
+                    .query_async(&mut *conn)
                     .await
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
+                debug!("Deleted {} keys from batch", deleted);
             }
         }
 
@@ -527,7 +580,7 @@ impl ExecutionLog for RedisExecutionLog {
                 .hset(&flow_key, "task_id", task_id.to_string())
                 .hset(&flow_key, "flow_id", flow.flow_id.to_string())
                 .hset(&flow_key, "flow_type", &flow.flow_type)
-                .hset(&flow_key, "status", "Pending")
+                .hset(&flow_key, "status", "PENDING")
                 .hset(&flow_key, "created_at", flow.created_at.timestamp())
                 .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
                 .hset(&flow_key, "scheduled_for", scheduled_ts)
@@ -554,7 +607,7 @@ impl ExecutionLog for RedisExecutionLog {
                 .hset(&flow_key, "task_id", task_id.to_string())
                 .hset(&flow_key, "flow_id", flow.flow_id.to_string())
                 .hset(&flow_key, "flow_type", &flow.flow_type)
-                .hset(&flow_key, "status", "Pending")
+                .hset(&flow_key, "status", "PENDING")
                 .hset(&flow_key, "created_at", flow.created_at.timestamp())
                 .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
                 .hset(&flow_key, "flow_data", flow.flow_data.as_slice());
@@ -581,19 +634,20 @@ impl ExecutionLog for RedisExecutionLog {
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
         let mut conn = self.get_connection().await?;
 
-        // Blocking pop with 1 second timeout (efficient!)
-        let result: Option<Vec<String>> = conn
-            .blpop("ergon:queue:pending", 1.0)
+        // Reliable queue pattern: LMOVE atomically pops from pending and pushes to per-worker processing list
+        // If worker crashes after this, task stays in processing list and can be recovered by stale lock detection
+        let processing_key = format!("ergon:processing:{}", worker_id);
+        let task_id_str: Option<String> = redis::cmd("LMOVE")
+            .arg("ergon:queue:pending")
+            .arg(&processing_key)
+            .arg("LEFT")   // pop from left of pending queue (FIFO)
+            .arg("RIGHT")  // push to right of processing list
+            .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        if let Some(values) = result {
-            if values.len() < 2 {
-                return Ok(None);
-            }
-
-            let task_id_str = &values[1];
-            let task_id = Uuid::parse_str(task_id_str)
+        if let Some(task_id_str) = task_id_str {
+            let task_id = Uuid::parse_str(&task_id_str)
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
             let flow_key = Self::flow_key(task_id);
@@ -602,7 +656,7 @@ impl ExecutionLog for RedisExecutionLog {
             // Atomically update status and lock
             let _: () = redis::pipe()
                 .atomic()
-                .hset(&flow_key, "status", "Running")
+                .hset(&flow_key, "status", "RUNNING")
                 .hset(&flow_key, "locked_by", worker_id)
                 .hset(&flow_key, "updated_at", now)
                 // Add to running set with current timestamp for stale lock detection
@@ -646,6 +700,16 @@ impl ExecutionLog for RedisExecutionLog {
 
             let updated_at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
 
+            // Extract Level 3 parent metadata if present
+            let parent_flow_id: Option<String> = data
+                .get("parent_flow_id")
+                .map(|v| String::from_utf8_lossy(v).to_string());
+            let parent_flow_id = parent_flow_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
+            let signal_token: Option<String> = data
+                .get("signal_token")
+                .map(|v| String::from_utf8_lossy(v).to_string())
+                .filter(|s| !s.is_empty());
+
             Ok(Some(super::ScheduledFlow {
                 task_id,
                 flow_id,
@@ -658,8 +722,8 @@ impl ExecutionLog for RedisExecutionLog {
                 retry_count: 0,
                 error_message: None,
                 scheduled_for: None,
-                parent_flow_id: None, // TODO: Extract from Redis hash
-                signal_token: None,   // TODO: Extract from Redis hash
+                parent_flow_id,
+                signal_token,
             }))
         } else {
             Ok(None)
@@ -671,14 +735,27 @@ impl ExecutionLog for RedisExecutionLog {
         let flow_key = Self::flow_key(task_id);
         let now = Utc::now().timestamp();
 
-        // Update flow status and remove from running set
-        let _: () = redis::pipe()
-            .atomic()
+        // Get worker_id to remove from correct processing list
+        let locked_by: Option<String> = conn
+            .hget(&flow_key, "locked_by")
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        let mut pipe = redis::pipe();
+        pipe.atomic()
             .hset(&flow_key, "status", status.as_str())
             .hset(&flow_key, "updated_at", now)
             .zrem("ergon:running", task_id.to_string())
             // Set TTL on completed flow for automatic cleanup
-            .expire(&flow_key, self.completed_ttl)
+            .expire(&flow_key, self.completed_ttl);
+
+        // Remove from worker's processing list (reliable queue pattern)
+        if let Some(worker_id) = locked_by {
+            let processing_key = format!("ergon:processing:{}", worker_id);
+            pipe.lrem(&processing_key, 1, task_id.to_string());
+        }
+
+        let _: () = pipe
             .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
@@ -901,10 +978,10 @@ impl ExecutionLog for RedisExecutionLog {
         let script = redis::Script::new(
             r#"
             local status = redis.call('HGET', KEYS[1], 'status')
-            if status ~= 'WaitingForTimer' then
+            if status ~= 'WAITING_FOR_TIMER' then
                 return 0
             end
-            redis.call('HSET', KEYS[1], 'status', 'Complete')
+            redis.call('HSET', KEYS[1], 'status', 'COMPLETE')
             redis.call('HSET', KEYS[1], 'return_value', ARGV[1])
             redis.call('ZREM', KEYS[2], ARGV[2])
             return 1
@@ -938,7 +1015,7 @@ impl ExecutionLog for RedisExecutionLog {
         // Update invocation and add to timers sorted set
         let _: () = redis::pipe()
             .atomic()
-            .hset(&inv_key, "status", "WaitingForTimer")
+            .hset(&inv_key, "status", InvocationStatus::WaitingForTimer.as_str())
             .hset(&inv_key, "timer_fire_at", fire_at_ms)
             .hset(&inv_key, "timer_name", timer_name.unwrap_or(""))
             // Add to timers sorted set (score = fire_at timestamp)
@@ -957,7 +1034,7 @@ impl ExecutionLog for RedisExecutionLog {
         // Update invocation status to WAITING_FOR_SIGNAL
         let _: () = redis::pipe()
             .atomic()
-            .hset(&inv_key, "status", "WaitingForSignal")
+            .hset(&inv_key, "status", InvocationStatus::WaitingForSignal.as_str())
             .hset(&inv_key, "timer_name", signal_name)
             .query_async(&mut *conn)
             .await
@@ -1024,9 +1101,32 @@ impl ExecutionLog for RedisExecutionLog {
             StorageError::Connection(format!("Task not found for flow_id: {}", flow_id))
         })?;
 
-        // Re-enqueue the task to pending queue
-        let _: () = conn
+        let flow_key = Self::flow_key(task_id);
+        let now = Utc::now().timestamp();
+
+        // Check if flow is in SUSPENDED state first
+        let status: Option<String> = conn
+            .hget(&flow_key, "status")
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if status.as_deref() != Some("SUSPENDED") {
+            return Err(StorageError::Connection(format!(
+                "Task not found or not in SUSPENDED state for flow_id: {}",
+                flow_id
+            )));
+        }
+
+        // ONLY resume flows that are SUSPENDED (waiting for signals/child flows)
+        // DO NOT resume RUNNING flows - this causes race conditions with multiple workers
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&flow_key, "status", "PENDING")
+            .hdel(&flow_key, "locked_by")
+            .hset(&flow_key, "updated_at", now)
+            .zrem("ergon:running", task_id.to_string())
             .rpush("ergon:queue:pending", task_id.to_string())
+            .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
@@ -1104,7 +1204,7 @@ impl ExecutionLog for RedisExecutionLog {
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
 
                 if let Some(s) = status {
-                    if s == "WaitingForSignal" {
+                    if s == "WAITING_FOR_SIGNAL" {
                         // Parse key format: "ergon:inv:flow_id:step"
                         let parts: Vec<&str> = inv_key.split(':').collect();
                         if parts.len() == 4 {
@@ -1173,7 +1273,7 @@ impl ExecutionLog for RedisExecutionLog {
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
 
                 if let (Some(s), Some(ts)) = (status, updated_at) {
-                    if (s == "Complete" || s == "Failed") && ts < cutoff_ts {
+                    if (s == "COMPLETE" || s == "FAILED") && ts < cutoff_ts {
                         // Delete the flow key
                         let _: () = conn
                             .del(&flow_key)
@@ -1209,7 +1309,7 @@ impl ExecutionLog for RedisExecutionLog {
             local count = 0
             for _, task_id in ipairs(ready) do
                 redis.call('ZREM', 'ergon:queue:delayed', task_id)
-                redis.call('LPUSH', 'ergon:queue:pending', task_id)
+                redis.call('RPUSH', 'ergon:queue:pending', task_id)
                 count = count + 1
             end
             return count
@@ -1233,17 +1333,14 @@ impl ExecutionLog for RedisExecutionLog {
         let now = Utc::now().timestamp_millis();
         let stale_cutoff = now - self.stale_lock_timeout_ms;
 
-        // Find flows that started before the cutoff
+        // Find flows that started before the cutoff (in ergon:running)
         let stale_tasks: Vec<String> = conn
             .zrangebyscore("ergon:running", 0, stale_cutoff)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        if stale_tasks.is_empty() {
-            return Ok(0);
-        }
+        let mut recovered_count = stale_tasks.len() as u64;
 
-        let count = stale_tasks.len() as u64;
         for task_id_str in &stale_tasks {
             let task_id = match Uuid::parse_str(task_id_str) {
                 Ok(id) => id,
@@ -1252,13 +1349,26 @@ impl ExecutionLog for RedisExecutionLog {
 
             let flow_key = Self::flow_key(task_id);
 
-            // Reset flow to pending
-            let _: () = redis::pipe()
-                .atomic()
-                .hset(&flow_key, "status", "Pending")
+            // Get worker_id to remove from processing list
+            let locked_by: Option<String> = conn
+                .hget(&flow_key, "locked_by")
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            let mut pipe = redis::pipe();
+            pipe.atomic()
+                .hset(&flow_key, "status", "PENDING")
                 .hdel(&flow_key, "locked_by")
                 .zrem("ergon:running", task_id_str)
-                .rpush("ergon:queue:pending", task_id_str)
+                .rpush("ergon:queue:pending", task_id_str);
+
+            // Remove from worker's processing list (reliable queue pattern)
+            if let Some(worker_id) = locked_by {
+                let processing_key = format!("ergon:processing:{}", worker_id);
+                pipe.lrem(&processing_key, 1, task_id_str);
+            }
+
+            let _: () = pipe
                 .query_async(&mut *conn)
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
@@ -1266,7 +1376,68 @@ impl ExecutionLog for RedisExecutionLog {
             warn!("Recovered stale lock for flow: {}", task_id);
         }
 
-        info!("Recovered {} stale locks", count);
-        Ok(count)
+        // Also scan all processing lists for orphaned tasks (tasks in processing but not in running)
+        // This handles the LPOP loss scenario where task was dequeued but never marked RUNNING
+        let mut cursor = 0u64;
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .cursor_arg(cursor)
+                .arg("MATCH")
+                .arg("ergon:processing:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            cursor = new_cursor;
+
+            for processing_key in keys {
+                // Get all tasks in this processing list
+                let tasks: Vec<String> = conn
+                    .lrange(&processing_key, 0, -1)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                for task_id_str in tasks {
+                    // Check if task is in running set
+                    let score: Option<i64> = conn
+                        .zscore("ergon:running", &task_id_str)
+                        .await
+                        .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                    // If not in running set, it's orphaned - move back to pending
+                    if score.is_none() {
+                        let task_id = match Uuid::parse_str(&task_id_str) {
+                            Ok(id) => id,
+                            Err(_) => continue,
+                        };
+
+                        let flow_key = Self::flow_key(task_id);
+
+                        let _: () = redis::pipe()
+                            .atomic()
+                            .hset(&flow_key, "status", "PENDING")
+                            .lrem(&processing_key, 1, &task_id_str)
+                            .rpush("ergon:queue:pending", &task_id_str)
+                            .query_async(&mut *conn)
+                            .await
+                            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                        warn!("Recovered orphaned task from processing list: {}", task_id);
+                        recovered_count += 1;
+                    }
+                }
+            }
+
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        if recovered_count > 0 {
+            info!("Recovered {} stale/orphaned flows", recovered_count);
+        }
+        Ok(recovered_count)
     }
 }

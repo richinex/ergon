@@ -17,6 +17,7 @@
 use super::context::EXECUTION_CONTEXT;
 use super::error::{ExecutionError, Result, SuspendReason};
 use crate::core::{deserialize_value, InvocationStatus};
+use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 /// Wrapper type for step futures (for backwards compatibility with step macro).
@@ -81,7 +82,7 @@ where
 /// ```
 pub async fn await_external_signal<T>(signal_name: &str) -> Result<T>
 where
-    T: serde::Serialize + for<'de> serde::Deserialize<'de>,
+    T: serde::Serialize + DeserializeOwned,
 {
     let ctx = EXECUTION_CONTEXT
         .try_with(|c| c.clone())
@@ -117,6 +118,11 @@ where
             if let Some(params) = ctx.storage.get_signal_params(ctx.id, current_step).await? {
                 // Signal arrived! Deserialize and return the data
                 let result: T = deserialize_value(&params)?;
+                // CRITICAL: Mark invocation as complete BEFORE removing params
+                // This ensures on replay we return the cached value instead of suspending again
+                ctx.storage
+                    .log_invocation_completion(ctx.id, current_step, &params)
+                    .await?;
                 // Clean up signal params
                 ctx.storage
                     .remove_signal_params(ctx.id, current_step)

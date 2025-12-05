@@ -456,7 +456,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         #(#attrs)*
         #register_sig
         where
-            #return_type: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + 'static,
+            #return_type: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
         {
             // Clone Arc<Self> if present
             #arc_setup_code

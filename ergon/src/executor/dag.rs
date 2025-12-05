@@ -57,6 +57,7 @@ use crate::core::{deserialize_value, serialize_value};
 use crate::graph::{Graph, StepId};
 use petgraph::dot::{Config, Dot};
 use petgraph::graph::DiGraph;
+use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -182,7 +183,7 @@ impl DeferredRegistry {
         factory: F,
     ) -> StepHandle<T>
     where
-        T: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + 'static,
+        T: serde::Serialize + DeserializeOwned + Send + 'static,
         F: FnOnce(HashMap<StepId, Vec<u8>>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {

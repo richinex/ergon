@@ -12,6 +12,7 @@ use crate::executor::ExecutionError;
 use crate::storage::{ExecutionLog, TaskStatus};
 use crate::Executor;
 use chrono::Utc;
+use futures::FutureExt; // For catch_unwind()
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::future::Future;
@@ -477,44 +478,6 @@ impl<S: ExecutionLog + 'static> Default for Registry<S> {
 /// # Ok(())
 /// # }
 /// ```
-/// Signals a parent flow with the result of a child flow (Level 3 API).
-///
-/// This function is called after retry decision to ensure parent only gets notified
-/// when child truly completes (not during retries).
-async fn signal_parent_level3<S, R>(
-    storage: &Arc<S>,
-    parent_id: uuid::Uuid,
-    signal_token: &str,
-    child_result: crate::executor::ChildResult<R>,
-) where
-    S: ExecutionLog,
-    R: serde::Serialize,
-{
-    if let Ok(result_bytes) = crate::core::serialize_value(&child_result) {
-        if let Ok(invocations) = storage.get_invocations_for_flow(parent_id).await {
-            if let Some(waiting_step) = invocations.iter().find(|inv| {
-                inv.status() == crate::core::InvocationStatus::WaitingForSignal
-                    && inv.timer_name() == Some(signal_token)
-            }) {
-                let _ = storage
-                    .store_signal_params(parent_id, waiting_step.step(), &result_bytes)
-                    .await;
-                let _ = storage.resume_flow(parent_id).await;
-                match &child_result {
-                    crate::executor::ChildResult::Ok(_) => debug!(
-                        "Auto-signaled parent flow {} with token {} (success)",
-                        parent_id, signal_token
-                    ),
-                    crate::executor::ChildResult::Err(msg) => debug!(
-                        "Auto-signaled parent flow {} with token {} (error: {})",
-                        parent_id, signal_token, msg
-                    ),
-                }
-            }
-        }
-    }
-}
-
 pub struct Worker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStructuredTracing> {
     storage: Arc<S>,
     worker_id: String,
@@ -830,12 +793,14 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
 
                         // Instrument the spawned task with the span (proper async way)
                         let task = async move {
-                            // Hold permit during entire flow execution (RAII - released on drop)
-                            let _permit = permit;
-                            info!(
-                                "Worker {} executing flow: task_id={}",
-                                worker_id, flow_task_id
-                            );
+                            // Wrap in catch_unwind to detect panics and clean up properly
+                            let result = std::panic::AssertUnwindSafe(async {
+                                // Hold permit during entire flow execution (RAII - released on drop)
+                                let _permit = permit;
+                                info!(
+                                    "Worker {} executing flow: task_id={}",
+                                    worker_id, flow_task_id
+                                );
 
                             // Get executor with brief lock, then release before execution
                             let executor = {
@@ -861,16 +826,50 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             // Handle FlowOutcome - suspension is explicit per Dave Cheney's principle
                             match outcome {
                                 crate::executor::FlowOutcome::Suspended(reason) => {
-                                    // Flow suspended - just log it and do nothing
-                                    // The task stays in its current state (locked_by is cleared implicitly
-                                    // when the tokio task ends)
+                                    // Flow suspended - mark it as SUSPENDED in the queue
+                                    // This prevents resume_flow() from re-enqueueing RUNNING flows
+                                    let flow_id = flow.flow_id;  // Capture before move
+
                                     info!(
                                         "Worker {} flow suspended: task_id={}, reason={:?}",
                                         worker_id, flow_task_id, reason
                                     );
+
+                                    // Mark flow as SUSPENDED so resume_flow() can re-enqueue it
+                                    if let Err(e) = storage
+                                        .complete_flow(flow_task_id, TaskStatus::Suspended)
+                                        .await
+                                    {
+                                        error!(
+                                            "Worker {} failed to mark flow suspended: {}",
+                                            worker_id, e
+                                        );
+                                    }
+
+                                    // FIX: Check if signal arrived while we were still RUNNING
+                                    // Race condition with multiple workers:
+                                    // - Worker A: Parent suspends (RUNNING)
+                                    // - Worker B: Child completes, calls resume_flow() → FAILS (parent still RUNNING)
+                                    // - Worker A: Marks parent SUSPENDED
+                                    // - Parent is stuck! Need to check for pending signals and resume immediately
+                                    if let Ok(invocations) = storage.get_invocations_for_flow(flow_id).await {
+                                        for inv in invocations.iter() {
+                                            if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
+                                                if let Ok(Some(_)) = storage.get_signal_params(flow_id, inv.step()).await {
+                                                    debug!(
+                                                        "Found pending signal for suspended flow {} step {}, resuming immediately",
+                                                        flow_id, inv.step()
+                                                    );
+                                                    let _ = storage.resume_flow(flow_id).await;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     // Note: Task remains in database with all its step history intact.
-                                    // When timer fires, resume_flow() will re-enqueue it, and the flow
-                                    // will resume from where it left off (using cached step results).
+                                    // When timer fires or signal arrives, resume_flow() will re-enqueue it,
+                                    // and the flow will resume from where it left off (using cached step results).
                                 }
                                 crate::executor::FlowOutcome::Completed(result) => {
                             // Handle completion or retry
@@ -888,31 +887,33 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                         // Read the flow's result from storage (invocation step 0)
                                         if let Ok(Some(invocation)) = storage.get_invocation(flow.flow_id, 0).await {
                                             if let Some(result_bytes) = invocation.return_value() {
-                                                // Wrap success result in ChildResult
-                                                // We signal with raw bytes since we don't know the type R here
-                                                // Parent will deserialize as ChildResult<R>
-                                                let child_result_bytes = {
-                                                    // Result bytes are already serialized R, wrap them in Ok variant
-                                                    // Serialize a ChildResult::Ok wrapping a raw value placeholder
-                                                    // Actually, we need to deserialize R, wrap in ChildResult, and reserialize
-                                                    // But we don't know R... let's use serde_json::Value as intermediary
-                                                    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(result_bytes) {
-                                                        let wrapped = crate::executor::ChildResult::Ok(value);
-                                                        crate::core::serialize_value(&wrapped).ok()
-                                                    } else {
-                                                        None
-                                                    }
-                                                };
+                                                // result_bytes contains a serialized Result<R, E>
+                                                // Since we're in the Ok(_) branch, we know it's Result::Ok(value)
+                                                // Bincode encodes Result as: [variant_index: 1 byte] + [data]
+                                                // So we skip the first byte to get just the success value bytes
+                                                if result_bytes.len() > 1 {
+                                                    let value_bytes = &result_bytes[1..]; // Skip the Ok variant byte
 
-                                                if let Some(bytes) = child_result_bytes {
-                                                    if let Ok(invocations) = storage.get_invocations_for_flow(parent_id).await {
-                                                        if let Some(waiting_step) = invocations.iter().find(|inv| {
-                                                            inv.status() == crate::core::InvocationStatus::WaitingForSignal
-                                                                && inv.timer_name() == Some(signal_token.as_str())
-                                                        }) {
-                                                            let _ = storage.store_signal_params(parent_id, waiting_step.step(), &bytes).await;
-                                                            let _ = storage.resume_flow(parent_id).await;
-                                                            debug!("Auto-signaled parent flow {} with token {} (success)", parent_id, signal_token);
+                                                    // Create flat SignalPayload with the unwrapped value bytes
+                                                    let payload = crate::executor::child_flow::SignalPayload {
+                                                        success: true,
+                                                        data: value_bytes.to_vec(),
+                                                    };
+
+                                                    if let Ok(signal_bytes) = crate::core::serialize_value(&payload) {
+                                                        if let Ok(invocations) = storage.get_invocations_for_flow(parent_id).await {
+                                                            if let Some(waiting_step) = invocations.iter().find(|inv| {
+                                                                inv.status() == crate::core::InvocationStatus::WaitingForSignal
+                                                                    && inv.timer_name() == Some(signal_token.as_str())
+                                                            }) {
+                                                                let _ = storage.store_signal_params(parent_id, waiting_step.step(), &signal_bytes).await;
+                                                                if let Err(e) = storage.resume_flow(parent_id).await {
+                                                                    // resume_flow will fail if parent is not in SUSPENDED state
+                                                                    // This is expected when parent has already completed
+                                                                    debug!("Could not resume parent flow {} (may have already completed): {}", parent_id, e);
+                                                                }
+                                                                debug!("Auto-signaled parent flow {} with token {} (success)", parent_id, signal_token);
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1032,9 +1033,25 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                             if let Some((parent_id, signal_token)) = flow.parent_flow_id
                                                 .and_then(|pid| flow.signal_token.clone().map(|token| (pid, token)))
                                             {
-                                                // Signal error to parent
-                                                let child_result = crate::executor::ChildResult::Err::<serde_json::Value>(error_msg.clone());
-                                                signal_parent_level3(&storage, parent_id, &signal_token, child_result).await;
+                                                // Serialize error message and create SignalPayload
+                                                let error_bytes = crate::core::serialize_value(&error_msg).unwrap_or_default();
+                                                let payload = crate::executor::child_flow::SignalPayload {
+                                                    success: false,
+                                                    data: error_bytes,
+                                                };
+
+                                                if let Ok(signal_bytes) = crate::core::serialize_value(&payload) {
+                                                    if let Ok(invocations) = storage.get_invocations_for_flow(parent_id).await {
+                                                        if let Some(waiting_step) = invocations.iter().find(|inv| {
+                                                            inv.status() == crate::core::InvocationStatus::WaitingForSignal
+                                                                && inv.timer_name() == Some(signal_token.as_str())
+                                                        }) {
+                                                            let _ = storage.store_signal_params(parent_id, waiting_step.step(), &signal_bytes).await;
+                                                            let _ = storage.resume_flow(parent_id).await;
+                                                            debug!("Auto-signaled parent flow {} with token {} (error: {})", parent_id, signal_token, error_msg);
+                                                        }
+                                                    }
+                                                }
                                             }
 
                                             if let Err(e) = storage
@@ -1057,8 +1074,25 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                             if let Some((parent_id, signal_token)) = flow.parent_flow_id
                                                 .and_then(|pid| flow.signal_token.clone().map(|token| (pid, token)))
                                             {
-                                                let child_result = crate::executor::ChildResult::Err::<serde_json::Value>(error_msg.clone());
-                                                signal_parent_level3(&storage, parent_id, &signal_token, child_result).await;
+                                                // Serialize error message and create SignalPayload
+                                                let error_bytes = crate::core::serialize_value(&error_msg).unwrap_or_default();
+                                                let payload = crate::executor::child_flow::SignalPayload {
+                                                    success: false,
+                                                    data: error_bytes,
+                                                };
+
+                                                if let Ok(signal_bytes) = crate::core::serialize_value(&payload) {
+                                                    if let Ok(invocations) = storage.get_invocations_for_flow(parent_id).await {
+                                                        if let Some(waiting_step) = invocations.iter().find(|inv| {
+                                                            inv.status() == crate::core::InvocationStatus::WaitingForSignal
+                                                                && inv.timer_name() == Some(signal_token.as_str())
+                                                        }) {
+                                                            let _ = storage.store_signal_params(parent_id, waiting_step.step(), &signal_bytes).await;
+                                                            let _ = storage.resume_flow(parent_id).await;
+                                                            debug!("Auto-signaled parent flow {} with token {} (error: {})", parent_id, signal_token, error_msg);
+                                                        }
+                                                    }
+                                                }
                                             }
 
                                             if let Err(e) = storage
@@ -1076,6 +1110,33 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             }
                                 }
                             }
+                            }) // End of AssertUnwindSafe future
+                            .catch_unwind()
+                            .await;
+
+                            // Handle panics
+                            if let Err(panic_payload) = result {
+                                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                                    format!("Worker panicked: {}", s)
+                                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                                    format!("Worker panicked: {}", s)
+                                } else {
+                                    "Worker panicked with unknown payload".to_string()
+                                };
+
+                                error!(
+                                    "Worker {} panicked during flow {}: {}",
+                                    worker_id, flow_task_id, panic_msg
+                                );
+
+                                // Mark flow as failed so it can be retried or cleaned up
+                                if let Err(e) = storage.complete_flow(flow_task_id, TaskStatus::Failed).await {
+                                    error!(
+                                        "Worker {} failed to mark panicked flow as failed: {}",
+                                        worker_id, e
+                                    );
+                                }
+                            }
                         };
 
                         // Spawn with proper instrumentation (avoids Span::enter() across await points)
@@ -1087,11 +1148,21 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                         }
                     }
                             Ok(None) => {
-                                // No work available - the select! will loop and check other branches
+                                // No work available - sleep to avoid busy-looping and reduce lock contention
+                                // Add jitter (deterministic based on worker_id) to prevent thundering herd
+                                // Pattern from Redis Chapter 6: sleep 1ms between lock attempts
+                                let worker_hash = self.worker_id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
+                                let jitter_ms = 1 + (worker_hash % 5); // 1-5ms jitter
+                                let sleep_duration = self.poll_interval + Duration::from_millis(jitter_ms);
+                                tokio::time::sleep(sleep_duration).await;
                             }
                             Err(e) => {
                                 warn!("Worker {} failed to dequeue flow: {}", self.worker_id, e);
-                                tokio::time::sleep(self.poll_interval).await;
+                                // Add jitter to error retry as well
+                                let worker_hash = self.worker_id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
+                                let jitter_ms = 1 + (worker_hash % 5); // 1-5ms jitter
+                                let sleep_duration = self.poll_interval + Duration::from_millis(jitter_ms);
+                                tokio::time::sleep(sleep_duration).await;
                             }
                         }
                     }

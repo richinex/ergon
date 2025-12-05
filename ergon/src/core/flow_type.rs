@@ -133,5 +133,5 @@ pub trait InvokableFlow: FlowType {
     ///
     /// This enables type-safe parent-child invocation where the compiler
     /// automatically infers the child's result type.
-    type Output: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + 'static;
+    type Output: serde::Serialize + serde::de::DeserializeOwned + Send + 'static;
 }

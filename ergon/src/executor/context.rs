@@ -14,6 +14,7 @@ use crate::core::{
 };
 use crate::graph::{Graph, GraphResult, StepId};
 use crate::storage::{ExecutionLog, InvocationStartParams};
+use serde::de::DeserializeOwned;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -292,7 +293,7 @@ impl ExecutionContext {
     /// # Errors
     /// Returns `ExecutionError::Incompatible` if the stored invocation has a different
     /// class/method name or parameter hash, indicating non-deterministic control flow.
-    pub async fn get_cached_result<R: for<'de> serde::Deserialize<'de>, P: serde::Serialize>(
+    pub async fn get_cached_result<R: DeserializeOwned, P: serde::Serialize>(
         &self,
         step: i32,
         class_name: &str,
@@ -356,6 +357,24 @@ impl ExecutionContext {
                 tracing::error!("Failed to set suspend reason: mutex poisoned - {:?}", e);
             }
         }
+    }
+
+    /// Checks if a suspension reason is pending without consuming it.
+    ///
+    /// This is used by the flow macro to avoid caching "completion" when the flow
+    /// is actually suspending. Unlike `take_suspend_reason()`, this method does not
+    /// consume the suspend reason.
+    ///
+    /// # Thread Safety
+    ///
+    /// Uses a mutex internally, so this is safe to call from any thread.
+    /// If the mutex is poisoned (rare), returns `false`.
+    pub fn has_suspend_reason(&self) -> bool {
+        self.suspend_reason
+            .lock()
+            .ok()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
     }
 
     /// Takes and clears the suspension reason.

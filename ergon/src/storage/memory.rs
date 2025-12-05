@@ -150,7 +150,44 @@ impl ExecutionLog for InMemoryExecutionLog {
             .map(|entry| entry.value().clone())
             .collect();
 
-        Ok(invocations)
+        // Also check for flows in the queue that haven't started yet
+        // This ensures we don't miss flows that are scheduled but not yet picked up by workers
+        let mut flow_ids_with_invocations: std::collections::HashSet<Uuid> = invocations
+            .iter()
+            .map(|inv| inv.id())
+            .collect();
+
+        // Add placeholder invocations for flows in queue that have no invocations yet
+        let mut all_incomplete = invocations;
+        for entry in self.flow_queue.iter() {
+            let flow = entry.value();
+            // Only consider pending/running flows
+            if matches!(flow.status, super::TaskStatus::Pending | super::TaskStatus::Running) {
+                // If this flow has no invocations yet, create a placeholder
+                if !flow_ids_with_invocations.contains(&flow.flow_id) {
+                    flow_ids_with_invocations.insert(flow.flow_id);
+                    // Create a placeholder invocation for this queued flow
+                    let placeholder = Invocation::new(
+                        flow.flow_id,
+                        -1, // Placeholder step number
+                        flow.created_at,
+                        flow.flow_type.clone(),
+                        "queued".to_string(),
+                        InvocationStatus::Pending,
+                        0,
+                        vec![],
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                    all_incomplete.push(placeholder);
+                }
+            }
+        }
+
+        Ok(all_incomplete)
     }
 
     async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
@@ -196,7 +233,17 @@ impl ExecutionLog for InMemoryExecutionLog {
         // Retry loop to handle race conditions when multiple workers compete
         // for the same flow. This ensures we find the next oldest flow if the
         // first candidate is claimed by another worker.
+        let mut retry_count = 0;
         loop {
+            retry_count += 1;
+            // Limit retries to prevent infinite loops
+            if retry_count > 10 {
+                // Too many retries - all pending flows are being competed for
+                // Sleep briefly and return None to let other branches process
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                return Ok(None);
+            }
+
             // Find the oldest pending flow that is ready to execute
             // Note: DashMap doesn't have built-in ordering, so we need to scan
             let mut oldest: Option<(Uuid, super::ScheduledFlow)> = None;
