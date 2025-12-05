@@ -127,6 +127,51 @@ where
         seed.extend_from_slice(self.child_type.as_bytes());
         seed.extend_from_slice(&child_hash.to_le_bytes());
         let child_flow_id = Uuid::new_v5(&parent_id, &seed);
+        let signal_name = child_flow_id.to_string();
+
+        // Check if we already completed this (replay scenario)
+        let existing_inv = storage.get_invocation(parent_id, step).await.ok().flatten();
+        if let Some(inv) = existing_inv {
+            if inv.status() == crate::core::InvocationStatus::Complete {
+                // Return cached result
+                if let Some(bytes) = inv.return_value() {
+                    let payload: SignalPayload = crate::core::deserialize_value(bytes)?;
+                    if payload.success {
+                        return Ok(crate::core::deserialize_value(&payload.data)?);
+                    } else {
+                        let error_msg: String = crate::core::deserialize_value(&payload.data)?;
+                        return Err(ExecutionError::Failed(error_msg));
+                    }
+                }
+            }
+
+            // Check if we're already waiting and signal has arrived
+            if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
+                if let Some(params) = storage.get_signal_params(parent_id, step).await? {
+                    let payload: SignalPayload = crate::core::deserialize_value(&params)?;
+                    // Complete invocation and clean up
+                    storage
+                        .log_invocation_completion(parent_id, step, &params)
+                        .await?;
+                    storage.remove_signal_params(parent_id, step).await?;
+
+                    if payload.success {
+                        return Ok(crate::core::deserialize_value(&payload.data)?);
+                    } else {
+                        let error_msg: String = crate::core::deserialize_value(&payload.data)?;
+                        return Err(ExecutionError::Failed(error_msg));
+                    }
+                }
+                // Otherwise continue to suspend below
+            }
+        }
+
+        // CRITICAL FIX: Set WaitingForSignal status BEFORE scheduling child!
+        // This prevents race condition where child completes before parent is waiting
+        storage
+            .log_signal(parent_id, step, &signal_name)
+            .await
+            .map_err(ExecutionError::from)?;
 
         // Check if this child was already scheduled (replay scenario)
         // We check the child flow's existence in storage rather than step completion
@@ -165,20 +210,33 @@ where
             })?;
         }
 
-        // Await child completion - cached on replay
-        // Worker signals with SignalPayload (flat structure: success flag + raw bytes)
-        let signal_name = child_flow_id.to_string();
-        let payload: SignalPayload =
-            crate::executor::await_external_signal(&signal_name).await?;
+        // Check if signal already arrived (child might have been VERY fast)
+        if let Some(params) = storage.get_signal_params(parent_id, step).await? {
+            let payload: SignalPayload = crate::core::deserialize_value(&params)?;
+            // Complete invocation and clean up
+            storage
+                .log_invocation_completion(parent_id, step, &params)
+                .await?;
+            storage.remove_signal_params(parent_id, step).await?;
 
-        // Parent handles type-specific deserialization (parent knows R, worker doesn't)
-        if payload.success {
-            let result: R = crate::core::deserialize_value(&payload.data)?;
-            Ok(result)
-        } else {
-            let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-            Err(ExecutionError::Failed(error_msg))
+            if payload.success {
+                return Ok(crate::core::deserialize_value(&payload.data)?);
+            } else {
+                let error_msg: String = crate::core::deserialize_value(&payload.data)?;
+                return Err(ExecutionError::Failed(error_msg));
+            }
         }
+
+        // Suspend - signal hasn't arrived yet
+        let reason = crate::executor::SuspendReason::Signal {
+            flow_id: parent_id,
+            step,
+            signal_name: signal_name.clone(),
+        };
+        ctx.set_suspend_reason(reason);
+        Err(ExecutionError::Failed(
+            "Flow suspended for signal".to_string(),
+        ))
     }
 }
 

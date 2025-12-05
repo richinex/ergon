@@ -1,12 +1,11 @@
-//! Complex Multi-Worker DAG with Parent-Child Flows (Redis)
+//! Complex Multi-Worker DAG with Parent-Child Flows (SQLite)
 //!
 //! This example demonstrates the full power of Ergon by combining:
-//! 1. **Multiple Workers** (4 workers) processing concurrently
+//! 1. **Single Worker** (testing for logic bugs independent of concurrency)
 //! 2. **Multiple Parent Flows** (3 orders) executing in parallel
 //! 3. **DAG Execution** with parallel steps and dependencies
 //! 4. **Child Flow Invocation** from DAG steps
 //! 5. **Error Handling** with retryable vs permanent errors
-//! 6. **Load Distribution** across workers
 //!
 //! ## Scenario: E-Commerce Order Fulfillment System
 //!
@@ -29,17 +28,10 @@
 //! - generate_label is a CHILD FLOW (spawns separate task)
 //! - notify_customer waits for ALL steps to complete
 //!
-//! ## Workers
-//!
-//! - validation-worker: Specializes in customer validation
-//! - payment-worker: Handles payment processing
-//! - warehouse-worker: Manages inventory
-//! - shipping-worker: Generates labels and notifications
-//!
 //! ## Run
 //!
 //! ```bash
-//! cargo run --example complex_multi_worker_dag_redis --features=redis
+//! cargo run --example complex_1_worker_dag_sqlite --features=sqlite
 //! ```
 
 use chrono::Utc;
@@ -47,7 +39,7 @@ use dashmap::DashMap;
 use ergon::core::{FlowType, InvokableFlow};
 use ergon::executor::{ExecutionError, InvokeChild, Worker};
 use ergon::prelude::*;
-use ergon::storage::RedisExecutionLog;
+use ergon::storage::SqliteExecutionLog;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -402,6 +394,18 @@ impl OrderFulfillment {
     /// Step 5: Generate Shipping Label (CHILD FLOW - depends on all parallel steps)
     #[step(depends_on = ["validate_customer", "check_fraud", "reserve_inventory", "process_payment"])]
     async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, String> {
+        // CRITICAL: Invoke child FIRST - before any side effects
+        // This ensures side effects only run on success path, not on replay
+        let label = self
+            .invoke(LabelGenerator {
+                order_id: self.order_id.clone(),
+                customer_id: self.customer_id.clone(),
+            })
+            .result()
+            .await
+            .map_err(|e| format!("Label generation failed: {}", e))?;
+
+        // Side effects AFTER await - only runs once on success
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -411,16 +415,6 @@ impl OrderFulfillment {
             &self.order_id,
             count
         );
-
-        // Invoke child flow for label generation
-        let label = self
-            .invoke(LabelGenerator {
-                order_id: self.order_id.clone(),
-                customer_id: self.customer_id.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| format!("Label generation failed: {}", e))?;
 
         println!("[{:.3}]      -> Label generated: {}", timestamp(), label.tracking_number);
         Ok(label)
@@ -553,29 +547,22 @@ fn timestamp() -> f64 {
 }
 
 // =============================================================================
-// Main - Multi-Worker Stress Test
+// Main - Single-Worker Test (Isolating Logic Bugs)
 // =============================================================================
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║  Complex Multi-Worker SEQUENTIAL + Child Flows (Redis)    ║");
+    println!("║  Complex 1-Worker SEQUENTIAL + Child Flows (SQLite)       ║");
     println!("╚════════════════════════════════════════════════════════════╝\n");
-    println!("Scenario: 3 concurrent orders, 4 workers, SEQUENTIAL execution (NO DAG)\n");
+    println!("Scenario: 3 concurrent orders, 1 worker, SEQUENTIAL execution (NO DAG)\n");
 
-    let redis_url = "redis://127.0.0.1:6379";
-    // Use shorter stale lock timeout (30s instead of 5min) for testing
-    // This allows recovery of stuck flows during test execution
+    let db_path = "/tmp/ergon_test_1_worker.db";
+    let _ = std::fs::remove_file(db_path);
+
     let storage = Arc::new(
-        RedisExecutionLog::with_full_config(
-            redis_url,
-            7 * 24 * 3600,  // completed_ttl: 7 days
-            30 * 24 * 3600, // signal_ttl: 30 days
-            30_000,         // stale_lock_timeout_ms: 30 seconds (was 5 minutes!)
-        )
-        .await?,
+        SqliteExecutionLog::new(db_path).await?,
     );
-    storage.reset().await?;
 
     let scheduler = Scheduler::new(storage.clone());
 
@@ -585,7 +572,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             order_id: "ORD-001".to_string(),
             customer_id: "CUST-001".to_string(),     // No validation retry
             product_id: "PROD-001".to_string(),      // No inventory retry
-            amount: 299.99,
+            amount: 299.99,                          // Payment will retry once
             quantity: 2,
         },
         OrderFulfillment {
@@ -611,41 +598,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // Start 4 workers
-    println!("Starting 4 workers...\n");
+    // Start 1 worker (testing for logic bugs independent of concurrency)
+    println!("Starting 1 worker...\n");
 
-    let workers: Vec<_> = (1..=4)
-        .map(|i| {
-            let storage = storage.clone();
-            let worker_name = match i {
-                1 => "validation-worker",
-                2 => "payment-worker",
-                3 => "warehouse-worker",
-                _ => "shipping-worker",
-            };
+    let worker = Worker::new(storage.clone(), "test-worker")
+        .with_poll_interval(Duration::from_millis(100));
 
-            tokio::spawn(async move {
-                let worker = Worker::new(storage, worker_name)
-                    .with_poll_interval(Duration::from_millis(100)); // Reduced contention: was 50ms
+    worker
+        .register(|flow: Arc<OrderFulfillment>| flow.fulfill_order())
+        .await;
+    worker
+        .register(|flow: Arc<LabelGenerator>| flow.generate())
+        .await;
 
-                worker
-                    .register(|flow: Arc<OrderFulfillment>| flow.fulfill_order())
-                    .await;
-                worker
-                    .register(|flow: Arc<LabelGenerator>| flow.generate())
-                    .await;
-
-                let handle = worker.start().await;
-                tokio::time::sleep(Duration::from_secs(45)).await; // Increased from 35s to allow all retries
-                handle.shutdown().await;
-            })
-        })
-        .collect();
-
-    // Wait for all workers
-    for worker in workers {
-        worker.await?;
-    }
+    let handle = worker.start().await;
+    tokio::time::sleep(Duration::from_secs(45)).await;
+    handle.shutdown().await;
 
     // Print summary
     println!("\n╔════════════════════════════════════════════════════════════╗");
@@ -677,11 +645,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\nKey Features Demonstrated:");
-    println!("  - DAG parallel execution (validate, fraud, inventory run concurrently)");
-    println!("  - Parent-child flow invocation from DAG step");
+    println!("  - Parent-child flow invocation");
     println!("  - Retryable vs permanent errors");
-    println!("  - Multiple workers distributing load");
-    println!("  - Complex dependency management\n");
+    println!("  - Single worker (isolating logic bugs)");
+    println!("  - SQLite storage backend\n");
 
     storage.close().await?;
     Ok(())

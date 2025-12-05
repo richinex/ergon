@@ -1,0 +1,2956 @@
+ Docs.rs
+ deadpool-redis-0.22.0
+ Platform
+ Feature flags
+docs.rs
+Rust
+
+Find crate
+deadpool_redis
+0.22.0
+Connection
+Methods
+take
+Methods from Deref<Target=MultiplexedConnection>
+get_cache_statistics
+psubscribe
+punsubscribe
+send_packed_command
+send_packed_commands
+set_response_timeout
+subscribe
+unsubscribe
+Trait Implementations
+AsMut<MultiplexedConnection>
+AsRef<MultiplexedConnection>
+ConnectionLike
+Deref
+DerefMut
+From<Object<Manager>>
+Auto Trait Implementations
+!RefUnwindSafe
+!UnwindSafe
+Freeze
+Send
+Sync
+Unpin
+Blanket Implementations
+Any
+AsyncCommands
+AsyncTypedCommands
+Borrow<T>
+BorrowMut<T>
+ErasedDestructor
+From<T>
+Instrument
+Into<U>
+JsonAsyncCommands
+Receiver
+TryFrom<U>
+TryInto<U>
+VZip<V>
+WithSubscriber
+In crate deadpool_redis
+Modules
+cluster
+sentinel
+Structs
+Config
+Connection
+ConnectionInfo
+Manager
+Metrics
+PoolConfig
+RedisConnectionInfo
+Status
+Timeouts
+Enums
+ConfigError
+ConnectionAddr
+ProtocolVersion
+Runtime
+Type Aliases
+BuildError
+CreatePoolError
+Hook
+HookError
+Object
+Pool
+PoolBuilder
+PoolError
+deadpool_redis
+Struct Connection Copy item path
+Source
+Search
+Settings
+Help
+
+Summary
+pub struct Connection { /* private fields */ }
+Wrapper around redis::aio::MultiplexedConnection.
+
+This structure implements redis::aio::ConnectionLike and can therefore be used just like a regular redis::aio::MultiplexedConnection.
+
+Implementations
+Source
+impl Connection
+Source
+pub fn take(this: Self) -> MultiplexedConnection
+Takes this Connection from its Pool permanently.
+
+This reduces the size of the Pool.
+
+Methods from Deref<Target = MultiplexedConnection>
+Source
+pub fn set_response_timeout(&mut self, timeout: Duration)
+Sets the time that the multiplexer will wait for responses on operations before failing.
+
+Source
+pub async fn send_packed_command(
+    &mut self,
+    cmd: &Cmd,
+) -> Result<Value, RedisError>
+Sends an already encoded (packed) command into the TCP socket and reads the single response from it.
+
+Source
+pub async fn send_packed_commands(
+    &mut self,
+    cmd: &Pipeline,
+    offset: usize,
+    count: usize,
+) -> Result<Vec<Value>, RedisError>
+Sends multiple already encoded (packed) command into the TCP socket and reads count responses from it. This is used to implement pipelining.
+
+Source
+pub fn get_cache_statistics(&self) -> Option<CacheStatistics>
+Gets CacheStatistics for current connection if caching is enabled.
+
+Source
+pub async fn subscribe(
+    &mut self,
+    channel_name: impl ToRedisArgs,
+) -> Result<(), RedisError>
+Subscribes to a new channel(s).
+
+Updates from the sender will be sent on the push sender that was passed to the connection. If the connection was configured without a push sender, the connection won’t be able to pass messages back to the user.
+
+This method is only available when the connection is using RESP3 protocol, and will return an error otherwise.
+
+let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
+let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+let config = redis::AsyncConnectionConfig::new().set_push_sender(tx);
+let mut con = client.get_multiplexed_async_connection_with_config(&config).await?;
+con.subscribe(&["channel_1", "channel_2"]).await?;
+Source
+pub async fn unsubscribe(
+    &mut self,
+    channel_name: impl ToRedisArgs,
+) -> Result<(), RedisError>
+Unsubscribes from channel(s).
+
+This method is only available when the connection is using RESP3 protocol, and will return an error otherwise.
+
+let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
+let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+let config = redis::AsyncConnectionConfig::new().set_push_sender(tx);
+let mut con = client.get_multiplexed_async_connection_with_config(&config).await?;
+con.subscribe(&["channel_1", "channel_2"]).await?;
+con.unsubscribe(&["channel_1", "channel_2"]).await?;
+Source
+pub async fn psubscribe(
+    &mut self,
+    channel_pattern: impl ToRedisArgs,
+) -> Result<(), RedisError>
+Subscribes to new channel(s) with pattern(s).
+
+Updates from the sender will be sent on the push sender that was passed to the connection. If the connection was configured without a push sender, the connection won’t be able to pass messages back to the user.
+
+This method is only available when the connection is using RESP3 protocol, and will return an error otherwise.
+
+let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
+let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+let config = redis::AsyncConnectionConfig::new().set_push_sender(tx);
+let mut con = client.get_multiplexed_async_connection_with_config(&config).await?;
+con.subscribe(&["channel_1", "channel_2"]).await?;
+con.unsubscribe(&["channel_1", "channel_2"]).await?;
+Source
+pub async fn punsubscribe(
+    &mut self,
+    channel_pattern: impl ToRedisArgs,
+) -> Result<(), RedisError>
+Unsubscribes from channel pattern(s).
+
+This method is only available when the connection is using RESP3 protocol, and will return an error otherwise.
+
+Trait Implementations
+Source
+impl AsMut<MultiplexedConnection> for Connection
+Source
+fn as_mut(&mut self) -> &mut MultiplexedConnection
+Converts this type into a mutable reference of the (usually inferred) input type.
+Source
+impl AsRef<MultiplexedConnection> for Connection
+Source
+fn as_ref(&self) -> &MultiplexedConnection
+Converts this type into a shared reference of the (usually inferred) input type.
+Source
+impl ConnectionLike for Connection
+Source
+fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value>
+Sends an already encoded (packed) command into the TCP socket and reads the single response from it.
+Source
+fn get_db(&self) -> i64
+Returns the database this connection is bound to. Note that this information might be unreliable because it’s initially cached and also might be incorrect if the connection like object is not actually connected.
+Source
+impl Deref for Connection
+Source
+type Target = MultiplexedConnection
+The resulting type after dereferencing.
+Source
+fn deref(&self) -> &MultiplexedConnection
+Dereferences the value.
+Source
+impl DerefMut for Connection
+Source
+fn deref_mut(&mut self) -> &mut MultiplexedConnection
+Mutably dereferences the value.
+Source
+impl From<Object<Manager>> for Connection
+Source
+fn from(conn: Object) -> Self
+Converts to this type from the input type.
+Auto Trait Implementations
+impl Freeze for Connection
+impl !RefUnwindSafe for Connection
+impl Send for Connection
+impl Sync for Connection
+impl Unpin for Connection
+impl !UnwindSafe for Connection
+Blanket Implementations
+Source
+impl<T> Any for T
+where
+    T: 'static + ?Sized,
+Source
+impl<T> AsyncCommands for T
+where
+    T: ConnectionLike + Send + Sync,
+Source
+fn get<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the value of a key. If key is a vec this becomes an MGET (if using TypedCommands, you should specifically use mget to get the correct return type. Redis Docs
+Source
+fn mget<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get values of keys Redis Docs
+Source
+fn keys<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Gets all keys matching pattern Redis Docs
+Source
+fn set<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the string value of a key. Redis Docs
+Source
+fn set_options<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+    options: SetOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the string value of a key with options. Redis Docs
+Source
+fn set_multiple<'a, K, V, RV>(
+    &'a mut self,
+    items: &'a [(K, V)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+👎Deprecated since 0.22.4: Renamed to mset() to reflect Redis name
+Sets multiple keys to their values. Redis Docs
+Source
+fn mset<'a, K, V, RV>(
+    &'a mut self,
+    items: &'a [(K, V)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sets multiple keys to their values. Redis Docs
+Source
+fn set_ex<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+    seconds: u64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the value and expiration of a key. Redis Docs
+Source
+fn pset_ex<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+    milliseconds: u64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the value and expiration in milliseconds of a key. Redis Docs
+Source
+fn set_nx<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the value of a key, only if the key does not exist Redis Docs
+Source
+fn mset_nx<'a, K, V, RV>(
+    &'a mut self,
+    items: &'a [(K, V)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sets multiple keys to their values failing if at least one already exists. Redis Docs
+Source
+fn getset<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the string value of a key and return its old value. Redis Docs
+Source
+fn getrange<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    from: isize,
+    to: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get a range of bytes/substring from the value of a key. Negative values provide an offset from the end of the value. Redis returns an empty string if the key doesn’t exist, not Nil Redis Docs
+Source
+fn setrange<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    offset: isize,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Overwrite the part of the value stored in key at the specified offset. Redis Docs
+Source
+fn del<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Delete one or more keys. Returns the number of keys deleted. Redis Docs
+Source
+fn exists<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Determine if a key exists. Redis Docs
+Source
+fn key_type<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Determine the type of key. Redis Docs
+Source
+fn expire<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    seconds: i64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set a key’s time to live in seconds. Returns whether expiration was set. Redis Docs
+Source
+fn expire_at<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    ts: i64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the expiration for a key as a UNIX timestamp. Returns whether expiration was set. Redis Docs
+Source
+fn pexpire<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    ms: i64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set a key’s time to live in milliseconds. Returns whether expiration was set. Redis Docs
+Source
+fn pexpire_at<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    ts: i64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the expiration for a key as a UNIX timestamp in milliseconds. Returns whether expiration was set. Redis Docs
+Source
+fn expire_time<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the absolute Unix expiration timestamp in seconds. Returns ExistsButNotRelevant if key exists but has no expiration time. Redis Docs
+Source
+fn pexpire_time<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the absolute Unix expiration timestamp in milliseconds. Returns ExistsButNotRelevant if key exists but has no expiration time. Redis Docs
+Source
+fn persist<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove the expiration from a key. Returns whether a timeout was removed. Redis Docs
+Source
+fn ttl<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the time to live for a key in seconds. Returns ExistsButNotRelevant if key exists but has no expiration time. Redis Docs
+Source
+fn pttl<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the time to live for a key in milliseconds. Returns ExistsButNotRelevant if key exists but has no expiration time. Redis Docs
+Source
+fn get_ex<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    expire_at: Expiry,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the value of a key and set expiration Redis Docs
+Source
+fn get_del<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the value of a key and delete it Redis Docs
+Source
+fn copy<'a, KSrc, KDst, Db, RV>(
+    &'a mut self,
+    source: KSrc,
+    destination: KDst,
+    options: CopyOptions<Db>,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    KSrc: ToRedisArgs + Send + Sync + 'a,
+    KDst: ToRedisArgs + Send + Sync + 'a,
+    Db: ToString + Send + Sync + 'a,
+    RV: FromRedisValue,
+Copy the value from one key to another, returning whether the copy was successful. Redis Docs
+Source
+fn rename<'a, K, N, RV>(
+    &'a mut self,
+    key: K,
+    new_key: N,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    N: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Rename a key. Errors if key does not exist. Redis Docs
+Source
+fn rename_nx<'a, K, N, RV>(
+    &'a mut self,
+    key: K,
+    new_key: N,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    N: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Rename a key, only if the new key does not exist. Errors if key does not exist. Returns whether the key was renamed, or false if the new key already exists. Redis Docs
+Source
+fn unlink<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Unlink one or more keys. This is a non-blocking version of DEL. Returns number of keys unlinked. Redis Docs
+Source
+fn append<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Append a value to a key. Returns length of string after operation. Redis Docs
+Source
+fn incr<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    delta: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Increment the numeric value of a key by the given amount. This issues a INCRBY or INCRBYFLOAT depending on the type. If the key does not exist, it is set to 0 before performing the operation.
+Source
+fn decr<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    delta: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Decrement the numeric value of a key by the given amount. If the key does not exist, it is set to 0 before performing the operation. Redis Docs
+Source
+fn setbit<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    offset: usize,
+    value: bool,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sets or clears the bit at offset in the string value stored at key. Returns the original bit value stored at offset. Redis Docs
+Source
+fn getbit<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    offset: usize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the bit value at offset in the string value stored at key. Redis Docs
+Source
+fn bitcount<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Count set bits in a string. Returns 0 if key does not exist. Redis Docs
+Source
+fn bitcount_range<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: usize,
+    end: usize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Count set bits in a string in a range. Returns 0 if key does not exist. Redis Docs
+Source
+fn bit_and<'a, D, S, RV>(
+    &'a mut self,
+    dstkey: D,
+    srckeys: S,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Perform a bitwise AND between multiple keys (containing string values) and store the result in the destination key. Returns size of destination string after operation. Redis Docs.arg(“AND)
+Source
+fn bit_or<'a, D, S, RV>(
+    &'a mut self,
+    dstkey: D,
+    srckeys: S,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Perform a bitwise OR between multiple keys (containing string values) and store the result in the destination key. Returns size of destination string after operation. Redis Docs.arg(“OR)
+Source
+fn bit_xor<'a, D, S, RV>(
+    &'a mut self,
+    dstkey: D,
+    srckeys: S,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Perform a bitwise XOR between multiple keys (containing string values) and store the result in the destination key. Returns size of destination string after operation. Redis Docs.arg(“XOR)
+Source
+fn bit_not<'a, D, S, RV>(
+    &'a mut self,
+    dstkey: D,
+    srckey: S,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Perform a bitwise NOT of the key (containing string values) and store the result in the destination key. Returns size of destination string after operation. Redis Docs.arg(“NOT)
+Source
+fn strlen<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the length of the value stored in a key. 0 if key does not exist. Redis Docs
+Source
+fn hget<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    field: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Gets a single (or multiple) fields from a hash.
+Source
+fn hget_ex<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    fields: F,
+    expire_at: Expiry,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the value of one or more fields of a given hash key, and optionally set their expiration Redis Docs.arg(key).arg(expire_at).arg(“FIELDS)
+Source
+fn hdel<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    field: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Deletes a single (or multiple) fields from a hash. Returns number of fields deleted. Redis Docs
+Source
+fn hget_del<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get and delete the value of one or more fields of a given hash key Redis Docs.arg(key).arg(“FIELDS)
+Source
+fn hset<'a, K, F, V, RV>(
+    &'a mut self,
+    key: K,
+    field: F,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sets a single field in a hash. Returns number of fields added. Redis Docs
+Source
+fn hset_ex<'a, K, F, V, RV>(
+    &'a mut self,
+    key: K,
+    hash_field_expiration_options: &'a HashFieldExpirationOptions,
+    fields_values: &'a [(F, V)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the value of one or more fields of a given hash key, and optionally set their expiration Redis Docs.arg(key).arg(hash_field_expiration_options).arg(“FIELDS)
+Source
+fn hset_nx<'a, K, F, V, RV>(
+    &'a mut self,
+    key: K,
+    field: F,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sets a single field in a hash if it does not exist. Returns whether the field was added. Redis Docs
+Source
+fn hset_multiple<'a, K, F, V, RV>(
+    &'a mut self,
+    key: K,
+    items: &'a [(F, V)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sets multiple fields in a hash. Redis Docs
+Source
+fn hincr<'a, K, F, D, RV>(
+    &'a mut self,
+    key: K,
+    field: F,
+    delta: D,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    D: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Increments a value. Returns the new value of the field after incrementation.
+Source
+fn hexists<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    field: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Checks if a field in a hash exists. Redis Docs
+Source
+fn httl<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get one or more fields’ TTL in seconds. Redis Docs.arg(key).arg(“FIELDS)
+Source
+fn hpttl<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get one or more fields’ TTL in milliseconds. Redis Docs.arg(key).arg(“FIELDS)
+Source
+fn hexpire<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    seconds: i64,
+    opt: ExpireOption,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set one or more fields’ time to live in seconds. Returns an array where each element corresponds to the field at the same index in the fields argument. Each element of the array is either: 0 if the specified condition has not been met. 1 if the expiration time was updated. 2 if called with 0 seconds. Errors if provided key exists but is not a hash. Redis Docs.arg(key).arg(seconds).arg(opt).arg(“FIELDS)
+Source
+fn hexpire_at<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    ts: i64,
+    opt: ExpireOption,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the expiration for one or more fields as a UNIX timestamp in milliseconds. Returns an array where each element corresponds to the field at the same index in the fields argument. Each element of the array is either: 0 if the specified condition has not been met. 1 if the expiration time was updated. 2 if called with a time in the past. Errors if provided key exists but is not a hash. Redis Docs.arg(key).arg(ts).arg(opt).arg(“FIELDS)
+Source
+fn hexpire_time<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the absolute Unix expiration timestamp in seconds. Redis Docs.arg(key).arg(“FIELDS)
+Source
+fn hpersist<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove the expiration from a key. Returns 1 if the expiration was removed. Redis Docs.arg(key).arg(“FIELDS)
+Source
+fn hpexpire<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    milliseconds: i64,
+    opt: ExpireOption,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set one or more fields’ time to live in milliseconds. Returns an array where each element corresponds to the field at the same index in the fields argument. Each element of the array is either: 0 if the specified condition has not been met. 1 if the expiration time was updated. 2 if called with 0 seconds. Errors if provided key exists but is not a hash. Redis Docs.arg(key).arg(milliseconds).arg(opt).arg(“FIELDS)
+Source
+fn hpexpire_at<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    ts: i64,
+    opt: ExpireOption,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Set the expiration for one or more fields as a UNIX timestamp in milliseconds. Returns an array where each element corresponds to the field at the same index in the fields argument. Each element of the array is either: 0 if the specified condition has not been met. 1 if the expiration time was updated. 2 if called with a time in the past. Errors if provided key exists but is not a hash. Redis Docs.arg(key).arg(ts).arg(opt).arg(“FIELDS)
+Source
+fn hpexpire_time<'a, K, F, RV>(
+    &'a mut self,
+    key: K,
+    fields: F,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the absolute Unix expiration timestamp in seconds. Redis Docs.arg(key).arg(“FIELDS)
+Source
+fn hkeys<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Gets all the keys in a hash. Redis Docs
+Source
+fn hvals<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Gets all the values in a hash. Redis Docs
+Source
+fn hgetall<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Gets all the fields and values in a hash. Redis Docs
+Source
+fn hlen<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Gets the length of a hash. Returns 0 if key does not exist. Redis Docs
+Source
+fn blmove<'a, S, D, RV>(
+    &'a mut self,
+    srckey: S,
+    dstkey: D,
+    src_dir: Direction,
+    dst_dir: Direction,
+    timeout: f64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    S: ToRedisArgs + Send + Sync + 'a,
+    D: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Pop an element from a list, push it to another list and return it; or block until one is available Redis Docs
+Source
+fn blmpop<'a, K, RV>(
+    &'a mut self,
+    timeout: f64,
+    numkeys: usize,
+    key: K,
+    dir: Direction,
+    count: usize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Pops count elements from the first non-empty list key from the list of provided key names; or blocks until one is available. Redis Docs.arg(timeout).arg(numkeys).arg(key).arg(dir).arg(“COUNT)
+Source
+fn blpop<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    timeout: f64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove and get the first element in a list, or block until one is available. Redis Docs
+Source
+fn brpop<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    timeout: f64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove and get the last element in a list, or block until one is available. Redis Docs
+Source
+fn brpoplpush<'a, S, D, RV>(
+    &'a mut self,
+    srckey: S,
+    dstkey: D,
+    timeout: f64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    S: ToRedisArgs + Send + Sync + 'a,
+    D: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Pop a value from a list, push it to another list and return it; or block until one is available. Redis Docs
+Source
+fn lindex<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    index: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get an element from a list by its index. Redis Docs
+Source
+fn linsert_before<'a, K, P, V, RV>(
+    &'a mut self,
+    key: K,
+    pivot: P,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    P: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Insert an element before another element in a list. Redis Docs
+Source
+fn linsert_after<'a, K, P, V, RV>(
+    &'a mut self,
+    key: K,
+    pivot: P,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    P: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Insert an element after another element in a list. Redis Docs
+Source
+fn llen<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the length of the list stored at key. Redis Docs
+Source
+fn lmove<'a, S, D, RV>(
+    &'a mut self,
+    srckey: S,
+    dstkey: D,
+    src_dir: Direction,
+    dst_dir: Direction,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    S: ToRedisArgs + Send + Sync + 'a,
+    D: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Pop an element a list, push it to another list and return it Redis Docs
+Source
+fn lmpop<'a, K, RV>(
+    &'a mut self,
+    numkeys: usize,
+    key: K,
+    dir: Direction,
+    count: usize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Pops count elements from the first non-empty list key from the list of provided key names. Redis Docs.arg(numkeys).arg(key).arg(dir).arg(“COUNT)
+Source
+fn lpop<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    count: Option<NonZero<usize>>,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns the up to count first elements of the list stored at key. Read more
+Source
+fn lpos<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+    options: LposOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the index of the first matching value of the list stored at key. Redis Docs
+Source
+fn lpush<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Insert all the specified values at the head of the list stored at key. Redis Docs
+Source
+fn lpush_exists<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Inserts a value at the head of the list stored at key, only if key already exists and holds a list. Redis Docs
+Source
+fn lrange<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: isize,
+    stop: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the specified elements of the list stored at key. Redis Docs
+Source
+fn lrem<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    count: isize,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes the first count occurrences of elements equal to value from the list stored at key. Redis Docs
+Source
+fn ltrim<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: isize,
+    stop: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Trim an existing list so that it will contain only the specified range of elements specified. Redis Docs
+Source
+fn lset<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    index: isize,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sets the list element at index to value Redis Docs
+Source
+fn ping<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Sends a ping to the server Redis Docs
+Source
+fn ping_message<'a, K, RV>(
+    &'a mut self,
+    message: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Sends a ping with a message to the server Redis Docs
+Source
+fn rpop<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    count: Option<NonZero<usize>>,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns the up to count last elements of the list stored at key Read more
+Source
+fn rpoplpush<'a, K, D, RV>(
+    &'a mut self,
+    key: K,
+    dstkey: D,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    D: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Pop a value from a list, push it to another list and return it. Redis Docs
+Source
+fn rpush<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Insert all the specified values at the tail of the list stored at key. Redis Docs
+Source
+fn rpush_exists<'a, K, V, RV>(
+    &'a mut self,
+    key: K,
+    value: V,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Inserts value at the tail of the list stored at key, only if key already exists and holds a list. Redis Docs
+Source
+fn sadd<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add one or more members to a set. Redis Docs
+Source
+fn scard<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the number of members in a set. Redis Docs
+Source
+fn sdiff<'a, K, RV>(
+    &'a mut self,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Subtract multiple sets. Redis Docs
+Source
+fn sdiffstore<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Subtract multiple sets and store the resulting set in a key. Redis Docs
+Source
+fn sinter<'a, K, RV>(
+    &'a mut self,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Intersect multiple sets. Redis Docs
+Source
+fn sinterstore<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Intersect multiple sets and store the resulting set in a key. Redis Docs
+Source
+fn sismember<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Determine if a given value is a member of a set. Redis Docs
+Source
+fn smismember<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    members: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Determine if given values are members of a set. Redis Docs
+Source
+fn smembers<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get all the members in a set. Redis Docs
+Source
+fn smove<'a, S, D, M, RV>(
+    &'a mut self,
+    srckey: S,
+    dstkey: D,
+    member: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    S: ToRedisArgs + Send + Sync + 'a,
+    D: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Move a member from one set to another. Redis Docs
+Source
+fn spop<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove and return a random member from a set. Redis Docs
+Source
+fn srandmember<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get one random member from a set. Redis Docs
+Source
+fn srandmember_multiple<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    count: usize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get multiple random members from a set. Redis Docs
+Source
+fn srem<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove one or more members from a set. Redis Docs
+Source
+fn sunion<'a, K, RV>(
+    &'a mut self,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add multiple sets. Redis Docs
+Source
+fn sunionstore<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add multiple sets and store the resulting set in a key. Redis Docs
+Source
+fn zadd<'a, K, S, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+    score: S,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add one member to a sorted set, or update its score if it already exists. Redis Docs
+Source
+fn zadd_multiple<'a, K, S, M, RV>(
+    &'a mut self,
+    key: K,
+    items: &'a [(S, M)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add multiple members to a sorted set, or update its score if it already exists. Redis Docs
+Source
+fn zadd_options<'a, K, S, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+    score: S,
+    options: &'a SortedSetAddOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add one member to a sorted set, or update its score if it already exists. Redis Docs
+Source
+fn zadd_multiple_options<'a, K, S, M, RV>(
+    &'a mut self,
+    key: K,
+    items: &'a [(S, M)],
+    options: &'a SortedSetAddOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add multiple members to a sorted set, or update its score if it already exists. Redis Docs
+Source
+fn zcard<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the number of members in a sorted set. Redis Docs
+Source
+fn zcount<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Count the members in a sorted set with scores within the given values. Redis Docs
+Source
+fn zincr<'a, K, M, D, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+    delta: D,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    D: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Increments the member in a sorted set at key by delta. If the member does not exist, it is added with delta as its score. Redis Docs
+Source
+fn zinterstore<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Intersect multiple sorted sets and store the resulting sorted set in a new key using SUM as aggregation function. Redis Docs
+Source
+fn zinterstore_min<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Intersect multiple sorted sets and store the resulting sorted set in a new key using MIN as aggregation function. Redis Docs
+Source
+fn zinterstore_max<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Intersect multiple sorted sets and store the resulting sorted set in a new key using MAX as aggregation function. Redis Docs
+Source
+fn zinterstore_weights<'a, D, K, W, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: &'a [(K, W)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    W: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Commands::zinterstore, but with the ability to specify a multiplication factor for each sorted set by pairing one with each key in a tuple. Redis Docs
+Source
+fn zinterstore_min_weights<'a, D, K, W, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: &'a [(K, W)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    W: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Commands::zinterstore_min, but with the ability to specify a multiplication factor for each sorted set by pairing one with each key in a tuple. Redis Docs
+Source
+fn zinterstore_max_weights<'a, D, K, W, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: &'a [(K, W)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    W: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Commands::zinterstore_max, but with the ability to specify a multiplication factor for each sorted set by pairing one with each key in a tuple. Redis Docs
+Source
+fn zlexcount<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Count the number of members in a sorted set between a given lexicographical range. Redis Docs
+Source
+fn bzpopmax<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    timeout: f64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns the member with the highest score in a sorted set. Blocks until a member is available otherwise. Redis Docs
+Source
+fn zpopmax<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns up to count members with the highest scores in a sorted set Redis Docs
+Source
+fn bzpopmin<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    timeout: f64,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns the member with the lowest score in a sorted set. Blocks until a member is available otherwise. Redis Docs
+Source
+fn zpopmin<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns up to count members with the lowest scores in a sorted set Redis Docs
+Source
+fn bzmpop_max<'a, K, RV>(
+    &'a mut self,
+    timeout: f64,
+    keys: K,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns up to count members with the highest scores, from the first non-empty sorted set in the provided list of key names. Blocks until a member is available otherwise. Redis Docs
+Source
+fn zmpop_max<'a, K, RV>(
+    &'a mut self,
+    keys: K,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns up to count members with the highest scores, from the first non-empty sorted set in the provided list of key names. Redis Docs
+Source
+fn bzmpop_min<'a, K, RV>(
+    &'a mut self,
+    timeout: f64,
+    keys: K,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns up to count members with the lowest scores, from the first non-empty sorted set in the provided list of key names. Blocks until a member is available otherwise. Redis Docs
+Source
+fn zmpop_min<'a, K, RV>(
+    &'a mut self,
+    keys: K,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Removes and returns up to count members with the lowest scores, from the first non-empty sorted set in the provided list of key names. Redis Docs
+Source
+fn zrandmember<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    count: Option<isize>,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return up to count random members in a sorted set (or 1 if count == None) Redis Docs
+Source
+fn zrandmember_withscores<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return up to count random members in a sorted set with scores Redis Docs
+Source
+fn zrange<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: isize,
+    stop: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by index Redis Docs
+Source
+fn zrange_withscores<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: isize,
+    stop: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by index with scores. Redis Docs
+Source
+fn zrangebylex<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by lexicographical range. Redis Docs
+Source
+fn zrangebylex_limit<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+    offset: isize,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by lexicographical range with offset and limit. Redis Docs
+Source
+fn zrevrangebylex<'a, K, MM, M, RV>(
+    &'a mut self,
+    key: K,
+    max: MM,
+    min: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by lexicographical range. Redis Docs
+Source
+fn zrevrangebylex_limit<'a, K, MM, M, RV>(
+    &'a mut self,
+    key: K,
+    max: MM,
+    min: M,
+    offset: isize,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by lexicographical range with offset and limit. Redis Docs
+Source
+fn zrangebyscore<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score. Redis Docs
+Source
+fn zrangebyscore_withscores<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score with scores. Redis Docs
+Source
+fn zrangebyscore_limit<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+    offset: isize,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score with limit. Redis Docs
+Source
+fn zrangebyscore_limit_withscores<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+    offset: isize,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score with limit with scores. Redis Docs
+Source
+fn zrank<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Determine the index of a member in a sorted set. Redis Docs
+Source
+fn zrem<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    members: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove one or more members from a sorted set. Redis Docs
+Source
+fn zrembylex<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove all members in a sorted set between the given lexicographical range. Redis Docs
+Source
+fn zremrangebyrank<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: isize,
+    stop: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove all members in a sorted set within the given indexes. Redis Docs
+Source
+fn zrembyscore<'a, K, M, MM, RV>(
+    &'a mut self,
+    key: K,
+    min: M,
+    max: MM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Remove all members in a sorted set within the given scores. Redis Docs
+Source
+fn zrevrange<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: isize,
+    stop: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by index, ordered from high to low. Redis Docs
+Source
+fn zrevrange_withscores<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    start: isize,
+    stop: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by index, with scores ordered from high to low. Redis Docs
+Source
+fn zrevrangebyscore<'a, K, MM, M, RV>(
+    &'a mut self,
+    key: K,
+    max: MM,
+    min: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score. Redis Docs
+Source
+fn zrevrangebyscore_withscores<'a, K, MM, M, RV>(
+    &'a mut self,
+    key: K,
+    max: MM,
+    min: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score with scores. Redis Docs
+Source
+fn zrevrangebyscore_limit<'a, K, MM, M, RV>(
+    &'a mut self,
+    key: K,
+    max: MM,
+    min: M,
+    offset: isize,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score with limit. Redis Docs
+Source
+fn zrevrangebyscore_limit_withscores<'a, K, MM, M, RV>(
+    &'a mut self,
+    key: K,
+    max: MM,
+    min: M,
+    offset: isize,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    MM: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return a range of members in a sorted set, by score with limit with scores. Redis Docs
+Source
+fn zrevrank<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Determine the index of a member in a sorted set, with scores ordered from high to low. Redis Docs
+Source
+fn zscore<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the score associated with the given member in a sorted set. Redis Docs
+Source
+fn zscore_multiple<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    members: &'a [M],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Get the scores associated with multiple members in a sorted set. Redis Docs
+Source
+fn zunionstore<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Unions multiple sorted sets and store the resulting sorted set in a new key using SUM as aggregation function. Redis Docs
+Source
+fn zunionstore_min<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Unions multiple sorted sets and store the resulting sorted set in a new key using MIN as aggregation function. Redis Docs
+Source
+fn zunionstore_max<'a, D, K, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Unions multiple sorted sets and store the resulting sorted set in a new key using MAX as aggregation function. Redis Docs
+Source
+fn zunionstore_weights<'a, D, K, W, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: &'a [(K, W)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    W: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Commands::zunionstore, but with the ability to specify a multiplication factor for each sorted set by pairing one with each key in a tuple. Redis Docs
+Source
+fn zunionstore_min_weights<'a, D, K, W, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: &'a [(K, W)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    W: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Commands::zunionstore_min, but with the ability to specify a multiplication factor for each sorted set by pairing one with each key in a tuple. Redis Docs
+Source
+fn zunionstore_max_weights<'a, D, K, W, RV>(
+    &'a mut self,
+    dstkey: D,
+    keys: &'a [(K, W)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    K: ToRedisArgs + Send + Sync + 'a,
+    W: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Commands::zunionstore_max, but with the ability to specify a multiplication factor for each sorted set by pairing one with each key in a tuple. Redis Docs
+Source
+fn pfadd<'a, K, E, RV>(
+    &'a mut self,
+    key: K,
+    element: E,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Adds the specified elements to the specified HyperLogLog. Redis Docs
+Source
+fn pfcount<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return the approximated cardinality of the set(s) observed by the HyperLogLog at key(s). Redis Docs
+Source
+fn pfmerge<'a, D, S, RV>(
+    &'a mut self,
+    dstkey: D,
+    srckeys: S,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    D: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Merge N different HyperLogLogs into a single one. Redis Docs
+Source
+fn publish<'a, K, E, RV>(
+    &'a mut self,
+    channel: K,
+    message: E,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Posts a message to the given channel. Redis Docs
+Source
+fn spublish<'a, K, E, RV>(
+    &'a mut self,
+    channel: K,
+    message: E,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Posts a message to the given sharded channel. Redis Docs
+Source
+fn object_encoding<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the encoding of a key. Redis Docs
+Source
+fn object_idletime<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the time in seconds since the last access of a key. Redis Docs
+Source
+fn object_freq<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the logarithmic access frequency counter of a key. Redis Docs
+Source
+fn object_refcount<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the reference count of a key. Redis Docs
+Source
+fn client_getname<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Returns the name of the current connection as set by CLIENT SETNAME. Redis Docs
+Source
+fn client_id<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Returns the ID of the current connection. Redis Docs
+Source
+fn client_setname<'a, K, RV>(
+    &'a mut self,
+    connection_name: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Command assigns a name to the current connection. Redis Docs
+Source
+fn acl_load<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+When Redis is configured to use an ACL file (with the aclfile configuration option), this command will reload the ACLs from the file, replacing all the current ACL rules with the ones defined in the file. Redis Docs
+Source
+fn acl_save<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+When Redis is configured to use an ACL file (with the aclfile configuration option), this command will save the currently defined ACLs from the server memory to the ACL file. Redis Docs
+Source
+fn acl_list<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Shows the currently active ACL rules in the Redis server. Redis Docs
+Source
+fn acl_users<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Shows a list of all the usernames of the currently configured users in the Redis ACL system. Redis Docs
+Source
+fn acl_getuser<'a, K, RV>(
+    &'a mut self,
+    username: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns all the rules defined for an existing ACL user. Redis Docs
+Source
+fn acl_setuser<'a, K, RV>(
+    &'a mut self,
+    username: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Creates an ACL user without any privilege. Redis Docs
+Source
+fn acl_setuser_rules<'a, K, RV>(
+    &'a mut self,
+    username: K,
+    rules: &'a [Rule],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Creates an ACL user with the specified rules or modify the rules of an existing user. Redis Docs
+Source
+fn acl_deluser<'a, K, RV>(
+    &'a mut self,
+    usernames: &'a [K],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Delete all the specified ACL users and terminate all the connections that are authenticated with such users. Redis Docs
+Source
+fn acl_dryrun<'a, K, C, A, RV>(
+    &'a mut self,
+    username: K,
+    command: C,
+    args: A,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    A: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Simulate the execution of a given command by a given user. Redis Docs
+Source
+fn acl_cat<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Shows the available ACL categories. Redis Docs
+Source
+fn acl_cat_categoryname<'a, K, RV>(
+    &'a mut self,
+    categoryname: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Shows all the Redis commands in the specified category. Redis Docs
+Source
+fn acl_genpass<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Generates a 256-bits password starting from /dev/urandom if available. Redis Docs
+Source
+fn acl_genpass_bits<'a, RV>(
+    &'a mut self,
+    bits: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Generates a 1-to-1024-bits password starting from /dev/urandom if available. Redis Docs
+Source
+fn acl_whoami<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Returns the username the current connection is authenticated with. Redis Docs
+Source
+fn acl_log<'a, RV>(
+    &'a mut self,
+    count: isize,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Shows a list of recent ACL security events Redis Docs
+Source
+fn acl_log_reset<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Clears the ACL log. Redis Docs
+Source
+fn acl_help<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Returns a helpful text describing the different subcommands. Redis Docs
+Source
+fn geo_add<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    members: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Adds the specified geospatial items to the specified key. Read more
+Source
+fn geo_dist<'a, K, M1, M2, RV>(
+    &'a mut self,
+    key: K,
+    member1: M1,
+    member2: M2,
+    unit: Unit,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M1: ToRedisArgs + Send + Sync + 'a,
+    M2: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return the distance between two members in the geospatial index represented by the sorted set. Read more
+Source
+fn geo_hash<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    members: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return valid Geohash strings representing the position of one or more members of the geospatial index represented by the sorted set at key. Read more
+Source
+fn geo_pos<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    members: M,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return the positions of all the specified members of the geospatial index represented by the sorted set at key. Read more
+Source
+fn geo_radius<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    longitude: f64,
+    latitude: f64,
+    radius: f64,
+    unit: Unit,
+    options: RadiusOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Return the members of a sorted set populated with geospatial information using geo_add, which are within the borders of the area specified with the center location and the maximum distance from the center (the radius). Read more
+Source
+fn geo_radius_by_member<'a, K, M, RV>(
+    &'a mut self,
+    key: K,
+    member: M,
+    radius: f64,
+    unit: Unit,
+    options: RadiusOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    M: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Retrieve members selected by distance with the center of member. The member itself is always contained in the results. Redis Docs
+Source
+fn xack<'a, K, G, I, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    ids: &'a [I],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    I: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Ack pending stream messages checked out by a consumer. Read more
+Source
+fn xadd<'a, K, ID, F, V, RV>(
+    &'a mut self,
+    key: K,
+    id: ID,
+    items: &'a [(F, V)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add a stream message by key. Use * as the id for the current timestamp. Read more
+Source
+fn xadd_map<'a, K, ID, BTM, RV>(
+    &'a mut self,
+    key: K,
+    id: ID,
+    map: BTM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    BTM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+BTreeMap variant for adding a stream message by key. Use * as the id for the current timestamp. Read more
+Source
+fn xadd_options<'a, K, ID, I, RV>(
+    &'a mut self,
+    key: K,
+    id: ID,
+    items: I,
+    options: &'a StreamAddOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    I: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add a stream message with options. Read more
+Source
+fn xadd_maxlen<'a, K, ID, F, V, RV>(
+    &'a mut self,
+    key: K,
+    maxlen: StreamMaxlen,
+    id: ID,
+    items: &'a [(F, V)],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    F: ToRedisArgs + Send + Sync + 'a,
+    V: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Add a stream message while capping the stream at a maxlength. Read more
+Source
+fn xadd_maxlen_map<'a, K, ID, BTM, RV>(
+    &'a mut self,
+    key: K,
+    maxlen: StreamMaxlen,
+    id: ID,
+    map: BTM,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    BTM: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+BTreeMap variant for adding a stream message while capping the stream at a maxlength. Read more
+Source
+fn xautoclaim_options<'a, K, G, C, MIT, S, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    consumer: C,
+    min_idle_time: MIT,
+    start: S,
+    options: StreamAutoClaimOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    MIT: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Perform a combined xpending and xclaim flow. Read more
+Source
+fn xclaim<'a, K, G, C, MIT, ID, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    consumer: C,
+    min_idle_time: MIT,
+    ids: &'a [ID],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    MIT: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Claim pending, unacked messages, after some period of time, currently checked out by another consumer. Read more
+Source
+fn xclaim_options<'a, K, G, C, MIT, ID, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    consumer: C,
+    min_idle_time: MIT,
+    ids: &'a [ID],
+    options: StreamClaimOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    MIT: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This is the optional arguments version for claiming unacked, pending messages currently checked out by another consumer. Read more
+Source
+fn xdel<'a, K, ID, RV>(
+    &'a mut self,
+    key: K,
+    ids: &'a [ID],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Deletes a list of ids for a given stream key. Read more
+Source
+fn xgroup_create<'a, K, G, ID, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    id: ID,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This command is used for creating a consumer group. It expects the stream key to already exist. Otherwise, use xgroup_create_mkstream if it doesn’t. The id is the starting message id all consumers should read from. Use $ If you want all consumers to read from the last message added to stream. Read more
+Source
+fn xgroup_createconsumer<'a, K, G, C, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    consumer: C,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This creates a consumer explicitly (vs implicit via XREADGROUP) for given stream `key. Read more
+Source
+fn xgroup_create_mkstream<'a, K, G, ID, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    id: ID,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This is the alternate version for creating a consumer group which makes the stream if it doesn’t exist. Read more
+Source
+fn xgroup_setid<'a, K, G, ID, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    id: ID,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Alter which id you want consumers to begin reading from an existing consumer group. Read more
+Source
+fn xgroup_destroy<'a, K, G, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Destroy an existing consumer group for a given stream key Read more
+Source
+fn xgroup_delconsumer<'a, K, G, C, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    consumer: C,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This deletes a consumer from an existing consumer group for given stream `key. Read more
+Source
+fn xinfo_consumers<'a, K, G, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This returns all info details about which consumers have read messages for given consumer group. Take note of the StreamInfoConsumersReply return type. Read more
+Source
+fn xinfo_groups<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns all consumer groups created for a given stream key. Take note of the StreamInfoGroupsReply return type. Read more
+Source
+fn xinfo_stream<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns info about high-level stream details (first & last message id, length, number of groups, etc.) Take note of the StreamInfoStreamReply return type. Read more
+Source
+fn xlen<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns the number of messages for a given stream key. Read more
+Source
+fn xpending<'a, K, G, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This is a basic version of making XPENDING command calls which only passes a stream key and consumer group and it returns details about which consumers have pending messages that haven’t been acked. Read more
+Source
+fn xpending_count<'a, K, G, S, E, C, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    start: S,
+    end: E,
+    count: C,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This XPENDING version returns a list of all messages over the range. You can use this for paginating pending messages (but without the message HashMap). Read more
+Source
+fn xpending_consumer_count<'a, K, G, S, E, C, CN, RV>(
+    &'a mut self,
+    key: K,
+    group: G,
+    start: S,
+    end: E,
+    count: C,
+    consumer: CN,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    G: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    CN: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+An alternate version of xpending_count which filters by consumer name. Read more
+Source
+fn xrange<'a, K, S, E, RV>(
+    &'a mut self,
+    key: K,
+    start: S,
+    end: E,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Returns a range of messages in a given stream key. Read more
+Source
+fn xrange_all<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+A helper method for automatically returning all messages in a stream by key. Use with caution! Read more
+Source
+fn xrange_count<'a, K, S, E, C, RV>(
+    &'a mut self,
+    key: K,
+    start: S,
+    end: E,
+    count: C,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+A method for paginating a stream by key. Read more
+Source
+fn xread<'a, K, ID, RV>(
+    &'a mut self,
+    keys: &'a [K],
+    ids: &'a [ID],
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Read a list of ids for each stream key. This is the basic form of reading streams. For more advanced control, like blocking, limiting, or reading by consumer group, see xread_options. Read more
+Source
+fn xread_options<'a, K, ID, RV>(
+    &'a mut self,
+    keys: &'a [K],
+    ids: &'a [ID],
+    options: &'a StreamReadOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    ID: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This method handles setting optional arguments for XREAD or XREADGROUP Redis commands. Read more
+Source
+fn xrevrange<'a, K, E, S, RV>(
+    &'a mut self,
+    key: K,
+    end: E,
+    start: S,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This is the reverse version of xrange. The same rules apply for start and end here. Read more
+Source
+fn xrevrange_all<'a, K, RV>(
+    &'a mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This is the reverse version of xrange_all. The same rules apply for start and end here. Read more
+Source
+fn xrevrange_count<'a, K, E, S, C, RV>(
+    &'a mut self,
+    key: K,
+    end: E,
+    start: S,
+    count: C,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    E: ToRedisArgs + Send + Sync + 'a,
+    S: ToRedisArgs + Send + Sync + 'a,
+    C: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+This is the reverse version of xrange_count. The same rules apply for start and end here. Read more
+Source
+fn xtrim<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    maxlen: StreamMaxlen,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Trim a stream key to a MAXLEN count. Read more
+Source
+fn xtrim_options<'a, K, RV>(
+    &'a mut self,
+    key: K,
+    options: &'a StreamTrimOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    K: ToRedisArgs + Send + Sync + 'a,
+    RV: FromRedisValue,
+Trim a stream key with full options Read more
+Source
+fn invoke_script<'a, RV>(
+    &'a mut self,
+    invocation: &'a ScriptInvocation<'a>,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Adds a prepared script command to the pipeline. Read more
+Source
+fn flushall<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Deletes all the keys of all databases Read more
+Source
+fn flushall_options<'a, RV>(
+    &'a mut self,
+    options: &'a FlushAllOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Deletes all the keys of all databases with options Read more
+Source
+fn flushdb<'a, RV>(
+    &'a mut self,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Deletes all the keys of the current database Read more
+Source
+fn flushdb_options<'a, RV>(
+    &'a mut self,
+    options: &'a FlushAllOptions,
+) -> Pin<Box<dyn Future<Output = Result<RV, RedisError>> + Send + 'a>>
+where
+    RV: FromRedisValue,
+Deletes all the keys of the current database with options Read more
+Source
+fn scan<RV>(
+    &mut self,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    RV: FromRedisValue,
+Incrementally iterate the keys space.
+Source
+fn scan_options<RV>(
+    &mut self,
+    opts: ScanOptions,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    RV: FromRedisValue,
+Incrementally iterate the keys space with options.
+Source
+fn scan_match<P, RV>(
+    &mut self,
+    pattern: P,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    P: ToRedisArgs,
+    RV: FromRedisValue,
+Incrementally iterate the keys space for keys matching a pattern.
+Source
+fn hscan<K, RV>(
+    &mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    K: ToRedisArgs,
+    RV: FromRedisValue,
+Incrementally iterate hash fields and associated values.
+Source
+fn hscan_match<K, P, RV>(
+    &mut self,
+    key: K,
+    pattern: P,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    K: ToRedisArgs,
+    P: ToRedisArgs,
+    RV: FromRedisValue,
+Incrementally iterate hash fields and associated values for field names matching a pattern.
+Source
+fn sscan<K, RV>(
+    &mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    K: ToRedisArgs,
+    RV: FromRedisValue,
+Incrementally iterate set elements.
+Source
+fn sscan_match<K, P, RV>(
+    &mut self,
+    key: K,
+    pattern: P,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    K: ToRedisArgs,
+    P: ToRedisArgs,
+    RV: FromRedisValue,
+Incrementally iterate set elements for elements matching a pattern.
+Source
+fn zscan<K, RV>(
+    &mut self,
+    key: K,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    K: ToRedisArgs,
+    RV: FromRedisValue,
+Incrementally iterate sorted set elements.
+Source
+fn zscan_match<K, P, RV>(
+    &mut self,
+    key: K,
+    pattern: P,
+) -> Pin<Box<dyn Future<Output = Result<AsyncIter<'_, RV>, RedisError>> + Send + '_>>
+where
+    K: ToRedisArgs,
+    P: ToRedisArgs,
+    RV: FromRedisValue,
+Incrementally iterate sorted set elements for elements matching a pattern.
+Source
+impl<T> AsyncTypedCommands for T
+where
+    T: ConnectionLike + Send + Sync,
+Source
+impl<T> Borrow<T> for T
+where
+    T: ?Sized,
+Source
+impl<T> BorrowMut<T> for T
+where
+    T: ?Sized,
+Source
+impl<T> From<T> for T
+Source
+impl<T> Instrument for T
+Source
+impl<T, U> Into<U> for T
+where
+    U: From<T>,
+Source
+impl<T> JsonAsyncCommands for T
+where
+    T: ConnectionLike + Send,
+Source
+impl<P, T> Receiver for P
+where
+    P: Deref<Target = T> + ?Sized,
+    T: ?Sized,
+Source
+impl<T, U> TryFrom<U> for T
+where
+    U: Into<T>,
+Source
+impl<T, U> TryInto<U> for T
+where
+    U: TryFrom<T>,
+Source
+impl<V, T> VZip<V> for T
+where
+    V: MultiLane<T>,
+Source
+impl<T> WithSubscriber for T
+Source
+impl<T> ErasedDestructor for T
+where
+    T: 'static,

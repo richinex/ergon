@@ -700,6 +700,12 @@ impl ExecutionLog for RedisExecutionLog {
 
             let updated_at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
 
+            // Parse retry_count from hash
+            let retry_count: u32 = data
+                .get("retry_count")
+                .and_then(|v| String::from_utf8_lossy(v).parse().ok())
+                .unwrap_or(0);
+
             // Extract Level 3 parent metadata if present
             let parent_flow_id: Option<String> = data
                 .get("parent_flow_id")
@@ -719,7 +725,7 @@ impl ExecutionLog for RedisExecutionLog {
                 locked_by: Some(worker_id.to_string()),
                 created_at,
                 updated_at,
-                retry_count: 0,
+                retry_count,
                 error_message: None,
                 scheduled_for: None,
                 parent_flow_id,

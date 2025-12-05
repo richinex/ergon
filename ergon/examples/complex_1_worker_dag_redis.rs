@@ -402,6 +402,18 @@ impl OrderFulfillment {
     /// Step 5: Generate Shipping Label (CHILD FLOW - depends on all parallel steps)
     #[step(depends_on = ["validate_customer", "check_fraud", "reserve_inventory", "process_payment"])]
     async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, String> {
+        // CRITICAL: Invoke child FIRST - before any side effects
+        // This ensures side effects only run on success path, not on replay
+        let label = self
+            .invoke(LabelGenerator {
+                order_id: self.order_id.clone(),
+                customer_id: self.customer_id.clone(),
+            })
+            .result()
+            .await
+            .map_err(|e| format!("Label generation failed: {}", e))?;
+
+        // Side effects AFTER await - only runs once on success
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -411,16 +423,6 @@ impl OrderFulfillment {
             &self.order_id,
             count
         );
-
-        // Invoke child flow for label generation
-        let label = self
-            .invoke(LabelGenerator {
-                order_id: self.order_id.clone(),
-                customer_id: self.customer_id.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| format!("Label generation failed: {}", e))?;
 
         println!("[{:.3}]      -> Label generated: {}", timestamp(), label.tracking_number);
         Ok(label)
@@ -585,7 +587,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             order_id: "ORD-001".to_string(),
             customer_id: "CUST-001".to_string(),     // No validation retry
             product_id: "PROD-001".to_string(),      // No inventory retry
-            amount: 299.99,
+            amount: 299.99,                          // Payment will retry once
             quantity: 2,
         },
         OrderFulfillment {
@@ -611,10 +613,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // Start 4 workers
-    println!("Starting 4 workers...\n");
+    // Start 1 worker (testing for concurrency vs logic bugs)
+    println!("Starting 1 worker...\n");
 
-    let workers: Vec<_> = (1..=4)
+    let workers: Vec<_> = (1..=1)
         .map(|i| {
             let storage = storage.clone();
             let worker_name = match i {

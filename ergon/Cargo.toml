@@ -85,6 +85,10 @@ required-features = ["redis"]
 name = "child_flow_custom_errors_redis"
 required-features = ["redis"]
 
+[[example]]
+name = "complex_1_worker_dag_redis"
+required-features = ["redis"]
+
 
 [[example]]
 name = "timer_race_condition_redis"

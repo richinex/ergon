@@ -389,12 +389,6 @@ impl OrderFulfillment {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // First attempt for this order: transient error
-        if count == 1 {
-            println!("[{:.3}]      -> Gateway timeout (retryable)", timestamp());
-            return Err(PaymentError::GatewayUnavailable);
-        }
-
         // Check for insufficient funds
         if self.amount > 10000.0 {
             println!("[{:.3}]      -> Insufficient funds (permanent)", timestamp());
@@ -578,8 +572,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orders = vec![
         OrderFulfillment {
             order_id: "ORD-001".to_string(),
-            customer_id: "CUST-RETRY".to_string(),  // Will retry validation
-            product_id: "PROD-SLOW".to_string(),     // Will retry inventory
+            customer_id: "CUST-001".to_string(),     // No validation retry
+            product_id: "PROD-001".to_string(),      // No inventory retry
             amount: 299.99,
             quantity: 2,
         },
