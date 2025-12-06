@@ -168,6 +168,11 @@ impl RedisExecutionLog {
         format!("ergon:signal:{}:{}", flow_id, step)
     }
 
+    /// Builds the Redis key for step-child mapping.
+    fn step_child_mapping_key(flow_id: Uuid, parent_step: i32) -> String {
+        format!("ergon:step_child:{}:{}", flow_id, parent_step)
+    }
+
     /// Helper to parse invocation from Redis hash data.
     fn parse_invocation(&self, data: HashMap<String, Vec<u8>>) -> Result<Invocation> {
         // Helper to get string field
@@ -257,6 +262,47 @@ impl RedisExecutionLog {
         }
 
         Ok(invocation)
+    }
+
+    /// DIAGNOSTIC: Count the number of pending flows in the queue
+    pub async fn count_pending(&self) -> usize {
+        let mut conn = match self.get_connection().await {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+
+        let count: usize = conn.llen("ergon:queue:pending").await.unwrap_or(0);
+
+        count
+    }
+
+    /// DIAGNOSTIC: List all pending task IDs with their flow IDs
+    pub async fn list_pending(&self) -> Vec<(String, String)> {
+        let mut conn = match self.get_connection().await {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+
+        // Get all task IDs from the pending queue
+        let task_ids: Vec<String> = conn
+            .lrange("ergon:queue:pending", 0, -1)
+            .await
+            .unwrap_or_default();
+
+        let mut results = Vec::new();
+        for task_id in task_ids {
+            let flow_key =
+                Self::flow_key(Uuid::parse_str(&task_id).unwrap_or_else(|_| Uuid::nil()));
+
+            // Get flow_id from the flow metadata
+            let flow_id: Option<String> = conn.hget(&flow_key, "flow_id").await.unwrap_or(None);
+
+            if let Some(flow_id) = flow_id {
+                results.push((task_id, flow_id));
+            }
+        }
+
+        results
     }
 }
 
@@ -595,35 +641,76 @@ impl ExecutionLog for RedisExecutionLog {
             }
 
             // Add to delayed queue (sorted by scheduled_for timestamp)
+            // Also create flow_id -> task_id index for O(1) resume_flow lookup
             let _: () = pipe
+                .set(
+                    format!("ergon:flow_task_map:{}", flow.flow_id),
+                    task_id.to_string(),
+                )
                 .zadd("ergon:queue:delayed", task_id.to_string(), scheduled_ts)
                 .query_async(&mut *conn)
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
         } else {
             // Immediate execution - add to pending queue
-            let mut pipe = redis::pipe();
-            pipe.atomic()
-                .hset(&flow_key, "task_id", task_id.to_string())
-                .hset(&flow_key, "flow_id", flow.flow_id.to_string())
-                .hset(&flow_key, "flow_type", &flow.flow_type)
-                .hset(&flow_key, "status", "PENDING")
-                .hset(&flow_key, "created_at", flow.created_at.timestamp())
-                .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
-                .hset(&flow_key, "flow_data", flow.flow_data.as_slice());
+            // Use Lua script for guaranteed atomicity: data THEN queue
+            let script = redis::Script::new(
+                r#"
+                local flow_key = KEYS[1]
+                local task_id = ARGV[1]
+                local flow_id = ARGV[2]
+                local flow_type = ARGV[3]
+                local created_at = ARGV[4]
+                local updated_at = ARGV[5]
+                local flow_data = ARGV[6]
+                local parent_flow_id = ARGV[7]
+                local signal_token = ARGV[8]
 
-            // Level 3: Add parent metadata if present
-            if let Some(parent_id) = flow.parent_flow_id {
-                pipe.hset(&flow_key, "parent_flow_id", parent_id.to_string());
-            }
-            if let Some(ref signal_token) = flow.signal_token {
-                pipe.hset(&flow_key, "signal_token", signal_token);
-            }
+                -- Set all flow metadata FIRST
+                redis.call('HSET', flow_key,
+                    'task_id', task_id,
+                    'flow_id', flow_id,
+                    'flow_type', flow_type,
+                    'status', 'PENDING',
+                    'created_at', created_at,
+                    'updated_at', updated_at,
+                    'flow_data', flow_data)
 
-            // Add to pending queue (FIFO)
-            let _: () = pipe
-                .rpush("ergon:queue:pending", task_id.to_string())
-                .query_async(&mut *conn)
+                -- Add optional parent metadata
+                if parent_flow_id ~= '' then
+                    redis.call('HSET', flow_key, 'parent_flow_id', parent_flow_id)
+                end
+                if signal_token ~= '' then
+                    redis.call('HSET', flow_key, 'signal_token', signal_token)
+                end
+
+                -- Create flow_id -> task_id index for O(1) resume_flow lookup
+                redis.call('SET', 'ergon:flow_task_map:' .. flow_id, task_id)
+
+                -- ONLY AFTER data is written, add to queue
+                redis.call('RPUSH', 'ergon:queue:pending', task_id)
+
+                return redis.status_reply('OK')
+            "#,
+            );
+
+            let parent_id_str = flow
+                .parent_flow_id
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let signal_token_str = flow.signal_token.unwrap_or_default();
+
+            let _: String = script
+                .key(&flow_key)
+                .arg(task_id.to_string())
+                .arg(flow.flow_id.to_string())
+                .arg(&flow.flow_type)
+                .arg(flow.created_at.timestamp())
+                .arg(flow.updated_at.timestamp())
+                .arg(flow.flow_data.as_slice())
+                .arg(parent_id_str)
+                .arg(signal_token_str)
+                .invoke_async(&mut *conn)
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
         }
@@ -633,107 +720,246 @@ impl ExecutionLog for RedisExecutionLog {
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
         let mut conn = self.get_connection().await?;
-
-        // Reliable queue pattern: LMOVE atomically pops from pending and pushes to per-worker processing list
-        // If worker crashes after this, task stays in processing list and can be recovered by stale lock detection
         let processing_key = format!("ergon:processing:{}", worker_id);
-        let task_id_str: Option<String> = redis::cmd("LMOVE")
-            .arg("ergon:queue:pending")
-            .arg(&processing_key)
-            .arg("LEFT")   // pop from left of pending queue (FIFO)
-            .arg("RIGHT")  // push to right of processing list
-            .query_async(&mut *conn)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        let now = Utc::now().timestamp();
+        let now_millis = Utc::now().timestamp_millis();
 
-        if let Some(task_id_str) = task_id_str {
-            let task_id = Uuid::parse_str(&task_id_str)
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
+        // Single atomic LPOP with rollback on validation failure
+        // If Rust loses the response, task is marked RUNNING and recover_stale_locks will handle it
+        // This provides at-least-once delivery (task may run twice after recovery, but never lost)
+        let script = redis::Script::new(
+            r#"
+            -- Atomically dequeue with validation and rollback capability
+            local task_id = redis.call('LPOP', 'ergon:queue:pending')
+            if not task_id then
+                return nil
+            end
 
-            let flow_key = Self::flow_key(task_id);
-            let now = Utc::now().timestamp();
+            local flow_key = 'ergon:flow:' .. task_id
 
-            // Atomically update status and lock
-            let _: () = redis::pipe()
-                .atomic()
-                .hset(&flow_key, "status", "RUNNING")
-                .hset(&flow_key, "locked_by", worker_id)
-                .hset(&flow_key, "updated_at", now)
-                // Add to running set with current timestamp for stale lock detection
-                .zadd("ergon:running", task_id_str, Utc::now().timestamp_millis())
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
+            -- Fetch ALL required fields
+            local flow_id = redis.call('HGET', flow_key, 'flow_id')
+            local flow_type = redis.call('HGET', flow_key, 'flow_type')
+            local flow_data = redis.call('HGET', flow_key, 'flow_data')
+            local created_at = redis.call('HGET', flow_key, 'created_at')
 
-            // Fetch flow metadata
-            let data: HashMap<String, Vec<u8>> = conn
-                .hgetall(&flow_key)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
+            -- Validate ALL required fields individually
+            if not flow_id or flow_id == '' then
+                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing flow_id for ' .. task_id)
+                redis.call('LPUSH', 'ergon:queue:pending', task_id)
+                return nil
+            end
+            if not flow_type or flow_type == '' then
+                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing flow_type for ' .. task_id)
+                redis.call('LPUSH', 'ergon:queue:pending', task_id)
+                return nil
+            end
+            if not flow_data then
+                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing flow_data for ' .. task_id)
+                redis.call('LPUSH', 'ergon:queue:pending', task_id)
+                return nil
+            end
+            if not created_at then
+                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing created_at for ' .. task_id)
+                redis.call('LPUSH', 'ergon:queue:pending', task_id)
+                return nil
+            end
 
-            // Parse flow
-            let flow_id = Uuid::parse_str(&String::from_utf8_lossy(
-                data.get("flow_id")
-                    .ok_or_else(|| StorageError::Connection("Missing flow_id".to_string()))?,
-            ))
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+            -- Validation passed - mark as RUNNING and add to processing queue
+            redis.call('RPUSH', KEYS[1], task_id)
+            redis.call('HSET', flow_key, 'status', 'RUNNING', 'locked_by', ARGV[1], 'updated_at', ARGV[2])
+            redis.call('ZADD', 'ergon:running', ARGV[3], task_id)
 
-            let flow_type = String::from_utf8_lossy(
-                data.get("flow_type")
-                    .ok_or_else(|| StorageError::Connection("Missing flow_type".to_string()))?,
-            )
-            .to_string();
+            -- Fetch optional fields
+            local retry_count = redis.call('HGET', flow_key, 'retry_count') or '0'
+            local parent_flow_id = redis.call('HGET', flow_key, 'parent_flow_id') or ''
+            local signal_token = redis.call('HGET', flow_key, 'signal_token') or ''
 
-            let flow_data = data
-                .get("flow_data")
-                .ok_or_else(|| StorageError::Connection("Missing flow_data".to_string()))?
-                .clone();
+            -- Return task data
+            -- NOTE: If this response is lost, task is RUNNING and will be recovered by stale lock detection
+            return {task_id, flow_id, flow_type, flow_data, created_at, retry_count, parent_flow_id, signal_token}
+        "#,
+        );
 
-            let created_at_ts: i64 = String::from_utf8_lossy(
-                data.get("created_at")
-                    .ok_or_else(|| StorageError::Connection("Missing created_at".to_string()))?,
-            )
-            .parse()
-            .unwrap_or(0);
-            let created_at =
-                chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
+        // Wrap in timeout to prevent indefinite hangs (10 second timeout)
+        let timeout_duration = tokio::time::Duration::from_secs(10);
+        let result: Option<Vec<redis::Value>> = match tokio::time::timeout(
+            timeout_duration,
+            script
+                .key(&processing_key)
+                .arg(worker_id)
+                .arg(now)
+                .arg(now_millis)
+                .invoke_async(&mut *conn)
+        ).await {
+            Ok(Ok(val)) => val,
+            Ok(Err(e)) => {
+                return Err(StorageError::Connection(e.to_string()));
+            }
+            Err(_) => {
+                // Timeout means invoke_async hung - drop connection and return None
+                // The task is already marked RUNNING in Redis and will be recovered by stale lock detection
+                warn!("Lua dequeue script timeout after {:?} - task will be recovered by stale lock detection", timeout_duration);
+                return Ok(None);
+            }
+        };
 
-            let updated_at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
+        let Some(values) = result else {
+            return Ok(None);
+        };
 
-            // Parse retry_count from hash
-            let retry_count: u32 = data
-                .get("retry_count")
-                .and_then(|v| String::from_utf8_lossy(v).parse().ok())
-                .unwrap_or(0);
+        // Parse the returned values
+        // Helper to extract string from redis::Value
+        let get_string = |v: &redis::Value| -> Option<String> {
+            match v {
+                redis::Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
+                redis::Value::SimpleString(s) => Some(s.clone()),
+                _ => None,
+            }
+        };
 
-            // Extract Level 3 parent metadata if present
-            let parent_flow_id: Option<String> = data
-                .get("parent_flow_id")
-                .map(|v| String::from_utf8_lossy(v).to_string());
-            let parent_flow_id = parent_flow_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
-            let signal_token: Option<String> = data
-                .get("signal_token")
-                .map(|v| String::from_utf8_lossy(v).to_string())
-                .filter(|s| !s.is_empty());
+        let get_bytes = |v: &redis::Value| -> Option<Vec<u8>> {
+            match v {
+                redis::Value::BulkString(bytes) => Some(bytes.clone()),
+                _ => None,
+            }
+        };
 
-            Ok(Some(super::ScheduledFlow {
-                task_id,
-                flow_id,
-                flow_type,
-                flow_data,
-                status: super::TaskStatus::Running,
-                locked_by: Some(worker_id.to_string()),
-                created_at,
-                updated_at,
-                retry_count,
-                error_message: None,
-                scheduled_for: None,
-                parent_flow_id,
-                signal_token,
-            }))
-        } else {
-            Ok(None)
+        if values.len() < 8 {
+            warn!("Incomplete data from Lua dequeue (expected 8 values, got {})", values.len());
+            return Ok(None);
         }
+
+        // Parse task_id first (needed for error recovery)
+        let task_id_str = match get_string(&values[0]) {
+            Some(s) => s,
+            None => {
+                warn!("Missing task_id in Lua dequeue response");
+                return Ok(None);
+            }
+        };
+        let task_id = match Uuid::parse_str(&task_id_str) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("Invalid task_id '{}': {}", task_id_str, e);
+                return Ok(None);
+            }
+        };
+
+        // Parse remaining required fields with error recovery
+        let flow_id_str = match get_string(&values[1]) {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                // Mark task as failed to prevent orphaning
+                warn!("Missing flow_id for task {}, marking as FAILED", task_id);
+                let mut conn = self.get_connection().await?;
+                let flow_key = format!("ergon:flow:{}", task_id);
+                let _: () = redis::pipe()
+                    .atomic()
+                    .hset(&flow_key, "status", "FAILED")
+                    .hset(&flow_key, "error_message", "Missing flow_id in dequeue data")
+                    .zrem("ergon:running", task_id.to_string())
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+                return Ok(None);
+            }
+        };
+        let flow_id = match Uuid::parse_str(&flow_id_str) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("Invalid flow_id for task {}: {}, marking as FAILED", task_id, e);
+                let mut conn = self.get_connection().await?;
+                let flow_key = format!("ergon:flow:{}", task_id);
+                let _: () = redis::pipe()
+                    .atomic()
+                    .hset(&flow_key, "status", "FAILED")
+                    .hset(&flow_key, "error_message", format!("Invalid flow_id: {}", e))
+                    .zrem("ergon:running", task_id.to_string())
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+                return Ok(None);
+            }
+        };
+
+        let flow_type = match get_string(&values[2]) {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                warn!("Missing flow_type for task {}, marking as FAILED", task_id);
+                let mut conn = self.get_connection().await?;
+                let flow_key = format!("ergon:flow:{}", task_id);
+                let _: () = redis::pipe()
+                    .atomic()
+                    .hset(&flow_key, "status", "FAILED")
+                    .hset(&flow_key, "error_message", "Missing flow_type in dequeue data")
+                    .zrem("ergon:running", task_id.to_string())
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+                return Ok(None);
+            }
+        };
+
+        let flow_data = match get_bytes(&values[3]) {
+            Some(d) if !d.is_empty() => d,
+            _ => {
+                warn!("Missing flow_data for task {}, marking as FAILED", task_id);
+                let mut conn = self.get_connection().await?;
+                let flow_key = format!("ergon:flow:{}", task_id);
+                let _: () = redis::pipe()
+                    .atomic()
+                    .hset(&flow_key, "status", "FAILED")
+                    .hset(&flow_key, "error_message", "Missing flow_data in dequeue data")
+                    .zrem("ergon:running", task_id.to_string())
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+                return Ok(None);
+            }
+        };
+
+        let created_at_ts: i64 = get_string(&values[4])
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let created_at =
+            chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
+
+        let retry_count: u32 = get_string(&values[5])
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let parent_flow_id: Option<Uuid> = get_string(&values[6])
+            .filter(|s| !s.is_empty())
+            .and_then(|s| Uuid::parse_str(&s).ok());
+
+        let signal_token: Option<String> = get_string(&values[7]).filter(|s| !s.is_empty());
+
+        let updated_at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
+
+        debug!(
+            "Worker {} dequeued flow: task_id={}, flow_id={}, flow_type={}",
+            worker_id,
+            &task_id.to_string()[..8],
+            &flow_id.to_string()[..8],
+            &flow_type
+        );
+
+        Ok(Some(super::ScheduledFlow {
+            task_id,
+            flow_id,
+            flow_type,
+            flow_data,
+            status: super::TaskStatus::Running,
+            locked_by: Some(worker_id.to_string()),
+            created_at,
+            updated_at,
+            retry_count,
+            error_message: None,
+            scheduled_for: None,
+            parent_flow_id,
+            signal_token,
+        }))
     }
 
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
@@ -1021,7 +1247,11 @@ impl ExecutionLog for RedisExecutionLog {
         // Update invocation and add to timers sorted set
         let _: () = redis::pipe()
             .atomic()
-            .hset(&inv_key, "status", InvocationStatus::WaitingForTimer.as_str())
+            .hset(
+                &inv_key,
+                "status",
+                InvocationStatus::WaitingForTimer.as_str(),
+            )
             .hset(&inv_key, "timer_fire_at", fire_at_ms)
             .hset(&inv_key, "timer_name", timer_name.unwrap_or(""))
             // Add to timers sorted set (score = fire_at timestamp)
@@ -1040,7 +1270,11 @@ impl ExecutionLog for RedisExecutionLog {
         // Update invocation status to WAITING_FOR_SIGNAL
         let _: () = redis::pipe()
             .atomic()
-            .hset(&inv_key, "status", InvocationStatus::WaitingForSignal.as_str())
+            .hset(
+                &inv_key,
+                "status",
+                InvocationStatus::WaitingForSignal.as_str(),
+            )
             .hset(&inv_key, "timer_name", signal_name)
             .query_async(&mut *conn)
             .await
@@ -1057,86 +1291,73 @@ impl ExecutionLog for RedisExecutionLog {
     async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
         let mut conn = self.get_connection().await?;
 
-        // Scan to find the task_id for this flow_id
-        let mut cursor = 0u64;
-        let mut task_id: Option<Uuid> = None;
+        // O(1) lookup using flow_id -> task_id index (no more slow SCAN!)
+        let task_id_str: Option<String> = conn
+            .get(format!("ergon:flow_task_map:{}", flow_id))
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        loop {
-            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                .cursor_arg(cursor)
-                .arg("MATCH")
-                .arg("ergon:flow:*")
-                .arg("COUNT")
-                .arg(100)
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-            for key in keys {
-                let stored_flow_id: Option<String> = conn
-                    .hget(&key, "flow_id")
-                    .await
-                    .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-                if let Some(stored_id) = stored_flow_id {
-                    if let Ok(parsed_id) = Uuid::parse_str(&stored_id) {
-                        if parsed_id == flow_id {
-                            // Extract task_id from key: "ergon:flow:{task_id}"
-                            if let Some(id_str) = key.strip_prefix("ergon:flow:") {
-                                if let Ok(tid) = Uuid::parse_str(id_str) {
-                                    task_id = Some(tid);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if task_id.is_some() {
-                break;
-            }
-
-            cursor = new_cursor;
-            if cursor == 0 {
-                break;
-            }
-        }
-
-        let task_id = task_id.ok_or_else(|| {
-            StorageError::Connection(format!("Task not found for flow_id: {}", flow_id))
-        })?;
+        let task_id = task_id_str
+            .and_then(|s| Uuid::parse_str(&s).ok())
+            .ok_or_else(|| {
+                StorageError::Connection(format!("Task not found for flow_id: {}", flow_id))
+            })?;
 
         let flow_key = Self::flow_key(task_id);
         let now = Utc::now().timestamp();
 
-        // Check if flow is in SUSPENDED state first
+        // Check flow status
         let status: Option<String> = conn
             .hget(&flow_key, "status")
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        if status.as_deref() != Some("SUSPENDED") {
-            return Err(StorageError::Connection(format!(
-                "Task not found or not in SUSPENDED state for flow_id: {}",
-                flow_id
-            )));
+        // Resume if SUSPENDED, or if RUNNING (race condition: child completed while parent being processed)
+        // The dequeue Lua script will handle checking if task is already in queue
+        match status.as_deref() {
+            Some("SUSPENDED") | Some("RUNNING") => {
+                // Resume the flow by moving to PENDING and adding to queue
+                let _: () = redis::pipe()
+                    .atomic()
+                    .hset(&flow_key, "status", "PENDING")
+                    .hdel(&flow_key, "locked_by")
+                    .hset(&flow_key, "updated_at", now)
+                    .zrem("ergon:running", task_id.to_string())
+                    // Use LPUSH to add to front for priority (child just completed)
+                    .lpush("ergon:queue:pending", task_id.to_string())
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                debug!(
+                    "Resumed flow: flow_id={}, task_id={}, was_status={:?}",
+                    flow_id, task_id, status
+                );
+            }
+            Some("COMPLETE") | Some("FAILED") => {
+                // Already completed - this is fine (duplicate signal/child completion)
+                debug!(
+                    "Flow already completed: flow_id={}, task_id={}",
+                    flow_id, task_id
+                );
+                return Ok(());
+            }
+            Some("PENDING") => {
+                // Already in queue - this is fine
+                debug!(
+                    "Flow already pending: flow_id={}, task_id={}",
+                    flow_id, task_id
+                );
+                return Ok(());
+            }
+            _ => {
+                return Err(StorageError::Connection(format!(
+                    "Task in unexpected state {:?} for flow_id: {}",
+                    status, flow_id
+                )));
+            }
         }
 
-        // ONLY resume flows that are SUSPENDED (waiting for signals/child flows)
-        // DO NOT resume RUNNING flows - this causes race conditions with multiple workers
-        let _: () = redis::pipe()
-            .atomic()
-            .hset(&flow_key, "status", "PENDING")
-            .hdel(&flow_key, "locked_by")
-            .hset(&flow_key, "updated_at", now)
-            .zrem("ergon:running", task_id.to_string())
-            .rpush("ergon:queue:pending", task_id.to_string())
-            .query_async(&mut *conn)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        debug!("Resumed flow: flow_id={}, task_id={}", flow_id, task_id);
         Ok(())
     }
 
@@ -1445,5 +1666,50 @@ impl ExecutionLog for RedisExecutionLog {
             info!("Recovered {} stale/orphaned flows", recovered_count);
         }
         Ok(recovered_count)
+    }
+
+    async fn store_step_child_mapping(
+        &self,
+        flow_id: Uuid,
+        parent_step: i32,
+        child_step: i32,
+    ) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let mapping_key = Self::step_child_mapping_key(flow_id, parent_step);
+
+        // Store the child step number as a simple string value
+        let _: () = conn
+            .set(&mapping_key, child_step)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_child_step_for_parent(
+        &self,
+        flow_id: Uuid,
+        parent_step: i32,
+    ) -> Result<Option<i32>> {
+        let mut conn = self.get_connection().await?;
+        let mapping_key = Self::step_child_mapping_key(flow_id, parent_step);
+
+        // Check if key exists first
+        let exists: bool = conn
+            .exists(&mapping_key)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if !exists {
+            return Ok(None);
+        }
+
+        // Get the child step number
+        let child_step: i32 = conn
+            .get(&mapping_key)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(Some(child_step))
     }
 }

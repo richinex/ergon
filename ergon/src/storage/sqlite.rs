@@ -243,6 +243,20 @@ impl SqliteExecutionLog {
         .execute(&self.pool)
         .await?;
 
+        // Create step-child mapping table for framework fix
+        // Tracks which child invocation step belongs to which parent step
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS step_child_mappings (
+                flow_id TEXT NOT NULL,
+                parent_step INTEGER NOT NULL,
+                child_step INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (flow_id, parent_step)
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -587,7 +601,10 @@ impl ExecutionLog for SqliteExecutionLog {
         sqlx::query("DELETE FROM signal_params")
             .execute(&self.pool)
             .await?;
-        info!("Reset execution log database (cleared execution_log, flow_queue, signal_params)");
+        sqlx::query("DELETE FROM step_child_mappings")
+            .execute(&self.pool)
+            .await?;
+        info!("Reset execution log database (cleared execution_log, flow_queue, signal_params, step_child_mappings)");
         Ok(())
     }
 
@@ -1004,6 +1021,49 @@ impl ExecutionLog for SqliteExecutionLog {
 
         debug!("Resumed flow: flow_id={}", flow_id);
         Ok(())
+    }
+
+    async fn store_step_child_mapping(
+        &self,
+        flow_id: Uuid,
+        parent_step: i32,
+        child_step: i32,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO step_child_mappings (flow_id, parent_step, child_step, created_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(flow_id, parent_step)
+             DO UPDATE SET child_step = excluded.child_step, created_at = excluded.created_at",
+        )
+        .bind(flow_id.to_string())
+        .bind(parent_step)
+        .bind(child_step)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
+
+        debug!(
+            "Stored step-child mapping: flow={}, parent_step={}, child_step={}",
+            flow_id, parent_step, child_step
+        );
+        Ok(())
+    }
+
+    async fn get_child_step_for_parent(
+        &self,
+        flow_id: Uuid,
+        parent_step: i32,
+    ) -> Result<Option<i32>> {
+        let child_step: Option<i32> = sqlx::query_scalar(
+            "SELECT child_step FROM step_child_mappings
+             WHERE flow_id = ? AND parent_step = ?",
+        )
+        .bind(flow_id.to_string())
+        .bind(parent_step)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(child_step)
     }
 }
 

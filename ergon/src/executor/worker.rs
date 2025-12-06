@@ -735,7 +735,10 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         let signal_bytes = match crate::core::serialize_value(&payload) {
             Ok(bytes) => bytes,
             Err(e) => {
-                error!("Failed to serialize signal payload for parent {}: {}", parent_id, e);
+                error!(
+                    "Failed to serialize signal payload for parent {}: {}",
+                    parent_id, e
+                );
                 return;
             }
         };
@@ -743,7 +746,10 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         let invocations = match storage.get_invocations_for_flow(parent_id).await {
             Ok(invs) => invs,
             Err(e) => {
-                error!("Failed to get invocations for parent flow {}: {}", parent_id, e);
+                error!(
+                    "Failed to get invocations for parent flow {}: {}",
+                    parent_id, e
+                );
                 return;
             }
         };
@@ -752,20 +758,32 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             inv.status() == crate::core::InvocationStatus::WaitingForSignal
                 && inv.timer_name() == Some(signal_token.as_str())
         }) else {
-            debug!("No waiting step found for parent flow {} with token {}", parent_id, signal_token);
+            debug!(
+                "No waiting step found for parent flow {} with token {}",
+                parent_id, signal_token
+            );
             return;
         };
 
         // CRITICAL: Store signal params - must succeed for parent to resume
-        if let Err(e) = storage.store_signal_params(parent_id, waiting_step.step(), &signal_bytes).await {
-            error!("CRITICAL: Failed to store signal params for parent flow {}: {}", parent_id, e);
+        if let Err(e) = storage
+            .store_signal_params(parent_id, waiting_step.step(), &signal_bytes)
+            .await
+        {
+            error!(
+                "CRITICAL: Failed to store signal params for parent flow {}: {}",
+                parent_id, e
+            );
             return;
         }
 
         if let Err(e) = storage.resume_flow(parent_id).await {
             // resume_flow will fail if parent is not in SUSPENDED state
             // This is expected when parent has already completed or in race condition
-            debug!("Could not resume parent flow {} (may have already completed): {}", parent_id, e);
+            debug!(
+                "Could not resume parent flow {} (may have already completed): {}",
+                parent_id, e
+            );
         } else {
             let status = if success { "success" } else { "error" };
             debug!(
@@ -773,7 +791,11 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                 parent_id,
                 signal_token,
                 status,
-                if let Some(msg) = error_msg { format!(": {}", msg) } else { String::new() }
+                if let Some(msg) = error_msg {
+                    format!(": {}", msg)
+                } else {
+                    String::new()
+                }
             );
         }
     }
@@ -865,10 +887,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             .complete_flow(flow_task_id, TaskStatus::Suspended)
             .await
         {
-            error!(
-                "Worker {} failed to mark flow suspended: {}",
-                worker_id, e
-            );
+            error!("Worker {} failed to mark flow suspended: {}", worker_id, e);
         }
 
         // FIX: Check if signal arrived while we were still RUNNING
@@ -917,10 +936,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             .complete_flow(flow_task_id, TaskStatus::Complete)
             .await
         {
-            error!(
-                "Worker {} failed to mark flow complete: {}",
-                worker_id, e
-            );
+            error!("Worker {} failed to mark flow complete: {}", worker_id, e);
         }
     }
 
@@ -946,16 +962,16 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                 // Should retry
                 info!(
                     "Worker {} retrying flow: task_id={}, attempt={}, delay={:?}",
-                    worker_id, flow_task_id, flow.retry_count + 1, delay
+                    worker_id,
+                    flow_task_id,
+                    flow.retry_count + 1,
+                    delay
                 );
                 if let Err(e) = storage
                     .retry_flow(flow_task_id, error_msg.clone(), delay)
                     .await
                 {
-                    error!(
-                        "Worker {} failed to schedule retry: {}",
-                        worker_id, e
-                    );
+                    error!("Worker {} failed to schedule retry: {}", worker_id, e);
                 }
             }
             Ok(None) => {
@@ -966,16 +982,20 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                 );
 
                 // Signal parent (Level 3 API) - after retries exhausted
-                Self::signal_parent_flow(storage, flow.flow_id, parent_metadata, false, Some(&error_msg)).await;
+                Self::signal_parent_flow(
+                    storage,
+                    flow.flow_id,
+                    parent_metadata,
+                    false,
+                    Some(&error_msg),
+                )
+                .await;
 
                 if let Err(e) = storage
                     .complete_flow(flow_task_id, TaskStatus::Failed)
                     .await
                 {
-                    error!(
-                        "Worker {} failed to mark flow failed: {}",
-                        worker_id, e
-                    );
+                    error!("Worker {} failed to mark flow failed: {}", worker_id, e);
                 }
             }
             Err(e) => {
@@ -986,16 +1006,20 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                 );
 
                 // Signal parent (Level 3 API) - failed to check retry policy
-                Self::signal_parent_flow(storage, flow.flow_id, parent_metadata, false, Some(&error_msg)).await;
+                Self::signal_parent_flow(
+                    storage,
+                    flow.flow_id,
+                    parent_metadata,
+                    false,
+                    Some(&error_msg),
+                )
+                .await;
 
                 if let Err(e) = storage
                     .complete_flow(flow_task_id, TaskStatus::Failed)
                     .await
                 {
-                    error!(
-                        "Worker {} failed to mark flow failed: {}",
-                        worker_id, e
-                    );
+                    error!("Worker {} failed to mark flow failed: {}", worker_id, e);
                 }
             }
         }
@@ -1025,6 +1049,40 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             // Don't fire immediately on startup - wait for first tick
             delayed_task_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             stale_lock_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            // Create channel for dequeue results to prevent concurrent dequeue calls
+            // This ensures exactly ONE dequeue is in-flight at any time
+            let (dequeue_tx, mut dequeue_rx) = tokio::sync::mpsc::unbounded_channel();
+
+            // Spawn dedicated dequeue task to prevent concurrent dequeues
+            let dequeue_storage = self.storage.clone();
+            let dequeue_worker_id = self.worker_id.clone();
+            let dequeue_token = worker_token.child_token();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = dequeue_token.cancelled() => {
+                            break;
+                        }
+                        result = dequeue_storage.dequeue_flow(&dequeue_worker_id) => {
+                            // Check if we got a task or not
+                            let got_task = matches!(&result, Ok(Some(_)));
+
+                            // Send result to main loop (non-blocking)
+                            if dequeue_tx.send(result).is_err() {
+                                // Channel closed, exit loop
+                                break;
+                            }
+
+                            // If no task available, sleep before next poll to avoid busy-loop
+                            // This prevents hammering Redis thousands of times per second
+                            if !got_task {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                        }
+                    }
+                }
+            });
 
             loop {
                 // Create worker loop span (no-op for WithoutStructuredTracing)
@@ -1069,11 +1127,21 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                         }
                     }
 
-                    // Main work: Poll for a flow
-                    result = self.storage.dequeue_flow(&self.worker_id) => {
+                    // Main work: Receive dequeued flow from dedicated task
+                    Some(result) = dequeue_rx.recv() => {
                         // Reap completed flow tasks (non-blocking)
-                        while let Some(Ok(_)) = active_flows.try_join_next() {
-                            // Task completed, continue reaping
+                        while let Some(result) = active_flows.try_join_next() {
+                            match result {
+                                Ok(_) => {
+                                    // Task completed successfully
+                                }
+                                Err(e) => {
+                                    // Task panicked or was cancelled
+                                    error!("Worker {} flow task failed: {}", self.worker_id, e);
+                                    // Note: The task's error handling should have already marked the flow as failed
+                                    // This is a safety net for unexpected panics
+                                }
+                            }
                         }
 
                         // Process expired timers with optional span
@@ -1088,11 +1156,6 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
 
                         match result {
                     Ok(Some(flow)) => {
-                        debug!(
-                            "Worker {} picked up flow: task_id={}, flow_type={}",
-                            self.worker_id, flow.task_id, flow.flow_type
-                        );
-
                         // Spawn flow execution in background so worker can continue processing timers
                         let registry = self.registry.clone();
                         let storage = self.storage.clone();
@@ -1129,10 +1192,6 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                         let task = async move {
                             // Hold permit during entire flow execution (RAII - released on drop)
                             let _permit = permit;
-                            info!(
-                                "Worker {} executing flow: task_id={}",
-                                worker_id, flow_task_id
-                            );
 
                             // Get executor with brief lock, then release before execution
                             let executor = {

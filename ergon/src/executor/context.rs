@@ -57,6 +57,12 @@ pub struct ExecutionContext {
     /// Atomic step counter to prevent race conditions.
     /// Using AtomicI32 instead of RwLock<i32> for lock-free increment operations.
     pub(super) step_counter: AtomicI32,
+    /// Tracks the enclosing step for #[step] + invoke() coordination.
+    /// Set by #[step] macro to tell invoke().result() which parent step is executing.
+    /// Uses -1 to indicate "no enclosing step" (e.g., top-level flow execution).
+    /// This enables the framework fix: when a step contains invoke().result(),
+    /// we can record the step-child mapping for proper replay handling.
+    enclosing_step: AtomicI32,
     /// Dependency graph for steps (built at runtime from step registrations).
     /// Uses RwLock for interior mutability since steps register during execution.
     dependency_graph: RwLock<Graph>,
@@ -75,6 +81,7 @@ impl ExecutionContext {
             id,
             storage,
             step_counter: AtomicI32::new(0),
+            enclosing_step: AtomicI32::new(-1), // -1 means no enclosing step
             dependency_graph: RwLock::new(Graph::new()),
             suspend_reason: Mutex::new(None),
         }
@@ -356,6 +363,28 @@ impl ExecutionContext {
                 // This is a serious issue but we shouldn't cascade failures
                 tracing::error!("Failed to set suspend reason: mutex poisoned - {:?}", e);
             }
+        }
+    }
+
+    /// Sets the enclosing step for #[step] + invoke() coordination.
+    ///
+    /// Called by the #[step] macro to inform invoke().result() which parent step
+    /// is currently executing. This enables proper step-child mapping.
+    pub fn set_enclosing_step(&self, step: i32) {
+        self.enclosing_step
+            .store(step, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Gets the current enclosing step, if any.
+    ///
+    /// Returns Some(step) if a #[step] wrapper is active, or None if executing
+    /// at the top level (no enclosing step).
+    pub fn get_enclosing_step(&self) -> Option<i32> {
+        let step = self.enclosing_step.load(std::sync::atomic::Ordering::SeqCst);
+        if step >= 0 {
+            Some(step)
+        } else {
+            None
         }
     }
 

@@ -592,8 +592,36 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let __step = __ctx.next_step();
                     let __class_name = "DagStep";
 
+                    // NEW: Set enclosing step so invoke().result() knows who its parent is
+                    __ctx.set_enclosing_step(__step);
+
                     // Serialize parameters for caching
                     let __params = ( #(&#param_names,)* );
+
+                    // NEW: Check if this step has a pending child invocation
+                    // This handles the replay case where:
+                    // 1. Step called invoke().result() and suspended (WaitingForSignal)
+                    // 2. Child completed and signaled the parent
+                    // 3. Flow is being replayed - we need to skip re-executing the body
+                    //    to avoid running side effects twice
+                    if let Ok(Some(__child_step)) = __ctx.storage().get_child_step_for_parent(__ctx.flow_id(), __step).await {
+                        // Check if the child's signal arrived
+                        if let Ok(Some(_)) = __ctx.storage().get_signal_params(__ctx.flow_id(), __child_step).await {
+                            // Child completed! Check if this step has cached result
+                            match __ctx.get_cached_result::<#return_type, _>(
+                                __step, __class_name, #method_name_str, &__params
+                            ).await {
+                                Ok(Some(__cached_result)) => {
+                                    // Step was completed after child signaled, return cached result
+                                    return Some(__cached_result);
+                                }
+                                Ok(None) | Err(_) => {
+                                    // No cached result yet, continue to execute body
+                                    // This happens when child signaled but step hasn't completed yet
+                                }
+                            }
+                        }
+                    }
 
                     // Handle AWAIT call type
                     if matches!(__call_type, ergon::CallType::Await) {

@@ -608,8 +608,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Scheduling orders...");
     for order in &orders {
-        scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
-        println!("   - {} scheduled", order.order_id);
+        let task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
+        println!("   - {} scheduled (task_id: {})", order.order_id, task_id);
+    }
+
+    // DIAGNOSTIC: Verify all orders are in queue
+    let pending_count = storage.count_pending().await;
+    let pending_flows = storage.list_pending().await;
+    println!("\n🔍 DIAGNOSTIC: Pending flows in queue: {}", pending_count);
+    for (task_id, flow_id) in &pending_flows {
+        println!("   - task_id: {}, flow_id: {}", &task_id[..8], &flow_id[..8]);
     }
     println!();
 

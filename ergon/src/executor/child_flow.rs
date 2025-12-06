@@ -116,6 +116,15 @@ where
             })
             .await;
 
+        // NEW: Record step-child mapping for proper replay handling
+        // This enables the #[step] macro to detect pending children and avoid
+        // re-executing the step body (which would cause side effects to run twice)
+        if let Some(parent_step) = ctx.get_enclosing_step() {
+            let _ = storage
+                .store_step_child_mapping(parent_id, parent_step, step)
+                .await;
+        }
+
         // Generate deterministic child UUID based on parent + child_type + child_data_hash
         // This ensures uniqueness regardless of step counter state (important on replay
         // when await_external_signal returns cached results without allocating steps)
