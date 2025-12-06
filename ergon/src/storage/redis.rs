@@ -790,8 +790,10 @@ impl ExecutionLog for RedisExecutionLog {
                 .arg(worker_id)
                 .arg(now)
                 .arg(now_millis)
-                .invoke_async(&mut *conn)
-        ).await {
+                .invoke_async(&mut *conn),
+        )
+        .await
+        {
             Ok(Ok(val)) => val,
             Ok(Err(e)) => {
                 return Err(StorageError::Connection(e.to_string()));
@@ -826,7 +828,10 @@ impl ExecutionLog for RedisExecutionLog {
         };
 
         if values.len() < 8 {
-            warn!("Incomplete data from Lua dequeue (expected 8 values, got {})", values.len());
+            warn!(
+                "Incomplete data from Lua dequeue (expected 8 values, got {})",
+                values.len()
+            );
             return Ok(None);
         }
 
@@ -857,7 +862,11 @@ impl ExecutionLog for RedisExecutionLog {
                 let _: () = redis::pipe()
                     .atomic()
                     .hset(&flow_key, "status", "FAILED")
-                    .hset(&flow_key, "error_message", "Missing flow_id in dequeue data")
+                    .hset(
+                        &flow_key,
+                        "error_message",
+                        "Missing flow_id in dequeue data",
+                    )
                     .zrem("ergon:running", task_id.to_string())
                     .query_async(&mut *conn)
                     .await
@@ -868,13 +877,20 @@ impl ExecutionLog for RedisExecutionLog {
         let flow_id = match Uuid::parse_str(&flow_id_str) {
             Ok(id) => id,
             Err(e) => {
-                warn!("Invalid flow_id for task {}: {}, marking as FAILED", task_id, e);
+                warn!(
+                    "Invalid flow_id for task {}: {}, marking as FAILED",
+                    task_id, e
+                );
                 let mut conn = self.get_connection().await?;
                 let flow_key = format!("ergon:flow:{}", task_id);
                 let _: () = redis::pipe()
                     .atomic()
                     .hset(&flow_key, "status", "FAILED")
-                    .hset(&flow_key, "error_message", format!("Invalid flow_id: {}", e))
+                    .hset(
+                        &flow_key,
+                        "error_message",
+                        format!("Invalid flow_id: {}", e),
+                    )
                     .zrem("ergon:running", task_id.to_string())
                     .query_async(&mut *conn)
                     .await
@@ -892,7 +908,11 @@ impl ExecutionLog for RedisExecutionLog {
                 let _: () = redis::pipe()
                     .atomic()
                     .hset(&flow_key, "status", "FAILED")
-                    .hset(&flow_key, "error_message", "Missing flow_type in dequeue data")
+                    .hset(
+                        &flow_key,
+                        "error_message",
+                        "Missing flow_type in dequeue data",
+                    )
                     .zrem("ergon:running", task_id.to_string())
                     .query_async(&mut *conn)
                     .await
@@ -910,7 +930,11 @@ impl ExecutionLog for RedisExecutionLog {
                 let _: () = redis::pipe()
                     .atomic()
                     .hset(&flow_key, "status", "FAILED")
-                    .hset(&flow_key, "error_message", "Missing flow_data in dequeue data")
+                    .hset(
+                        &flow_key,
+                        "error_message",
+                        "Missing flow_data in dequeue data",
+                    )
                     .zrem("ergon:running", task_id.to_string())
                     .query_async(&mut *conn)
                     .await

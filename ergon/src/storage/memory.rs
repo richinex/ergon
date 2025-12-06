@@ -152,17 +152,18 @@ impl ExecutionLog for InMemoryExecutionLog {
 
         // Also check for flows in the queue that haven't started yet
         // This ensures we don't miss flows that are scheduled but not yet picked up by workers
-        let mut flow_ids_with_invocations: std::collections::HashSet<Uuid> = invocations
-            .iter()
-            .map(|inv| inv.id())
-            .collect();
+        let mut flow_ids_with_invocations: std::collections::HashSet<Uuid> =
+            invocations.iter().map(|inv| inv.id()).collect();
 
         // Add placeholder invocations for flows in queue that have no invocations yet
         let mut all_incomplete = invocations;
         for entry in self.flow_queue.iter() {
             let flow = entry.value();
             // Only consider pending/running flows
-            if matches!(flow.status, super::TaskStatus::Pending | super::TaskStatus::Running) {
+            if matches!(
+                flow.status,
+                super::TaskStatus::Pending | super::TaskStatus::Running
+            ) {
                 // If this flow has no invocations yet, create a placeholder
                 if !flow_ids_with_invocations.contains(&flow.flow_id) {
                     flow_ids_with_invocations.insert(flow.flow_id);

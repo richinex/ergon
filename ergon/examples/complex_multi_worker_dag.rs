@@ -357,7 +357,10 @@ impl OrderFulfillment {
 
         // Simulate transient error on first attempt for this order
         if count == 1 && self.product_id == "PROD-SLOW" {
-            println!("[{:.3}]      -> Warehouse system timeout (retryable)", timestamp());
+            println!(
+                "[{:.3}]      -> Warehouse system timeout (retryable)",
+                timestamp()
+            );
             return Err(InventoryError::WarehouseSystemDown);
         }
 
@@ -391,7 +394,10 @@ impl OrderFulfillment {
 
         // Check for insufficient funds
         if self.amount > 10000.0 {
-            println!("[{:.3}]      -> Insufficient funds (permanent)", timestamp());
+            println!(
+                "[{:.3}]      -> Insufficient funds (permanent)",
+                timestamp()
+            );
             return Err(PaymentError::InsufficientFunds);
         }
 
@@ -422,13 +428,23 @@ impl OrderFulfillment {
             .await
             .map_err(|e| format!("Label generation failed: {}", e))?;
 
-        println!("[{:.3}]      -> Label generated: {}", timestamp(), label.tracking_number);
+        println!(
+            "[{:.3}]      -> Label generated: {}",
+            timestamp(),
+            label.tracking_number
+        );
         Ok(label)
     }
 
     /// Step 6: Notify Customer (depends on label) - returns label for flow result
-    #[step(depends_on = "generate_shipping_label", inputs(label = "generate_shipping_label"))]
-    async fn notify_customer(self: Arc<Self>, label: ShippingLabel) -> Result<ShippingLabel, String> {
+    #[step(
+        depends_on = "generate_shipping_label",
+        inputs(label = "generate_shipping_label")
+    )]
+    async fn notify_customer(
+        self: Arc<Self>,
+        label: ShippingLabel,
+    ) -> Result<ShippingLabel, String> {
         let count = OrderAttempts::inc_notify(&self.order_id);
         NOTIFY_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -466,8 +482,16 @@ impl OrderFulfillment {
         // Run steps SEQUENTIALLY (no DAG parallelism)
         let _customer = self.clone().validate_customer().await?;
         let _fraud = self.clone().check_fraud().await?;
-        let _inventory = self.clone().reserve_inventory().await.map_err(|e| e.to_string())?;
-        let _payment = self.clone().process_payment().await.map_err(|e| e.to_string())?;
+        let _inventory = self
+            .clone()
+            .reserve_inventory()
+            .await
+            .map_err(|e| e.to_string())?;
+        let _payment = self
+            .clone()
+            .process_payment()
+            .await
+            .map_err(|e| e.to_string())?;
         let label = self.clone().generate_shipping_label().await?;
         let label = self.clone().notify_customer(label).await?;
 
@@ -572,8 +596,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orders = vec![
         OrderFulfillment {
             order_id: "ORD-001".to_string(),
-            customer_id: "CUST-001".to_string(),     // No validation retry
-            product_id: "PROD-001".to_string(),      // No inventory retry
+            customer_id: "CUST-001".to_string(), // No validation retry
+            product_id: "PROD-001".to_string(),  // No inventory retry
             amount: 299.99,
             quantity: 2,
         },
@@ -643,18 +667,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚════════════════════════════════════════════════════════════╝\n");
 
     println!("Step Execution Counts:");
-    println!("  validate_customer:   {}", VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed));
-    println!("  check_fraud:         {}", CHECK_FRAUD_COUNT.load(Ordering::Relaxed));
-    println!("  reserve_inventory:   {}", RESERVE_INVENTORY_COUNT.load(Ordering::Relaxed));
-    println!("  process_payment:     {}", PROCESS_PAYMENT_COUNT.load(Ordering::Relaxed));
-    println!("  generate_label:      {} (child flow invocations)", GENERATE_LABEL_COUNT.load(Ordering::Relaxed));
-    println!("  notify_customer:     {}", NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed));
+    println!(
+        "  validate_customer:   {}",
+        VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  check_fraud:         {}",
+        CHECK_FRAUD_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  reserve_inventory:   {}",
+        RESERVE_INVENTORY_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  process_payment:     {}",
+        PROCESS_PAYMENT_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  generate_label:      {} (child flow invocations)",
+        GENERATE_LABEL_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  notify_customer:     {}",
+        NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed)
+    );
 
     println!("\nPer-Order Step Attempts:");
     for i in 1..=3 {
         let order_id = format!("ORD-{:03}", i);
         if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
-            println!("  {}: validate={}, fraud={}, inventory={}, payment={}, label={}, notify={}",
+            println!(
+                "  {}: validate={}, fraud={}, inventory={}, payment={}, label={}, notify={}",
                 order_id,
                 attempts.validate_customer.load(Ordering::Relaxed),
                 attempts.check_fraud.load(Ordering::Relaxed),

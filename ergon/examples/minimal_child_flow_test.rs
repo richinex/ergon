@@ -172,15 +172,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new(":memory:").await?);
     storage.reset().await?;
 
-    let worker = Worker::new(storage.clone(), "test-worker")
-        .with_poll_interval(Duration::from_millis(50));
+    let worker =
+        Worker::new(storage.clone(), "test-worker").with_poll_interval(Duration::from_millis(50));
 
-    worker
-        .register(|flow: Arc<ParentFlow>| flow.run())
-        .await;
-    worker
-        .register(|flow: Arc<ChildTask>| flow.execute())
-        .await;
+    worker.register(|flow: Arc<ParentFlow>| flow.run()).await;
+    worker.register(|flow: Arc<ChildTask>| flow.execute()).await;
 
     let handle = worker.start().await;
 
@@ -197,9 +193,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
     println!("║                         Results                           ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
-    println!("Parent start count:    {}", PARENT_START_COUNT.load(Ordering::Relaxed));
-    println!("Parent step count:     {}", PARENT_STEP_COUNT.load(Ordering::Relaxed));
-    println!("Child executions:      {}", CHILD_EXEC_COUNT.load(Ordering::Relaxed));
+    println!(
+        "Parent start count:    {}",
+        PARENT_START_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "Parent step count:     {}",
+        PARENT_STEP_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "Child executions:      {}",
+        CHILD_EXEC_COUNT.load(Ordering::Relaxed)
+    );
 
     println!("\nExpected (minimal case: parent invokes child, no retries):");
     println!("  Parent starts:    2 (initial + resume after child)");

@@ -148,7 +148,10 @@ impl GenerateLabel {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let label = format!("LABEL-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase());
+        let label = format!(
+            "LABEL-{}",
+            uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+        );
 
         println!(
             "[{:.3}]     CHILD[{}]: Generated {}",
@@ -195,10 +198,7 @@ impl OrderProcessing {
 
         // Simulate transient error on first attempt (per-order tracking!)
         if self.simulate_step1_retry && count == 1 {
-            println!(
-                "[{:.3}]      -> Transient error, will retry",
-                timestamp()
-            );
+            println!("[{:.3}]      -> Transient error, will retry", timestamp());
             return Err(ProcessError::TransientFailure);
         }
 
@@ -222,10 +222,7 @@ impl OrderProcessing {
 
         // Simulate transient error on first attempt (per-order tracking!)
         if self.simulate_step2_retry && count == 1 {
-            println!(
-                "[{:.3}]      -> Warehouse timeout, will retry",
-                timestamp()
-            );
+            println!("[{:.3}]      -> Warehouse timeout, will retry", timestamp());
             return Err(ProcessError::TransientFailure);
         }
 
@@ -253,11 +250,7 @@ impl OrderProcessing {
             .result()
             .await?;
 
-        println!(
-            "[{:.3}]      -> Label received: {}",
-            timestamp(),
-            label
-        );
+        println!("[{:.3}]      -> Label received: {}", timestamp(), label);
 
         Ok(label)
     }
@@ -297,7 +290,10 @@ impl OrderProcessing {
             &flow_id.to_string()[..8]
         );
 
-        Ok(format!("Order {} processed with label: {}", self.order_id, label))
+        Ok(format!(
+            "Order {} processed with label: {}",
+            self.order_id, label
+        ))
     }
 }
 
@@ -323,8 +319,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         let order = OrderProcessing {
             order_id: format!("ORD-{:03}", i),
-            simulate_step1_retry: i % 2 == 1,  // Orders 1, 3 retry step 1
-            simulate_step2_retry: i == 2,      // Order 2 retries step 2
+            simulate_step1_retry: i % 2 == 1, // Orders 1, 3 retry step 1
+            simulate_step2_retry: i == 2,     // Order 2 retries step 2
         };
         scheduler.schedule(order, uuid::Uuid::new_v4()).await?;
         println!("   - ORD-{:03} scheduled", i);
@@ -367,14 +363,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     println!("Total Counts (3 orders across 3 workers):");
-    println!("  Parent starts:       {}", PARENT_START_COUNT.load(Ordering::Relaxed));
-    println!("  Child executions:    {}", CHILD_EXEC_COUNT.load(Ordering::Relaxed));
+    println!(
+        "  Parent starts:       {}",
+        PARENT_START_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  Child executions:    {}",
+        CHILD_EXEC_COUNT.load(Ordering::Relaxed)
+    );
 
     println!("\nPer-Order Step Attempts:");
     for i in 1..=3 {
         let order_id = format!("ORD-{:03}", i);
         if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
-            println!("  {}: step1={}, step2={}, step3={}",
+            println!(
+                "  {}: step1={}, step2={}, step3={}",
                 order_id,
                 attempts.step1.load(Ordering::Relaxed),
                 attempts.step2.load(Ordering::Relaxed),

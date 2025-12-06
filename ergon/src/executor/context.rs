@@ -380,7 +380,9 @@ impl ExecutionContext {
     /// Returns Some(step) if a #[step] wrapper is active, or None if executing
     /// at the top level (no enclosing step).
     pub fn get_enclosing_step(&self) -> Option<i32> {
-        let step = self.enclosing_step.load(std::sync::atomic::Ordering::SeqCst);
+        let step = self
+            .enclosing_step
+            .load(std::sync::atomic::Ordering::SeqCst);
         if step >= 0 {
             Some(step)
         } else {

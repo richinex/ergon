@@ -46,7 +46,7 @@ impl std::str::FromStr for TaskStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "PENDING" | "Pending" => Ok(TaskStatus::Pending),  // Accept both (Redis uses PascalCase in some places)
+            "PENDING" | "Pending" => Ok(TaskStatus::Pending), // Accept both (Redis uses PascalCase in some places)
             "RUNNING" | "Running" => Ok(TaskStatus::Running),
             "SUSPENDED" | "Suspended" => Ok(TaskStatus::Suspended),
             "COMPLETE" | "Complete" => Ok(TaskStatus::Complete),

@@ -662,7 +662,7 @@ impl ExecutionLog for SqliteExecutionLog {
              )
              RETURNING task_id, flow_id, flow_type, flow_data, status, locked_by,
                        created_at, updated_at, retry_count, error_message,
-                       scheduled_for, parent_flow_id, signal_token"
+                       scheduled_for, parent_flow_id, signal_token",
         )
         .bind(worker_id)
         .bind(now)
