@@ -504,7 +504,10 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 let __step = {
                                     (seahash::hash(#step_name_str.as_bytes()) & 0x7FFFFFFF) as i32
                                 };
-                                let __class_name = "DagStep";
+                                let __class_name = "Step";
+
+                                // Set enclosing step so invoke().result() knows who its parent is
+                                __ctx.set_enclosing_step(__step);
 
                                 // Serialize parameters for cache check (includes self if present)
                                 let __params = #params_tuple;
@@ -588,9 +591,16 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Register step with dependency graph
                     #step_registration_code
 
-                    // Get step number
-                    let __step = __ctx.next_step();
-                    let __class_name = "DagStep";
+                    // Get stable step ID using hash (same as DAG execution)
+                    // This ensures consistent IDs across executions even when child invocations
+                    // allocate their own step numbers.
+                    //
+                    // Uses seahash for stable hashing across Rust versions.
+                    // Masking with 0x7FFFFFFF ensures positive i32 without the i32::MIN.abs() bug.
+                    let __step = {
+                        (seahash::hash(#step_name_str.as_bytes()) & 0x7FFFFFFF) as i32
+                    };
+                    let __class_name = "Step";
 
                     // NEW: Set enclosing step so invoke().result() knows who its parent is
                     __ctx.set_enclosing_step(__step);

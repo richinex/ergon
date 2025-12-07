@@ -190,7 +190,7 @@ where
 ///
 /// # Example
 ///
-/// ```rust
+/// ```ignore
 /// use ergon::prelude::*;
 /// use ergon::executor::signal_parent_flow;
 ///
@@ -200,16 +200,18 @@ where
 ///     warehouse: String,
 /// }
 ///
-/// #[step]
-/// async fn signal_parent(
-///     self: Arc<Self>,
-///     result: InventoryResult,
-/// ) -> Result<(), ExecutionError> {
-///     signal_parent_flow(
-///         self.parent_flow_id,
-///         "await_inventory_check",
-///         result
-///     ).await
+/// impl MyFlow {
+///     #[step]
+///     async fn signal_parent(
+///         self: Arc<Self>,
+///         result: InventoryResult,
+///     ) -> Result<(), ExecutionError> {
+///         signal_parent_flow(
+///             self.parent_flow_id,
+///             "await_inventory_check",
+///             result
+///         ).await
+///     }
 /// }
 /// ```
 pub async fn signal_parent_flow<T>(

@@ -99,8 +99,22 @@ where
         let parent_id = ctx.id;
         let storage = Arc::clone(&ctx.storage);
 
-        // Allocate a step for this child invocation
-        let step = ctx.next_step();
+        // Generate a stable step ID for this child invocation based on:
+        // 1. Parent step ID (if within a step)
+        // 2. Child type
+        // 3. Child data hash
+        // This ensures each unique child invocation gets a stable, unique step ID
+        let step = if let Some(parent_step) = ctx.get_enclosing_step() {
+            // Hash the parent step + child type + child data to get a stable child step ID
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            parent_step.hash(&mut hasher);
+            self.child_type.hash(&mut hasher);
+            self.child_bytes.hash(&mut hasher);
+            (hasher.finish() & 0x7FFFFFFF) as i32
+        } else {
+            // Fallback to counter if not within a step (shouldn't happen in normal usage)
+            ctx.next_step()
+        };
 
         // Log invocation start - this creates the invocation in storage
         // Required before await_external_signal can call log_signal
