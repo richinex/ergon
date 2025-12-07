@@ -486,6 +486,8 @@ pub struct Worker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStru
     tracing_state: Tr,
     /// Optional semaphore for backpressure control (limits concurrent flow execution)
     max_concurrent_flows: Option<Arc<Semaphore>>,
+    /// Notification handle for event-driven worker wakeup
+    work_notify: Arc<tokio::sync::Notify>,
 }
 
 impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
@@ -515,6 +517,7 @@ impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
             },
             tracing_state: self.tracing_state,
             max_concurrent_flows: self.max_concurrent_flows,
+            work_notify: self.work_notify,
         }
     }
 }
@@ -542,6 +545,12 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracin
     /// # }
     /// ```
     pub fn new(storage: Arc<S>, worker_id: impl Into<String>) -> Self {
+        // Get the work notify from storage, or create a new one as fallback
+        let work_notify = storage
+            .work_notify()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(tokio::sync::Notify::new()));
+
         Self {
             storage,
             worker_id: worker_id.into(),
@@ -550,6 +559,7 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracin
             timer_state: WithoutTimers,
             tracing_state: WithoutStructuredTracing,
             max_concurrent_flows: None,
+            work_notify,
         }
     }
 }
@@ -604,6 +614,7 @@ impl<S: ExecutionLog + 'static, T> Worker<S, T, WithoutStructuredTracing> {
             timer_state: self.timer_state,
             tracing_state: WithStructuredTracing,
             max_concurrent_flows: self.max_concurrent_flows,
+            work_notify: self.work_notify,
         }
     }
 }
@@ -1058,6 +1069,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             let dequeue_storage = self.storage.clone();
             let dequeue_worker_id = self.worker_id.clone();
             let dequeue_token = worker_token.child_token();
+            let dequeue_notify = self.work_notify.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -1065,7 +1077,7 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             break;
                         }
                         result = dequeue_storage.dequeue_flow(&dequeue_worker_id) => {
-                            // Check if we got a task or not
+                            // Check if we got a task
                             let got_task = matches!(&result, Ok(Some(_)));
 
                             // Send result to main loop (non-blocking)
@@ -1074,10 +1086,16 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                                 break;
                             }
 
-                            // If no task available, sleep before next poll to avoid busy-loop
-                            // This prevents hammering Redis thousands of times per second
+                            // If no task available, wait for notification from storage
+                            // This provides event-driven wakeup instead of polling
+                            // Redis Streams: XREADGROUP already blocks for 1000ms, this adds minimal overhead
+                            // SQLite: Provides instant wakeup when work becomes available
+                            // We use a timeout as a safety measure to prevent infinite waits
                             if !got_task {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                tokio::time::timeout(
+                                    Duration::from_millis(1000),
+                                    dequeue_notify.notified()
+                                ).await.ok();
                             }
                         }
                     }

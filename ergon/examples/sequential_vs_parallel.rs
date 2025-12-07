@@ -1,8 +1,9 @@
-//! Comprehensive Example: Sequential by Default vs Explicit Parallelism
+//! Ergon Execution Model: Parallel vs Sequential
 //!
-//! This example demonstrates the new execution model:
-//! 1. Steps WITHOUT depends_on run SEQUENTIALLY (auto-chained)
-//! 2. Steps WITH explicit depends_on enable PARALLEL execution
+//! - No depends_on: steps run in PARALLEL
+//! - Explicit depends_on: steps run in declared order
+//!
+//! There is NO auto-chaining. Dependencies must be explicit.
 
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -16,12 +17,45 @@ struct Workflow {
 }
 
 impl Workflow {
-    fn new(id: String) -> Self {
-        Self { id }
+    // =========================================================================
+    // SCENARIO 1: Parallel (No depends_on = all run concurrently)
+    // =========================================================================
+
+    #[step]
+    async fn par_step1(self: Arc<Self>) -> Result<String, String> {
+        println!("[Parallel] Step 1 starting");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        println!("[Parallel] Step 1 finished");
+        Ok("step1".to_string())
+    }
+
+    #[step]
+    async fn par_step2(self: Arc<Self>) -> Result<String, String> {
+        println!("[Parallel] Step 2 starting");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        println!("[Parallel] Step 2 finished");
+        Ok("step2".to_string())
+    }
+
+    #[step]
+    async fn par_step3(self: Arc<Self>) -> Result<String, String> {
+        println!("[Parallel] Step 3 starting");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        println!("[Parallel] Step 3 finished");
+        Ok("step3".to_string())
+    }
+
+    #[flow]
+    async fn run_parallel(self: Arc<Self>) -> Result<String, String> {
+        dag! {
+            self.register_par_step1();
+            self.register_par_step2();
+            self.register_par_step3()
+        }
     }
 
     // =========================================================================
-    // SCENARIO 1: Sequential Execution (No depends_on)
+    // SCENARIO 2: Sequential (Explicit depends_on chains steps)
     // =========================================================================
 
     #[step]
@@ -32,7 +66,7 @@ impl Workflow {
         Ok("step1".to_string())
     }
 
-    #[step] // Auto-depends on seq_step1
+    #[step(depends_on = "seq_step1")]
     async fn seq_step2(self: Arc<Self>) -> Result<String, String> {
         println!("[Sequential] Step 2 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -40,7 +74,7 @@ impl Workflow {
         Ok("step2".to_string())
     }
 
-    #[step] // Auto-depends on seq_step2
+    #[step(depends_on = "seq_step2")]
     async fn seq_step3(self: Arc<Self>) -> Result<String, String> {
         println!("[Sequential] Step 3 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -52,185 +86,151 @@ impl Workflow {
     async fn run_sequential(self: Arc<Self>) -> Result<String, String> {
         dag! {
             self.register_seq_step1();
-            self.register_seq_step2(); // Waits for step1
-            self.register_seq_step3() // Waits for step2
+            self.register_seq_step2();
+            self.register_seq_step3()
         }
     }
 
     // =========================================================================
-    // SCENARIO 2: Parallel Execution (Explicit depends_on)
+    // SCENARIO 3: DAG (Explicit depends_on enables fan-out/fan-in)
+    //
+    // root ──┬── branch1 ──┬── merge
+    //        └── branch2 ──┘
     // =========================================================================
 
     #[step]
-    async fn par_root(self: Arc<Self>) -> Result<String, String> {
-        println!("[Parallel] Root starting");
+    async fn dag_root(self: Arc<Self>) -> Result<String, String> {
+        println!("[DAG] Root starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
-        println!("[Parallel] Root finished");
+        println!("[DAG] Root finished");
         Ok("root".to_string())
     }
 
-    #[step(depends_on = "par_root")] // Explicit: depends on root
-    async fn par_branch1(self: Arc<Self>) -> Result<String, String> {
-        println!("[Parallel] Branch 1 starting");
+    #[step(depends_on = "dag_root")]
+    async fn dag_branch1(self: Arc<Self>) -> Result<i32, String> {
+        println!("[DAG] Branch 1 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
-        println!("[Parallel] Branch 1 finished");
-        Ok("branch1".to_string())
+        println!("[DAG] Branch 1 finished");
+        Ok(10)
     }
 
-    #[step(depends_on = "par_root")] // Explicit: ALSO depends on root (parallel!)
-    async fn par_branch2(self: Arc<Self>) -> Result<String, String> {
-        println!("[Parallel] Branch 2 starting");
+    #[step(depends_on = "dag_root")]
+    async fn dag_branch2(self: Arc<Self>) -> Result<i32, String> {
+        println!("[DAG] Branch 2 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
-        println!("[Parallel] Branch 2 finished");
-        Ok("branch2".to_string())
+        println!("[DAG] Branch 2 finished");
+        Ok(20)
     }
 
-    #[step(depends_on = ["par_branch1", "par_branch2"])] // Waits for both
-    async fn par_merge(self: Arc<Self>) -> Result<String, String> {
-        println!("[Parallel] Merge starting (after both branches)");
+    #[step(
+        depends_on = ["dag_branch1", "dag_branch2"],
+        inputs(a = "dag_branch1", b = "dag_branch2")
+    )]
+    async fn dag_merge(self: Arc<Self>, a: i32, b: i32) -> Result<String, String> {
+        println!("[DAG] Merge starting (a={}, b={})", a, b);
         tokio::time::sleep(Duration::from_millis(50)).await;
-        println!("[Parallel] Merge finished");
-        Ok("merged".to_string())
+        println!("[DAG] Merge finished: {}", a + b);
+        Ok(format!("merged: {}", a + b))
     }
 
     #[flow]
-    async fn run_parallel(self: Arc<Self>) -> Result<String, String> {
+    async fn run_dag(self: Arc<Self>) -> Result<String, String> {
         dag! {
-            self.register_par_root();
-            self.register_par_branch1(); // Parallel with branch2
-            self.register_par_branch2(); // Parallel with branch1
-            self.register_par_merge() // Waits for both branches
-        }
-    }
-
-    // =========================================================================
-    // SCENARIO 3: Using inputs for Data Wiring
-    // =========================================================================
-
-    #[step]
-    async fn fetch_data(self: Arc<Self>) -> Result<i32, String> {
-        println!("[Inputs] Fetching data");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        println!("[Inputs] Data fetched: 42");
-        Ok(42)
-    }
-
-    #[step(depends_on = "fetch_data", inputs(value = "fetch_data"))]
-    async fn process_data(self: Arc<Self>, value: i32) -> Result<i32, String> {
-        println!("[Inputs] Processing data: {}", value);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let result = value * 2;
-        println!("[Inputs] Processed result: {}", result);
-        Ok(result)
-    }
-
-    #[step(depends_on = "process_data", inputs(value = "process_data"))]
-    async fn save_result(self: Arc<Self>, value: i32) -> Result<String, String> {
-        println!("[Inputs] Saving result: {}", value);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        println!("[Inputs] Result saved");
-        Ok(format!("Saved: {}", value))
-    }
-
-    #[flow]
-    async fn run_with_inputs(self: Arc<Self>) -> Result<String, String> {
-        dag! {
-            self.register_fetch_data();
-            self.register_process_data();
-            self.register_save_result()
+            self.register_dag_root();
+            self.register_dag_branch1();
+            self.register_dag_branch2();
+            self.register_dag_merge()
         }
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // =========================================================================
-    // Test 1: Sequential Execution
-    // =========================================================================
-    println!("\n=== SCENARIO 1: Sequential Execution (Default) ===\n");
-    println!("Steps run one after another in registration order.\n");
+    // Scenario 1: Parallel
+    println!("\n=== SCENARIO 1: Parallel (No depends_on) ===\n");
 
     let storage1 = Arc::new(InMemoryExecutionLog::new());
     storage1.reset().await?;
-    let workflow1 = Arc::new(Workflow::new("seq".to_string()));
-    let flow_id1 = Uuid::new_v4();
+    let workflow1 = Arc::new(Workflow {
+        id: "parallel".into(),
+    });
 
     let start1 = Instant::now();
-    let instance1 = Executor::new(flow_id1, Arc::clone(&workflow1), Arc::clone(&storage1));
-    let (result1, elapsed1) = match instance1
-        .execute(|f| Box::pin(f.clone().run_sequential()))
+    let executor1 = Executor::new(Uuid::new_v4(), workflow1.clone(), storage1);
+    let result1 = match executor1
+        .execute(|w| Box::pin(w.clone().run_parallel()))
         .await
     {
-        FlowOutcome::Completed(result) => (result, start1.elapsed()),
-        FlowOutcome::Suspended(reason) => {
-            return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
-        }
+        FlowOutcome::Completed(r) => r,
+        FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
+    let elapsed1 = start1.elapsed();
 
     println!("\nResult: {:?}", result1);
-    println!(
-        "Time: {:?} (expect ~150ms for 3 sequential steps)",
-        elapsed1
-    );
+    println!("Time: {:?}", elapsed1);
 
-    // =========================================================================
-    // Test 2: Parallel Execution
-    // =========================================================================
-    println!("\n=== SCENARIO 2: Parallel Execution (Explicit) ===\n");
-    println!("Branch1 and Branch2 run in parallel after Root.\n");
+    // Scenario 2: Sequential
+    println!("\n=== SCENARIO 2: Sequential (Explicit depends_on) ===\n");
 
     let storage2 = Arc::new(InMemoryExecutionLog::new());
     storage2.reset().await?;
-    let workflow2 = Arc::new(Workflow::new("par".to_string()));
-    let flow_id2 = Uuid::new_v4();
+    let workflow2 = Arc::new(Workflow {
+        id: "sequential".into(),
+    });
 
     let start2 = Instant::now();
-    let instance2 = Executor::new(flow_id2, Arc::clone(&workflow2), Arc::clone(&storage2));
-    let (result2, elapsed2) = match instance2
-        .execute(|f| Box::pin(f.clone().run_parallel()))
+    let executor2 = Executor::new(Uuid::new_v4(), workflow2.clone(), storage2);
+    let result2 = match executor2
+        .execute(|w| Box::pin(w.clone().run_sequential()))
         .await
     {
-        FlowOutcome::Completed(result) => (result, start2.elapsed()),
-        FlowOutcome::Suspended(reason) => {
-            return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
-        }
+        FlowOutcome::Completed(r) => r,
+        FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
+    let elapsed2 = start2.elapsed();
 
     println!("\nResult: {:?}", result2);
-    println!(
-        "Time: {:?} (expect ~150ms: root(50) + parallel_branches(50) + merge(50))",
-        elapsed2
-    );
+    println!("Time: {:?}", elapsed2);
 
-    // =========================================================================
-    // Test 3: Data Wiring with inputs
-    // =========================================================================
-    println!("\n=== SCENARIO 3: Data Wiring with inputs ===\n");
-    println!("Steps pass data through inputs attribute.\n");
+    // Scenario 3: DAG
+    println!("\n=== SCENARIO 3: DAG (Fan-out/Fan-in) ===\n");
 
     let storage3 = Arc::new(InMemoryExecutionLog::new());
     storage3.reset().await?;
-    let workflow3 = Arc::new(Workflow::new("inputs".to_string()));
-    let flow_id3 = Uuid::new_v4();
+    let workflow3 = Arc::new(Workflow { id: "dag".into() });
 
     let start3 = Instant::now();
-
-    let instance3 = Executor::new(flow_id3, Arc::clone(&workflow3), Arc::clone(&storage3));
-    let (result3, elapsed3) = match instance3
-        .execute(|f| Box::pin(f.clone().run_with_inputs()))
-        .await
-    {
-        FlowOutcome::Completed(result) => (result, start3.elapsed()),
-        FlowOutcome::Suspended(reason) => {
-            return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
-        }
+    let executor3 = Executor::new(Uuid::new_v4(), workflow3.clone(), storage3);
+    let result3 = match executor3.execute(|w| Box::pin(w.clone().run_dag())).await {
+        FlowOutcome::Completed(r) => r,
+        FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
+    let elapsed3 = start3.elapsed();
 
     println!("\nResult: {:?}", result3);
+    println!("Time: {:?}", elapsed3);
+
+    // Summary
+    println!("\n=== Summary ===\n");
     println!(
-        "Time: {:?} (expect ~150ms: root(50) + parallel_branches(50) + merge(50))",
-        elapsed3
+        "| {:<10} | {:<12} | {:<10} |",
+        "Scenario", "depends_on", "Time"
     );
+    println!("|{:-<12}|{:-<14}|{:-<12}|", "", "", "");
+    println!(
+        "| {:<10} | {:<12} | {:>10.2?} |",
+        "Parallel", "None", elapsed1
+    );
+    println!(
+        "| {:<10} | {:<12} | {:>10.2?} |",
+        "Sequential", "Chained", elapsed2
+    );
+    println!(
+        "| {:<10} | {:<12} | {:>10.2?} |",
+        "DAG", "Fan-out", elapsed3
+    );
+
+    println!("\nKey: depends_on is explicit. No auto-chaining.");
 
     Ok(())
 }

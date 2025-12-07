@@ -6,7 +6,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -51,6 +53,8 @@ impl Default for PoolConfig {
 pub struct SqliteExecutionLog {
     pool: SqlitePool,
     db_path: String,
+    /// Optional notify handle for waking workers when work becomes available
+    work_notify: Option<Arc<Notify>>,
 }
 
 impl SqliteExecutionLog {
@@ -78,6 +82,7 @@ impl SqliteExecutionLog {
         let log = Self {
             pool,
             db_path: db_path_str,
+            work_notify: Some(Arc::new(Notify::new())),
         };
 
         log.initialize().await?;
@@ -114,11 +119,33 @@ impl SqliteExecutionLog {
         let log = Self {
             pool,
             db_path: ":memory:".to_string(),
+            work_notify: Some(Arc::new(Notify::new())),
         };
 
         log.initialize().await?;
 
         Ok(log)
+    }
+
+    /// Sets the work notification handle for waking workers when work becomes available.
+    ///
+    /// This enables event-driven worker wakeup instead of polling with sleep.
+    /// Workers wait on `notify.notified()` instead of sleeping when the queue is empty.
+    ///
+    /// # Arguments
+    ///
+    /// * `notify` - Shared Notify handle that workers will wait on
+    pub fn with_work_notify(mut self, notify: Arc<Notify>) -> Self {
+        self.work_notify = Some(notify);
+        self
+    }
+
+    /// Returns a reference to the work notification handle.
+    ///
+    /// Workers should use this notify to wait for work instead of sleeping.
+    /// The storage backend signals this notify when new work becomes available.
+    pub fn work_notify(&self) -> Option<&Arc<Notify>> {
+        self.work_notify.as_ref()
     }
 
     /// Builds the connection pool with the given configuration.
@@ -642,6 +669,14 @@ impl ExecutionLog for SqliteExecutionLog {
             "Enqueued flow: task_id={}, flow_type={}",
             task_id, flow_type
         );
+
+        // Wake up one waiting worker if this is an immediate (non-delayed) flow
+        if flow.scheduled_for.is_none() {
+            if let Some(ref notify) = self.work_notify {
+                notify.notify_one();
+            }
+        }
+
         Ok(task_id)
     }
 
@@ -1020,6 +1055,12 @@ impl ExecutionLog for SqliteExecutionLog {
         }
 
         debug!("Resumed flow: flow_id={}", flow_id);
+
+        // Wake up one waiting worker since we just made a flow available
+        if let Some(ref notify) = self.work_notify {
+            notify.notify_one();
+        }
+
         Ok(())
     }
 

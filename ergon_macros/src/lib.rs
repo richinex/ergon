@@ -73,7 +73,25 @@ pub fn flow(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// #[flow_type(id = "com.company.MyFlow.v1")]
 /// struct MyFlow { }
 /// ```
-#[proc_macro_derive(FlowType, attributes(flow_type))]
+///
+/// For child flows that can be invoked using the `invoke()` API, use the `invokable` attribute
+/// to also implement the `InvokableFlow` trait:
+///
+/// ```ignore
+/// #[derive(Clone, Serialize, Deserialize, FlowType)]
+/// #[invokable(output = Label)]
+/// struct Shipment {
+///     order_id: String,
+/// }
+/// ```
+///
+/// This replaces the manual implementation:
+/// ```ignore
+/// impl InvokableFlow for Shipment {
+///     type Output = Label;
+/// }
+/// ```
+#[proc_macro_derive(FlowType, attributes(flow_type, invokable))]
 pub fn derive_flow_type(input: TokenStream) -> TokenStream {
     flow_type::derive_flow_type_impl(input)
 }

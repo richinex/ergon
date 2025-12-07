@@ -211,7 +211,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nRetry Policy with Crash Recovery Demo");
     println!("======================================\n");
 
-    let storage = Arc::new(InMemoryExecutionLog::new());
+    let db = "data/test.db";
+    let _ = std::fs::remove_file(db);
+
+    let storage = Arc::new(SqliteExecutionLog::new(db).await?);
+    // let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = Scheduler::new(storage.clone());
 
     let order = OrderProcessor {
@@ -239,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         let handle = worker.start().await;
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(15)).await;
 
         handle.shutdown().await;
     });

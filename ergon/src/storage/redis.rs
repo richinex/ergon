@@ -1,4 +1,4 @@
-//! Redis-based execution log implementation with async pool and best practices.
+//! Redis Streams-based execution log for distributed queue operations.
 //!
 //! This module provides a Redis backend for distributed execution with true
 //! multi-machine support. Unlike SQLite which requires shared filesystem access,
@@ -6,36 +6,42 @@
 //!
 //! # Data Structures
 //!
-//! - `ergon:queue:pending` (LIST): FIFO queue of ready task IDs
+//! ## Queue (Streams-based)
+//! - `ergon:flows` (STREAM): Main flow queue with consumer groups
+//!   - Consumer group: `workers`
+//!   - Each entry contains: task_id, flow_id, flow_type, flow_data, created_at, etc.
+//!   - Uses Pending Entries List (PEL) for tracking and recovery
 //! - `ergon:queue:delayed` (ZSET): Delayed tasks (score = scheduled_timestamp)
-//! - `ergon:flow:{task_id}` (HASH): Flow metadata and serialized data (with TTL)
+//!
+//! ## Flow Metadata (Hash-based, unchanged)
+//! - `ergon:flow:{task_id}` (HASH): Flow metadata (status, timestamps, etc.)
 //! - `ergon:invocations:{flow_id}` (LIST): Invocation history per flow
-//! - `ergon:running` (ZSET): Running flows index (score = start time, for stale lock detection)
-//! - `ergon:timers:pending` (ZSET): Pending timers (score = fire_at timestamp)
 //! - `ergon:inv:{flow_id}:{step}` (HASH): Invocation data including timer info
 //! - `ergon:signal:{flow_id}:{step}` (STRING): Signal parameters (with TTL)
+//! - `ergon:timers:pending` (ZSET): Pending timers (score = fire_at timestamp)
 //!
 //! # Key Features
 //!
+//! - **Redis Streams**: Atomic XADD for enqueue, XREADGROUP for dequeue
+//! - **Consumer Groups**: Built-in distributed processing with exactly-once delivery
+//! - **Automatic Recovery**: XAUTOCLAIM for stale message recovery (no Lua scripts)
+//! - **Pending Entries List**: Tracks in-flight messages for fault tolerance
 //! - **Async connection pool**: Uses deadpool-redis for true async operations
-//! - **Sorted sets for scheduling**: No busy-loop for delayed tasks
-//! - **Atomic operations**: Uses pipelines and Lua scripts
 //! - **TTL cleanup**: Automatic expiration of completed flows
-//! - **Stale lock recovery**: Detects and recovers crashed workers
 //!
 //! # Automatic Maintenance
 //!
 //! When using the `Worker` type, Redis maintenance is **automatically handled**:
 //! - **Every 1 second**: `move_ready_delayed_tasks()` checks for ready delayed tasks
-//! - **Every 60 seconds**: `recover_stale_locks()` checks for stale locks
+//! - **Every 60 seconds**: `recover_stale_locks()` uses XAUTOCLAIM for stale messages
 //!
 //! No manual setup required! The Worker integrates these calls internally.
 //!
 //! # Performance Characteristics
 //!
-//! - Enqueue: O(log N) with ZADD to sorted set
-//! - Dequeue: O(1) with BLPOP (blocks until available)
-//! - Background mover: O(log N) per ready task
+//! - Enqueue: O(1) with XADD (atomic write of all fields)
+//! - Dequeue: O(1) with XREADGROUP (atomic read + claim)
+//! - Recovery: O(N) with XAUTOCLAIM (N = pending messages)
 //! - Network overhead: ~0.1-0.5ms per operation (local network)
 
 use super::{error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog};
@@ -43,10 +49,15 @@ use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
-use redis::AsyncCommands;
+use redis::{
+    AsyncCommands,
+    streams::{StreamId, StreamReadOptions, StreamReadReply},
+};
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -56,18 +67,29 @@ const DEFAULT_COMPLETED_TTL: i64 = 7 * 24 * 3600;
 /// Default TTL for signal parameters (30 days in seconds)
 const DEFAULT_SIGNAL_TTL: i64 = 30 * 24 * 3600;
 
-/// Default stale lock timeout (5 minutes in milliseconds)
-const DEFAULT_STALE_LOCK_TIMEOUT_MS: i64 = 5 * 60 * 1000;
+/// Default stale message timeout for XAUTOCLAIM (60 seconds in milliseconds)
+const DEFAULT_STALE_MESSAGE_TIMEOUT_MS: i64 = 60 * 1000;
 
-/// Redis execution log using async connection pooling.
+/// Stream key for flow queue
+const STREAM_KEY: &str = "ergon:flows";
+
+/// Consumer group name for worker pool
+const CONSUMER_GROUP: &str = "workers";
+
+/// Max stream length (approximate trimming for performance)
+const MAX_STREAM_LEN: isize = 100_000;
+
+/// Redis execution log using async connection pooling with Redis Streams.
 ///
 /// This implementation uses deadpool-redis for async operations and
-/// follows Redis best practices for task scheduling, TTL, and lock management.
+/// Redis Streams for distributed queue with consumer groups.
 pub struct RedisExecutionLog {
     pool: Pool,
     completed_ttl: i64,
     signal_ttl: i64,
-    stale_lock_timeout_ms: i64,
+    stale_message_timeout_ms: i64,
+    /// Optional notify handle for waking workers when work becomes available
+    work_notify: Option<Arc<Notify>>,
 }
 
 impl RedisExecutionLog {
@@ -92,12 +114,18 @@ impl RedisExecutionLog {
             .create_pool(Some(Runtime::Tokio1))
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(Self {
+        let log = Self {
             pool,
             completed_ttl: DEFAULT_COMPLETED_TTL,
             signal_ttl: DEFAULT_SIGNAL_TTL,
-            stale_lock_timeout_ms: DEFAULT_STALE_LOCK_TIMEOUT_MS,
-        })
+            stale_message_timeout_ms: DEFAULT_STALE_MESSAGE_TIMEOUT_MS,
+            work_notify: Some(Arc::new(Notify::new())),
+        };
+
+        // Ensure consumer group exists
+        log.ensure_consumer_group().await?;
+
+        Ok(log)
     }
 
     /// Creates a connection pool with custom TTL configuration.
@@ -111,33 +139,66 @@ impl RedisExecutionLog {
             .create_pool(Some(Runtime::Tokio1))
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(Self {
+        let log = Self {
             pool,
             completed_ttl: completed_ttl_secs,
             signal_ttl: signal_ttl_secs,
-            stale_lock_timeout_ms: DEFAULT_STALE_LOCK_TIMEOUT_MS,
-        })
+            stale_message_timeout_ms: DEFAULT_STALE_MESSAGE_TIMEOUT_MS,
+            work_notify: Some(Arc::new(Notify::new())),
+        };
+
+        // Ensure consumer group exists
+        log.ensure_consumer_group().await?;
+
+        Ok(log)
     }
 
-    /// Creates a connection pool with full configuration including stale lock timeout.
+    /// Creates a connection pool with full configuration including stale message timeout.
     /// Useful for testing with shorter timeouts.
     pub async fn with_full_config(
         redis_url: &str,
         completed_ttl_secs: i64,
         signal_ttl_secs: i64,
-        stale_lock_timeout_ms: i64,
+        stale_message_timeout_ms: i64,
     ) -> Result<Self> {
         let cfg = Config::from_url(redis_url);
         let pool = cfg
             .create_pool(Some(Runtime::Tokio1))
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(Self {
+        let log = Self {
             pool,
             completed_ttl: completed_ttl_secs,
             signal_ttl: signal_ttl_secs,
-            stale_lock_timeout_ms,
-        })
+            stale_message_timeout_ms,
+            work_notify: Some(Arc::new(Notify::new())),
+        };
+
+        // Ensure consumer group exists
+        log.ensure_consumer_group().await?;
+
+        Ok(log)
+    }
+
+    /// Sets the work notification handle for waking workers when work becomes available.
+    ///
+    /// This enables event-driven worker wakeup instead of polling with sleep.
+    /// Workers wait on `notify.notified()` instead of sleeping when the queue is empty.
+    ///
+    /// # Arguments
+    ///
+    /// * `notify` - Shared Notify handle that workers will wait on
+    pub fn with_work_notify(mut self, notify: Arc<Notify>) -> Self {
+        self.work_notify = Some(notify);
+        self
+    }
+
+    /// Returns a reference to the work notification handle.
+    ///
+    /// Workers should use this notify to wait for work instead of sleeping.
+    /// The storage backend signals this notify when new work becomes available.
+    pub fn work_notify(&self) -> Option<&Arc<Notify>> {
+        self.work_notify.as_ref()
     }
 
     /// Gets an async connection from the pool.
@@ -146,6 +207,37 @@ impl RedisExecutionLog {
             .get()
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))
+    }
+
+    /// Ensures the consumer group exists, creating it if necessary.
+    async fn ensure_consumer_group(&self) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+
+        // Try to create the group. If it already exists, that's fine.
+        let result: redis::RedisResult<()> = redis::cmd("XGROUP")
+            .arg("CREATE")
+            .arg(STREAM_KEY)
+            .arg(CONSUMER_GROUP)
+            .arg("0")        // Start from beginning
+            .arg("MKSTREAM") // Create stream if it doesn't exist
+            .query_async(&mut *conn)
+            .await;
+
+        match result {
+            Ok(()) => {
+                debug!("Created consumer group '{}' for stream '{}'", CONSUMER_GROUP, STREAM_KEY);
+                Ok(())
+            }
+            Err(e) if e.to_string().contains("BUSYGROUP") => {
+                // Group already exists, that's fine
+                debug!("Consumer group '{}' already exists", CONSUMER_GROUP);
+                Ok(())
+            }
+            Err(e) => Err(StorageError::Connection(format!(
+                "Failed to create consumer group: {}",
+                e
+            ))),
+        }
     }
 
     /// Builds the Redis key for flow metadata.
@@ -166,6 +258,146 @@ impl RedisExecutionLog {
     /// Builds the Redis key for signal parameters.
     fn signal_key(flow_id: Uuid, step: i32) -> String {
         format!("ergon:signal:{}:{}", flow_id, step)
+    }
+
+    /// Helper to re-enqueue a task to the stream from its flow metadata.
+    async fn reenqueue_to_stream(&self, conn: &mut deadpool_redis::Connection, task_id: Uuid) -> Result<()> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+        let flow_key = Self::flow_key(task_id);
+
+        // Get flow data from hash
+        let data: HashMap<String, Vec<u8>> = conn
+            .hgetall(&flow_key)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        let get_string = |key: &str| -> Result<String> {
+            data.get(key)
+                .and_then(|v| String::from_utf8(v.clone()).ok())
+                .ok_or_else(|| StorageError::Connection(format!("Missing {} in flow data", key)))
+        };
+
+        let flow_id = get_string("flow_id")?;
+        let flow_type = get_string("flow_type")?;
+        let flow_data = data.get("flow_data")
+            .ok_or_else(|| StorageError::Connection("Missing flow_data".to_string()))?;
+        let flow_data_b64 = BASE64.encode(flow_data);
+        let created_at = get_string("created_at").unwrap_or_else(|_| Utc::now().timestamp().to_string());
+        let retry_count = get_string("retry_count").unwrap_or_else(|_| "0".to_string());
+
+        let mut fields: Vec<(&str, String)> = vec![
+            ("task_id", task_id.to_string()),
+            ("flow_id", flow_id),
+            ("flow_type", flow_type),
+            ("flow_data", flow_data_b64),
+            ("created_at", created_at),
+            ("retry_count", retry_count),
+        ];
+
+        // Add optional fields
+        if let Ok(parent_id) = get_string("parent_flow_id") {
+            if !parent_id.is_empty() {
+                fields.push(("parent_flow_id", parent_id));
+            }
+        }
+        if let Ok(signal_token) = get_string("signal_token") {
+            if !signal_token.is_empty() {
+                fields.push(("signal_token", signal_token));
+            }
+        }
+
+        // Add to stream
+        let _entry_id: String = redis::cmd("XADD")
+            .arg(STREAM_KEY)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(MAX_STREAM_LEN)
+            .arg("*")
+            .arg(&fields)
+            .query_async(&mut **conn)
+            .await
+            .map_err(|e| StorageError::Connection(format!("XADD failed during re-enqueue: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Helper to parse a stream entry into a ScheduledFlow.
+    fn parse_stream_entry(&self, entry: &StreamId, worker_id: &str) -> Result<super::ScheduledFlow> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+        // Helper to extract string from redis::Value
+        let get_string = |v: &redis::Value| -> Option<String> {
+            match v {
+                redis::Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
+                redis::Value::SimpleString(s) => Some(s.clone()),
+                redis::Value::Okay => Some("OK".to_string()),
+                redis::Value::Int(i) => Some(i.to_string()),
+                _ => None,
+            }
+        };
+
+        let map = &entry.map;
+
+        // Parse required fields
+        let task_id = map.get("task_id")
+            .and_then(get_string)
+            .and_then(|s| Uuid::parse_str(&s).ok())
+            .ok_or_else(|| StorageError::Connection("Missing or invalid task_id in stream entry".to_string()))?;
+
+        let flow_id = map.get("flow_id")
+            .and_then(get_string)
+            .and_then(|s| Uuid::parse_str(&s).ok())
+            .ok_or_else(|| StorageError::Connection("Missing or invalid flow_id in stream entry".to_string()))?;
+
+        let flow_type = map.get("flow_type")
+            .and_then(get_string)
+            .ok_or_else(|| StorageError::Connection("Missing flow_type in stream entry".to_string()))?;
+
+        let flow_data_b64 = map.get("flow_data")
+            .and_then(get_string)
+            .ok_or_else(|| StorageError::Connection("Missing flow_data in stream entry".to_string()))?;
+
+        let flow_data = BASE64.decode(&flow_data_b64)
+            .map_err(|e| StorageError::Connection(format!("Failed to decode flow_data: {}", e)))?;
+
+        let created_at_ts: i64 = map.get("created_at")
+            .and_then(get_string)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let created_at = chrono::DateTime::from_timestamp(created_at_ts, 0)
+            .unwrap_or_else(Utc::now);
+
+        let retry_count: u32 = map.get("retry_count")
+            .and_then(get_string)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Parse optional fields
+        let parent_flow_id: Option<Uuid> = map.get("parent_flow_id")
+            .and_then(get_string)
+            .filter(|s| !s.is_empty())
+            .and_then(|s| Uuid::parse_str(&s).ok());
+
+        let signal_token: Option<String> = map.get("signal_token")
+            .and_then(get_string)
+            .filter(|s| !s.is_empty());
+
+        Ok(super::ScheduledFlow {
+            task_id,
+            flow_id,
+            flow_type,
+            flow_data,
+            status: super::TaskStatus::Running,
+            locked_by: Some(worker_id.to_string()),
+            created_at,
+            updated_at: Utc::now(),
+            retry_count,
+            error_message: None,
+            scheduled_for: None,
+            parent_flow_id,
+            signal_token,
+        })
     }
 
     /// Builds the Redis key for step-child mapping.
@@ -262,47 +494,6 @@ impl RedisExecutionLog {
         }
 
         Ok(invocation)
-    }
-
-    /// DIAGNOSTIC: Count the number of pending flows in the queue
-    pub async fn count_pending(&self) -> usize {
-        let mut conn = match self.get_connection().await {
-            Ok(c) => c,
-            Err(_) => return 0,
-        };
-
-        let count: usize = conn.llen("ergon:queue:pending").await.unwrap_or(0);
-
-        count
-    }
-
-    /// DIAGNOSTIC: List all pending task IDs with their flow IDs
-    pub async fn list_pending(&self) -> Vec<(String, String)> {
-        let mut conn = match self.get_connection().await {
-            Ok(c) => c,
-            Err(_) => return vec![],
-        };
-
-        // Get all task IDs from the pending queue
-        let task_ids: Vec<String> = conn
-            .lrange("ergon:queue:pending", 0, -1)
-            .await
-            .unwrap_or_default();
-
-        let mut results = Vec::new();
-        for task_id in task_ids {
-            let flow_key =
-                Self::flow_key(Uuid::parse_str(&task_id).unwrap_or_else(|_| Uuid::nil()));
-
-            // Get flow_id from the flow metadata
-            let flow_id: Option<String> = conn.hget(&flow_key, "flow_id").await.unwrap_or(None);
-
-            if let Some(flow_id) = flow_id {
-                results.push((task_id, flow_id));
-            }
-        }
-
-        results
     }
 }
 
@@ -614,13 +805,13 @@ impl ExecutionLog for RedisExecutionLog {
     async fn enqueue_flow(&self, flow: super::ScheduledFlow) -> Result<Uuid> {
         let mut conn = self.get_connection().await?;
         let task_id = flow.task_id;
-        let flow_key = Self::flow_key(task_id);
 
         // Check if flow should be delayed
         if let Some(scheduled_for) = flow.scheduled_for {
             let scheduled_ts = scheduled_for.timestamp_millis();
+            let flow_key = Self::flow_key(task_id);
 
-            // Store flow metadata and add to delayed queue
+            // Store flow metadata and add to delayed queue (unchanged for delayed flows)
             let mut pipe = redis::pipe();
             pipe.atomic()
                 .hset(&flow_key, "task_id", task_id.to_string())
@@ -632,7 +823,6 @@ impl ExecutionLog for RedisExecutionLog {
                 .hset(&flow_key, "scheduled_for", scheduled_ts)
                 .hset(&flow_key, "flow_data", flow.flow_data.as_slice());
 
-            // Level 3: Add parent metadata if present
             if let Some(parent_id) = flow.parent_flow_id {
                 pipe.hset(&flow_key, "parent_flow_id", parent_id.to_string());
             }
@@ -640,8 +830,6 @@ impl ExecutionLog for RedisExecutionLog {
                 pipe.hset(&flow_key, "signal_token", signal_token);
             }
 
-            // Add to delayed queue (sorted by scheduled_for timestamp)
-            // Also create flow_id -> task_id index for O(1) resume_flow lookup
             let _: () = pipe
                 .set(
                     format!("ergon:flow_task_map:{}", flow.flow_id),
@@ -652,67 +840,77 @@ impl ExecutionLog for RedisExecutionLog {
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
         } else {
-            // Immediate execution - add to pending queue
-            // Use Lua script for guaranteed atomicity: data THEN queue
-            let script = redis::Script::new(
-                r#"
-                local flow_key = KEYS[1]
-                local task_id = ARGV[1]
-                local flow_id = ARGV[2]
-                local flow_type = ARGV[3]
-                local created_at = ARGV[4]
-                local updated_at = ARGV[5]
-                local flow_data = ARGV[6]
-                local parent_flow_id = ARGV[7]
-                local signal_token = ARGV[8]
+            // Immediate execution - use Redis Streams for atomic enqueue
+            // XADD writes all fields atomically in a single operation
+            use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+            let flow_data_b64 = BASE64.encode(&flow.flow_data);
+            let flow_key = Self::flow_key(task_id);
 
-                -- Set all flow metadata FIRST
-                redis.call('HSET', flow_key,
-                    'task_id', task_id,
-                    'flow_id', flow_id,
-                    'flow_type', flow_type,
-                    'status', 'PENDING',
-                    'created_at', created_at,
-                    'updated_at', updated_at,
-                    'flow_data', flow_data)
+            // First, create the flow hash with all metadata (needed for resume_flow)
+            let mut pipe = redis::pipe();
+            pipe.atomic()
+                .hset(&flow_key, "task_id", task_id.to_string())
+                .hset(&flow_key, "flow_id", flow.flow_id.to_string())
+                .hset(&flow_key, "flow_type", &flow.flow_type)
+                .hset(&flow_key, "flow_data", flow.flow_data.as_slice())
+                .hset(&flow_key, "status", "PENDING")
+                .hset(&flow_key, "created_at", flow.created_at.timestamp())
+                .hset(&flow_key, "updated_at", flow.updated_at.timestamp())
+                .hset(&flow_key, "retry_count", 0);
 
-                -- Add optional parent metadata
-                if parent_flow_id ~= '' then
-                    redis.call('HSET', flow_key, 'parent_flow_id', parent_flow_id)
-                end
-                if signal_token ~= '' then
-                    redis.call('HSET', flow_key, 'signal_token', signal_token)
-                end
+            if let Some(parent_id) = flow.parent_flow_id {
+                pipe.hset(&flow_key, "parent_flow_id", parent_id.to_string());
+            }
+            if let Some(ref signal_token) = flow.signal_token {
+                pipe.hset(&flow_key, "signal_token", signal_token);
+            }
 
-                -- Create flow_id -> task_id index for O(1) resume_flow lookup
-                redis.call('SET', 'ergon:flow_task_map:' .. flow_id, task_id)
-
-                -- ONLY AFTER data is written, add to queue
-                redis.call('RPUSH', 'ergon:queue:pending', task_id)
-
-                return redis.status_reply('OK')
-            "#,
+            // Create flow_id -> task_id index for resume_flow
+            pipe.set(
+                format!("ergon:flow_task_map:{}", flow.flow_id),
+                task_id.to_string(),
             );
 
-            let parent_id_str = flow
-                .parent_flow_id
-                .map(|id| id.to_string())
-                .unwrap_or_default();
-            let signal_token_str = flow.signal_token.unwrap_or_default();
-
-            let _: String = script
-                .key(&flow_key)
-                .arg(task_id.to_string())
-                .arg(flow.flow_id.to_string())
-                .arg(&flow.flow_type)
-                .arg(flow.created_at.timestamp())
-                .arg(flow.updated_at.timestamp())
-                .arg(flow.flow_data.as_slice())
-                .arg(parent_id_str)
-                .arg(signal_token_str)
-                .invoke_async(&mut *conn)
+            let _: () = pipe
+                .query_async(&mut *conn)
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            // Now write to stream with MAXLEN trimming
+            let mut fields: Vec<(&str, String)> = vec![
+                ("task_id", task_id.to_string()),
+                ("flow_id", flow.flow_id.to_string()),
+                ("flow_type", flow.flow_type.clone()),
+                ("flow_data", flow_data_b64),
+                ("created_at", flow.created_at.timestamp().to_string()),
+                ("retry_count", "0".to_string()),
+            ];
+
+            // Add optional fields to stream
+            if let Some(parent_id) = flow.parent_flow_id {
+                fields.push(("parent_flow_id", parent_id.to_string()));
+            }
+            if let Some(ref signal_token) = flow.signal_token {
+                fields.push(("signal_token", signal_token.clone()));
+            }
+
+            let entry_id: String = redis::cmd("XADD")
+                .arg(STREAM_KEY)
+                .arg("MAXLEN")
+                .arg("~")
+                .arg(MAX_STREAM_LEN)
+                .arg("*")
+                .arg(&fields)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(format!("XADD failed: {}", e)))?;
+
+            debug!("Enqueued flow {} to stream with entry ID {}", task_id, entry_id);
+
+            // Wake up one waiting worker (if any)
+            if let Some(ref notify) = self.work_notify {
+                notify.notify_one();
+            }
         }
 
         Ok(task_id)
@@ -720,298 +918,106 @@ impl ExecutionLog for RedisExecutionLog {
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
         let mut conn = self.get_connection().await?;
-        let processing_key = format!("ergon:processing:{}", worker_id);
-        let now = Utc::now().timestamp();
-        let now_millis = Utc::now().timestamp_millis();
 
-        // Single atomic LPOP with rollback on validation failure
-        // If Rust loses the response, task is marked RUNNING and recover_stale_locks will handle it
-        // This provides at-least-once delivery (task may run twice after recovery, but never lost)
-        let script = redis::Script::new(
-            r#"
-            -- Atomically dequeue with validation and rollback capability
-            local task_id = redis.call('LPOP', 'ergon:queue:pending')
-            if not task_id then
-                return nil
-            end
+        // Use XREADGROUP to atomically read and claim a message from the stream
+        // This automatically adds the message to the PEL (Pending Entries List)
+        let opts = StreamReadOptions::default()
+            .group(CONSUMER_GROUP, worker_id)
+            .count(1)
+            .block(1000); // Block for 1 second if no messages
 
-            local flow_key = 'ergon:flow:' .. task_id
-
-            -- Fetch ALL required fields
-            local flow_id = redis.call('HGET', flow_key, 'flow_id')
-            local flow_type = redis.call('HGET', flow_key, 'flow_type')
-            local flow_data = redis.call('HGET', flow_key, 'flow_data')
-            local created_at = redis.call('HGET', flow_key, 'created_at')
-
-            -- Validate ALL required fields individually
-            if not flow_id or flow_id == '' then
-                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing flow_id for ' .. task_id)
-                redis.call('LPUSH', 'ergon:queue:pending', task_id)
-                return nil
-            end
-            if not flow_type or flow_type == '' then
-                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing flow_type for ' .. task_id)
-                redis.call('LPUSH', 'ergon:queue:pending', task_id)
-                return nil
-            end
-            if not flow_data then
-                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing flow_data for ' .. task_id)
-                redis.call('LPUSH', 'ergon:queue:pending', task_id)
-                return nil
-            end
-            if not created_at then
-                redis.call('RPUSH', 'ergon:debug:dequeue', 'REJECT: missing created_at for ' .. task_id)
-                redis.call('LPUSH', 'ergon:queue:pending', task_id)
-                return nil
-            end
-
-            -- Validation passed - mark as RUNNING and add to processing queue
-            redis.call('RPUSH', KEYS[1], task_id)
-            redis.call('HSET', flow_key, 'status', 'RUNNING', 'locked_by', ARGV[1], 'updated_at', ARGV[2])
-            redis.call('ZADD', 'ergon:running', ARGV[3], task_id)
-
-            -- Fetch optional fields
-            local retry_count = redis.call('HGET', flow_key, 'retry_count') or '0'
-            local parent_flow_id = redis.call('HGET', flow_key, 'parent_flow_id') or ''
-            local signal_token = redis.call('HGET', flow_key, 'signal_token') or ''
-
-            -- Return task data
-            -- NOTE: If this response is lost, task is RUNNING and will be recovered by stale lock detection
-            return {task_id, flow_id, flow_type, flow_data, created_at, retry_count, parent_flow_id, signal_token}
-        "#,
-        );
-
-        // Wrap in timeout to prevent indefinite hangs (10 second timeout)
-        let timeout_duration = tokio::time::Duration::from_secs(10);
-        let result: Option<Vec<redis::Value>> = match tokio::time::timeout(
-            timeout_duration,
-            script
-                .key(&processing_key)
-                .arg(worker_id)
-                .arg(now)
-                .arg(now_millis)
-                .invoke_async(&mut *conn),
-        )
-        .await
+        let reply: StreamReadReply = match conn
+            .xread_options(&[STREAM_KEY], &[">"], &opts)
+            .await
         {
-            Ok(Ok(val)) => val,
-            Ok(Err(e)) => {
-                return Err(StorageError::Connection(e.to_string()));
-            }
-            Err(_) => {
-                // Timeout means invoke_async hung - drop connection and return None
-                // The task is already marked RUNNING in Redis and will be recovered by stale lock detection
-                warn!("Lua dequeue script timeout after {:?} - task will be recovered by stale lock detection", timeout_duration);
-                return Ok(None);
-            }
-        };
-
-        let Some(values) = result else {
-            return Ok(None);
-        };
-
-        // Parse the returned values
-        // Helper to extract string from redis::Value
-        let get_string = |v: &redis::Value| -> Option<String> {
-            match v {
-                redis::Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
-                redis::Value::SimpleString(s) => Some(s.clone()),
-                _ => None,
+            Ok(r) => r,
+            Err(e) => {
+                // If error is about missing group, ensure it exists and retry
+                if e.to_string().contains("NOGROUP") {
+                    warn!("Consumer group missing, recreating...");
+                    self.ensure_consumer_group().await?;
+                    // Retry once
+                    conn.xread_options(&[STREAM_KEY], &[">"], &opts)
+                        .await
+                        .map_err(|e| StorageError::Connection(format!("XREADGROUP failed: {}", e)))?
+                } else {
+                    return Err(StorageError::Connection(format!("XREADGROUP failed: {}", e)));
+                }
             }
         };
 
-        let get_bytes = |v: &redis::Value| -> Option<Vec<u8>> {
-            match v {
-                redis::Value::BulkString(bytes) => Some(bytes.clone()),
-                _ => None,
-            }
-        };
-
-        if values.len() < 8 {
-            warn!(
-                "Incomplete data from Lua dequeue (expected 8 values, got {})",
-                values.len()
-            );
-            return Ok(None);
+        // Check if we got any messages
+        if reply.keys.is_empty() || reply.keys[0].ids.is_empty() {
+            return Ok(None); // No messages available
         }
 
-        // Parse task_id first (needed for error recovery)
-        let task_id_str = match get_string(&values[0]) {
-            Some(s) => s,
-            None => {
-                warn!("Missing task_id in Lua dequeue response");
-                return Ok(None);
-            }
-        };
-        let task_id = match Uuid::parse_str(&task_id_str) {
-            Ok(id) => id,
-            Err(e) => {
-                warn!("Invalid task_id '{}': {}", task_id_str, e);
-                return Ok(None);
-            }
-        };
+        // Parse the first (and only) entry
+        let entry = &reply.keys[0].ids[0];
+        let entry_id = entry.id.clone();
 
-        // Parse remaining required fields with error recovery
-        let flow_id_str = match get_string(&values[1]) {
-            Some(s) if !s.is_empty() => s,
-            _ => {
-                // Mark task as failed to prevent orphaning
-                warn!("Missing flow_id for task {}, marking as FAILED", task_id);
-                let mut conn = self.get_connection().await?;
-                let flow_key = format!("ergon:flow:{}", task_id);
-                let _: () = redis::pipe()
-                    .atomic()
-                    .hset(&flow_key, "status", "FAILED")
-                    .hset(
-                        &flow_key,
-                        "error_message",
-                        "Missing flow_id in dequeue data",
-                    )
-                    .zrem("ergon:running", task_id.to_string())
-                    .query_async(&mut *conn)
+        match self.parse_stream_entry(entry, worker_id) {
+            Ok(flow) => {
+                // Store entry_id in flow metadata for XACK on completion
+                let flow_key = Self::flow_key(flow.task_id);
+                let _: () = conn
+                    .hset(&flow_key, "stream_entry_id", &entry_id)
                     .await
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
-                return Ok(None);
-            }
-        };
-        let flow_id = match Uuid::parse_str(&flow_id_str) {
-            Ok(id) => id,
-            Err(e) => {
-                warn!(
-                    "Invalid flow_id for task {}: {}, marking as FAILED",
-                    task_id, e
+
+                debug!(
+                    "Worker {} dequeued flow from stream: task_id={}, entry_id={}",
+                    worker_id,
+                    &flow.task_id.to_string()[..8],
+                    entry_id
                 );
-                let mut conn = self.get_connection().await?;
-                let flow_key = format!("ergon:flow:{}", task_id);
-                let _: () = redis::pipe()
-                    .atomic()
-                    .hset(&flow_key, "status", "FAILED")
-                    .hset(
-                        &flow_key,
-                        "error_message",
-                        format!("Invalid flow_id: {}", e),
-                    )
-                    .zrem("ergon:running", task_id.to_string())
-                    .query_async(&mut *conn)
+                Ok(Some(flow))
+            }
+            Err(e) => {
+                // Failed to parse - acknowledge to remove from PEL
+                warn!("Failed to parse stream entry {}: {}, acknowledging to skip", entry_id, e);
+                let _: u64 = conn
+                    .xack(STREAM_KEY, CONSUMER_GROUP, &[&entry_id])
                     .await
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
-                return Ok(None);
+                Ok(None)
             }
-        };
-
-        let flow_type = match get_string(&values[2]) {
-            Some(s) if !s.is_empty() => s,
-            _ => {
-                warn!("Missing flow_type for task {}, marking as FAILED", task_id);
-                let mut conn = self.get_connection().await?;
-                let flow_key = format!("ergon:flow:{}", task_id);
-                let _: () = redis::pipe()
-                    .atomic()
-                    .hset(&flow_key, "status", "FAILED")
-                    .hset(
-                        &flow_key,
-                        "error_message",
-                        "Missing flow_type in dequeue data",
-                    )
-                    .zrem("ergon:running", task_id.to_string())
-                    .query_async(&mut *conn)
-                    .await
-                    .map_err(|e| StorageError::Connection(e.to_string()))?;
-                return Ok(None);
-            }
-        };
-
-        let flow_data = match get_bytes(&values[3]) {
-            Some(d) if !d.is_empty() => d,
-            _ => {
-                warn!("Missing flow_data for task {}, marking as FAILED", task_id);
-                let mut conn = self.get_connection().await?;
-                let flow_key = format!("ergon:flow:{}", task_id);
-                let _: () = redis::pipe()
-                    .atomic()
-                    .hset(&flow_key, "status", "FAILED")
-                    .hset(
-                        &flow_key,
-                        "error_message",
-                        "Missing flow_data in dequeue data",
-                    )
-                    .zrem("ergon:running", task_id.to_string())
-                    .query_async(&mut *conn)
-                    .await
-                    .map_err(|e| StorageError::Connection(e.to_string()))?;
-                return Ok(None);
-            }
-        };
-
-        let created_at_ts: i64 = get_string(&values[4])
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let created_at =
-            chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
-
-        let retry_count: u32 = get_string(&values[5])
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
-        let parent_flow_id: Option<Uuid> = get_string(&values[6])
-            .filter(|s| !s.is_empty())
-            .and_then(|s| Uuid::parse_str(&s).ok());
-
-        let signal_token: Option<String> = get_string(&values[7]).filter(|s| !s.is_empty());
-
-        let updated_at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_else(Utc::now);
-
-        debug!(
-            "Worker {} dequeued flow: task_id={}, flow_id={}, flow_type={}",
-            worker_id,
-            &task_id.to_string()[..8],
-            &flow_id.to_string()[..8],
-            &flow_type
-        );
-
-        Ok(Some(super::ScheduledFlow {
-            task_id,
-            flow_id,
-            flow_type,
-            flow_data,
-            status: super::TaskStatus::Running,
-            locked_by: Some(worker_id.to_string()),
-            created_at,
-            updated_at,
-            retry_count,
-            error_message: None,
-            scheduled_for: None,
-            parent_flow_id,
-            signal_token,
-        }))
+        }
     }
-
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let flow_key = Self::flow_key(task_id);
-        let now = Utc::now().timestamp();
 
-        // Get worker_id to remove from correct processing list
-        let locked_by: Option<String> = conn
-            .hget(&flow_key, "locked_by")
+        // Get the stream entry_id for XACK
+        let entry_id: Option<String> = conn
+            .hget(&flow_key, "stream_entry_id")
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        let mut pipe = redis::pipe();
-        pipe.atomic()
-            .hset(&flow_key, "status", status.as_str())
-            .hset(&flow_key, "updated_at", now)
-            .zrem("ergon:running", task_id.to_string())
-            // Set TTL on completed flow for automatic cleanup
-            .expire(&flow_key, self.completed_ttl);
+        // Acknowledge the stream message to remove from PEL
+        if let Some(entry_id) = entry_id {
+            let acked: u64 = conn
+                .xack(STREAM_KEY, CONSUMER_GROUP, &[&entry_id])
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        // Remove from worker's processing list (reliable queue pattern)
-        if let Some(worker_id) = locked_by {
-            let processing_key = format!("ergon:processing:{}", worker_id);
-            pipe.lrem(&processing_key, 1, task_id.to_string());
+            if acked > 0 {
+                debug!("Acknowledged stream entry {} for task {}", entry_id, &task_id.to_string()[..8]);
+            } else {
+                warn!("Failed to acknowledge stream entry {} (already acked?)", entry_id);
+            }
+        } else {
+            // No entry_id means this was a delayed task that hasn't been dequeued from stream yet
+            debug!("No stream_entry_id for task {}, likely a delayed/retried flow", task_id);
         }
 
-        let _: () = pipe
+        // Update flow status and set TTL
+        let now = Utc::now().timestamp();
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&flow_key, "status", status.as_str())
+            .hset(&flow_key, "updated_at", now)
+            .hdel(&flow_key, "stream_entry_id") // Clean up
+            .expire(&flow_key, self.completed_ttl)
             .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
@@ -1030,7 +1036,22 @@ impl ExecutionLog for RedisExecutionLog {
         let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
         let scheduled_ts = scheduled_for.timestamp_millis();
 
-        // Update flow and add to delayed queue
+        // Acknowledge the failed stream attempt (if it exists)
+        let entry_id: Option<String> = conn
+            .hget(&flow_key, "stream_entry_id")
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if let Some(entry_id) = entry_id {
+            // XACK to remove from PEL - we're handling the retry manually via delayed queue
+            let _: u64 = conn
+                .xack(STREAM_KEY, CONSUMER_GROUP, &[&entry_id])
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+            debug!("Acknowledged failed stream entry {} for retry", entry_id);
+        }
+
+        // Update flow and add to delayed queue for retry
         let _: () = redis::pipe()
             .atomic()
             .hincr(&flow_key, "retry_count", 1)
@@ -1038,9 +1059,9 @@ impl ExecutionLog for RedisExecutionLog {
             .hset(&flow_key, "status", "Pending")
             .hset(&flow_key, "scheduled_for", scheduled_ts)
             .hdel(&flow_key, "locked_by")
+            .hdel(&flow_key, "stream_entry_id") // Clean up
             .hset(&flow_key, "updated_at", Utc::now().timestamp())
-            .zrem("ergon:running", task_id.to_string())
-            // Add to delayed queue
+            // Add to delayed queue for retry after delay
             .zadd("ergon:queue:delayed", task_id.to_string(), scheduled_ts)
             .query_async(&mut *conn)
             .await
@@ -1340,23 +1361,38 @@ impl ExecutionLog for RedisExecutionLog {
         // The dequeue Lua script will handle checking if task is already in queue
         match status.as_deref() {
             Some("SUSPENDED") | Some("RUNNING") => {
-                // Resume the flow by moving to PENDING and adding to queue
+                // Resume the flow by updating status and re-enqueuing to stream
                 let _: () = redis::pipe()
                     .atomic()
                     .hset(&flow_key, "status", "PENDING")
                     .hdel(&flow_key, "locked_by")
+                    .hdel(&flow_key, "stream_entry_id") // Clear old entry_id
                     .hset(&flow_key, "updated_at", now)
-                    .zrem("ergon:running", task_id.to_string())
-                    // Use LPUSH to add to front for priority (child just completed)
-                    .lpush("ergon:queue:pending", task_id.to_string())
                     .query_async(&mut *conn)
                     .await
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-                debug!(
-                    "Resumed flow: flow_id={}, task_id={}, was_status={:?}",
-                    flow_id, task_id, status
-                );
+                // Re-enqueue to stream
+                match self.reenqueue_to_stream(&mut conn, task_id).await {
+                    Ok(()) => {
+                        info!(
+                            "✓ Resumed flow via stream: flow_id={}, task_id={}",
+                            &flow_id.to_string()[..8], &task_id.to_string()[..8]
+                        );
+
+                        // Wake up one waiting worker (if any)
+                        if let Some(ref notify) = self.work_notify {
+                            notify.notify_one();
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "✗ Failed to re-enqueue flow {}: {}",
+                            &task_id.to_string()[..8], e
+                        );
+                        return Err(e);
+                    }
+                }
             }
             Some("COMPLETE") | Some("FAILED") => {
                 // Already completed - this is fine (duplicate signal/child completion)
@@ -1552,144 +1588,149 @@ impl ExecutionLog for RedisExecutionLog {
         let mut conn = self.get_connection().await?;
         let now = Utc::now().timestamp_millis();
 
-        // Use Lua script to atomically find and move ready tasks
-        // This prevents race conditions where multiple workers try to move the same tasks
-        let script = redis::Script::new(
-            r#"
-            local ready = redis.call('ZRANGEBYSCORE', 'ergon:queue:delayed', 0, ARGV[1], 'LIMIT', 0, 100)
-            local count = 0
-            for _, task_id in ipairs(ready) do
-                redis.call('ZREM', 'ergon:queue:delayed', task_id)
-                redis.call('RPUSH', 'ergon:queue:pending', task_id)
-                count = count + 1
-            end
-            return count
-            "#,
-        );
-
-        let count: u64 = script
-            .arg(now)
-            .invoke_async(&mut *conn)
+        // Get ready tasks from delayed queue
+        let ready_tasks: Vec<String> = conn
+            .zrangebyscore_limit("ergon:queue:delayed", 0, now, 0, 100)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        if count > 0 {
-            debug!("Moved {} delayed tasks to pending queue", count);
+        let mut moved_count = 0u64;
+
+        for task_id_str in ready_tasks {
+            let task_id = match Uuid::parse_str(&task_id_str) {
+                Ok(id) => id,
+                Err(_) => {
+                    warn!("Invalid task_id in delayed queue: {}", task_id_str);
+                    continue;
+                }
+            };
+
+            // Remove from delayed queue first (atomic with ZREM)
+            let removed: i64 = conn
+                .zrem("ergon:queue:delayed", &task_id_str)
+                .await
+                .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+            if removed > 0 {
+                // Re-enqueue to stream
+                match self.reenqueue_to_stream(&mut conn, task_id).await {
+                    Ok(()) => {
+                        moved_count += 1;
+                        debug!("Moved delayed task {} to stream", &task_id.to_string()[..8]);
+                    }
+                    Err(e) => {
+                        warn!("Failed to re-enqueue task {}: {}", task_id, e);
+                        // Put it back in delayed queue to retry later
+                        let _: () = conn
+                            .zadd("ergon:queue:delayed", &task_id_str, now + 1000)
+                            .await
+                            .map_err(|e| StorageError::Connection(e.to_string()))?;
+                    }
+                }
+            }
         }
-        Ok(count)
+
+        if moved_count > 0 {
+            debug!("Moved {} delayed tasks to stream", moved_count);
+
+            // Wake up workers for the moved tasks
+            if let Some(ref notify) = self.work_notify {
+                for _ in 0..moved_count {
+                    notify.notify_one();
+                }
+            }
+        }
+        Ok(moved_count)
     }
 
     async fn recover_stale_locks(&self) -> Result<u64> {
         let mut conn = self.get_connection().await?;
-        let now = Utc::now().timestamp_millis();
-        let stale_cutoff = now - self.stale_lock_timeout_ms;
 
-        // Find flows that started before the cutoff (in ergon:running)
-        let stale_tasks: Vec<String> = conn
-            .zrangebyscore("ergon:running", 0, stale_cutoff)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
+        // Use XAUTOCLAIM to automatically claim stale messages from the PEL
+        // This is built into Redis Streams and handles all the complexity
+        let mut total_claimed = 0u64;
+        let mut cursor = "0-0".to_string();
 
-        let mut recovered_count = stale_tasks.len() as u64;
+        // We use a dedicated "recovery" consumer name to claim messages
+        // This prevents interference with actual workers
+        let recovery_consumer = "recovery-agent";
 
-        for task_id_str in &stale_tasks {
-            let task_id = match Uuid::parse_str(task_id_str) {
-                Ok(id) => id,
-                Err(_) => continue,
+        loop {
+            // XAUTOCLAIM: claim messages idle for more than stale_message_timeout_ms
+            let result: redis::Value = redis::cmd("XAUTOCLAIM")
+                .arg(STREAM_KEY)
+                .arg(CONSUMER_GROUP)
+                .arg(recovery_consumer)
+                .arg(self.stale_message_timeout_ms)
+                .arg(&cursor)
+                .arg("COUNT")
+                .arg(10) // Process in batches
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| StorageError::Connection(format!("XAUTOCLAIM failed: {}", e)))?;
+
+            // Parse the result: [next_cursor, [claimed_messages], [deleted_ids]]
+            let (next_cursor, claimed_entries) = match result {
+                redis::Value::Array(arr) if arr.len() >= 2 => {
+                    let next_cursor = match &arr[0] {
+                        redis::Value::BulkString(bytes) => String::from_utf8(bytes.clone()).unwrap_or_else(|_| "0-0".to_string()),
+                        _ => "0-0".to_string(),
+                    };
+                    
+                    let entries = match &arr[1] {
+                        redis::Value::Array(entries) => entries.clone(),
+                        _ => vec![],
+                    };
+                    
+                    (next_cursor, entries)
+                }
+                _ => {
+                    warn!("Unexpected XAUTOCLAIM response format");
+                    break;
+                }
             };
 
-            let flow_key = Self::flow_key(task_id);
-
-            // Get worker_id to remove from processing list
-            let locked_by: Option<String> = conn
-                .hget(&flow_key, "locked_by")
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-            let mut pipe = redis::pipe();
-            pipe.atomic()
-                .hset(&flow_key, "status", "PENDING")
-                .hdel(&flow_key, "locked_by")
-                .zrem("ergon:running", task_id_str)
-                .rpush("ergon:queue:pending", task_id_str);
-
-            // Remove from worker's processing list (reliable queue pattern)
-            if let Some(worker_id) = locked_by {
-                let processing_key = format!("ergon:processing:{}", worker_id);
-                pipe.lrem(&processing_key, 1, task_id_str);
-            }
-
-            let _: () = pipe
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-            warn!("Recovered stale lock for flow: {}", task_id);
-        }
-
-        // Also scan all processing lists for orphaned tasks (tasks in processing but not in running)
-        // This handles the LPOP loss scenario where task was dequeued but never marked RUNNING
-        let mut cursor = 0u64;
-        loop {
-            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                .cursor_arg(cursor)
-                .arg("MATCH")
-                .arg("ergon:processing:*")
-                .arg("COUNT")
-                .arg(100)
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-            cursor = new_cursor;
-
-            for processing_key in keys {
-                // Get all tasks in this processing list
-                let tasks: Vec<String> = conn
-                    .lrange(&processing_key, 0, -1)
-                    .await
-                    .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-                for task_id_str in tasks {
-                    // Check if task is in running set
-                    let score: Option<i64> = conn
-                        .zscore("ergon:running", &task_id_str)
-                        .await
-                        .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-                    // If not in running set, it's orphaned - move back to pending
-                    if score.is_none() {
-                        let task_id = match Uuid::parse_str(&task_id_str) {
-                            Ok(id) => id,
-                            Err(_) => continue,
-                        };
-
-                        let flow_key = Self::flow_key(task_id);
-
-                        let _: () = redis::pipe()
-                            .atomic()
-                            .hset(&flow_key, "status", "PENDING")
-                            .lrem(&processing_key, 1, &task_id_str)
-                            .rpush("ergon:queue:pending", &task_id_str)
-                            .query_async(&mut *conn)
-                            .await
-                            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-                        warn!("Recovered orphaned task from processing list: {}", task_id);
-                        recovered_count += 1;
+            // Process claimed messages
+            for entry_value in &claimed_entries {
+                if let redis::Value::Array(entry_arr) = entry_value {
+                    if entry_arr.len() >= 2 {
+                        // entry_arr[0] is the entry ID
+                        // entry_arr[1] is the field-value pairs
+                        total_claimed += 1;
+                        
+                        // Immediately acknowledge these - the recovery agent doesn't process,
+                        // it just re-enqueues back to the stream for a real worker to pick up
+                        if let redis::Value::BulkString(entry_id_bytes) = &entry_arr[0] {
+                            if let Ok(entry_id) = String::from_utf8(entry_id_bytes.clone()) {
+                                // Acknowledge to remove from PEL
+                                let _: u64 = conn
+                                    .xack(STREAM_KEY, CONSUMER_GROUP, &[&entry_id])
+                                    .await
+                                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+                                
+                                debug!("Auto-claimed and re-acknowledged stale message {}", entry_id);
+                                
+                                // The message is still in the stream, so it will be picked up
+                                // by XREADGROUP with ID "0" (pending messages)
+                            }
+                        }
                     }
                 }
             }
 
-            if cursor == 0 {
+            cursor = next_cursor;
+
+            // If cursor is back to "0-0", we've scanned everything
+            if cursor == "0-0" {
                 break;
             }
         }
 
-        if recovered_count > 0 {
-            info!("Recovered {} stale/orphaned flows", recovered_count);
+        if total_claimed > 0 {
+            info!("Recovered {} stale messages via XAUTOCLAIM", total_claimed);
         }
-        Ok(recovered_count)
+
+        Ok(total_claimed)
     }
 
     async fn store_step_child_mapping(

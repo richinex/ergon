@@ -20,6 +20,7 @@
 //! ```
 
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -324,6 +325,18 @@ pub trait ExecutionLog: Send + Sync {
         Err(StorageError::Unsupported(
             "flow resume not implemented for this storage backend".to_string(),
         ))
+    }
+
+    /// Returns a reference to the work notification handle.
+    ///
+    /// Workers should use this notify to wait for work instead of sleeping.
+    /// The storage backend signals this notify when new work becomes available.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `None` by default for storage backends that don't support notifications.
+    fn work_notify(&self) -> Option<&Arc<tokio::sync::Notify>> {
+        None
     }
 
     // ===== External Signal Operations =====
