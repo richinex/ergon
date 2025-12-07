@@ -49,10 +49,12 @@
 //!     let flow = MyFlow { name: "World".to_string() };
 //!     let id = Uuid::new_v4();
 //!
-//!     let instance = FlowInstance::new(id, flow, storage);
-//!     let result = instance.execute(|f| f.run()).await?;
-//!
-//!     println!("Result: {}", result);
+//!     let executor = Executor::new(id, flow, storage);
+//!     match executor.execute(|f| Box::pin(f.run())).await {
+//!         FlowOutcome::Completed(Ok(result)) => println!("Result: {}", result),
+//!         FlowOutcome::Completed(Err(e)) => eprintln!("Flow failed: {}", e),
+//!         FlowOutcome::Suspended(reason) => println!("Flow suspended: {:?}", reason),
+//!     }
 //!     Ok(())
 //! }
 //! ```

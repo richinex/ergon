@@ -50,7 +50,7 @@ pub async fn schedule_timer(duration: Duration) -> Result<()> {
 /// ```ignore
 /// #[step]
 /// async fn wait_for_trial_expiry(&self) -> Result<(), ExecutionError> {
-///     schedule_timer_named(Duration::from_days(14), "trial-expiry").await?;
+///     schedule_timer_named(Duration::from_secs(14 * 24 * 3600), "trial-expiry").await?;
 ///     Ok(())
 /// }
 /// ```
