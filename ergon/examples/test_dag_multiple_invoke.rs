@@ -153,8 +153,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let task_id = scheduler.schedule(order, Uuid::new_v4()).await?;
     println!("[{}] Scheduled: {}\n", ts(), &task_id.to_string()[..8]);
 
-    let worker = Worker::new(storage.clone(), "worker")
-        .with_poll_interval(Duration::from_millis(50));
+    let worker =
+        Worker::new(storage.clone(), "worker").with_poll_interval(Duration::from_millis(50));
 
     worker.register(|f: Arc<Order>| f.process()).await;
     worker.register(|f: Arc<PaymentFlow>| f.process()).await;

@@ -17,9 +17,18 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum ShippingResult {
-    Success { tracking: String, eta_days: u32 },
-    Delayed { tracking: String, reason: String, new_eta_days: u32 },
-    Failed { reason: String },
+    Success {
+        tracking: String,
+        eta_days: u32,
+    },
+    Delayed {
+        tracking: String,
+        reason: String,
+        new_eta_days: u32,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 // =============================================================================
@@ -56,7 +65,11 @@ impl Order {
             ShippingResult::Success { tracking, eta_days } => {
                 println!("[{}] shipped: {} (ETA: {} days)", ts(), tracking, eta_days);
             }
-            ShippingResult::Delayed { tracking, reason, new_eta_days } => {
+            ShippingResult::Delayed {
+                tracking,
+                reason,
+                new_eta_days,
+            } => {
                 println!(
                     "[{}] delayed: {} - {} (new ETA: {} days)",
                     ts(),

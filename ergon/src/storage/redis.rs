@@ -50,8 +50,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
 use redis::{
-    AsyncCommands,
     streams::{StreamId, StreamReadOptions, StreamReadReply},
+    AsyncCommands,
 };
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -218,14 +218,17 @@ impl RedisExecutionLog {
             .arg("CREATE")
             .arg(STREAM_KEY)
             .arg(CONSUMER_GROUP)
-            .arg("0")        // Start from beginning
+            .arg("0") // Start from beginning
             .arg("MKSTREAM") // Create stream if it doesn't exist
             .query_async(&mut *conn)
             .await;
 
         match result {
             Ok(()) => {
-                debug!("Created consumer group '{}' for stream '{}'", CONSUMER_GROUP, STREAM_KEY);
+                debug!(
+                    "Created consumer group '{}' for stream '{}'",
+                    CONSUMER_GROUP, STREAM_KEY
+                );
                 Ok(())
             }
             Err(e) if e.to_string().contains("BUSYGROUP") => {
@@ -261,8 +264,12 @@ impl RedisExecutionLog {
     }
 
     /// Helper to re-enqueue a task to the stream from its flow metadata.
-    async fn reenqueue_to_stream(&self, conn: &mut deadpool_redis::Connection, task_id: Uuid) -> Result<()> {
-        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    async fn reenqueue_to_stream(
+        &self,
+        conn: &mut deadpool_redis::Connection,
+        task_id: Uuid,
+    ) -> Result<()> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
         let flow_key = Self::flow_key(task_id);
 
@@ -280,10 +287,12 @@ impl RedisExecutionLog {
 
         let flow_id = get_string("flow_id")?;
         let flow_type = get_string("flow_type")?;
-        let flow_data = data.get("flow_data")
+        let flow_data = data
+            .get("flow_data")
             .ok_or_else(|| StorageError::Connection("Missing flow_data".to_string()))?;
         let flow_data_b64 = BASE64.encode(flow_data);
-        let created_at = get_string("created_at").unwrap_or_else(|_| Utc::now().timestamp().to_string());
+        let created_at =
+            get_string("created_at").unwrap_or_else(|_| Utc::now().timestamp().to_string());
         let retry_count = get_string("retry_count").unwrap_or_else(|_| "0".to_string());
 
         let mut fields: Vec<(&str, String)> = vec![
@@ -317,14 +326,20 @@ impl RedisExecutionLog {
             .arg(&fields)
             .query_async(&mut **conn)
             .await
-            .map_err(|e| StorageError::Connection(format!("XADD failed during re-enqueue: {}", e)))?;
+            .map_err(|e| {
+                StorageError::Connection(format!("XADD failed during re-enqueue: {}", e))
+            })?;
 
         Ok(())
     }
 
     /// Helper to parse a stream entry into a ScheduledFlow.
-    fn parse_stream_entry(&self, entry: &StreamId, worker_id: &str) -> Result<super::ScheduledFlow> {
-        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    fn parse_stream_entry(
+        &self,
+        entry: &StreamId,
+        worker_id: &str,
+    ) -> Result<super::ScheduledFlow> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
         // Helper to extract string from redis::Value
         let get_string = |v: &redis::Value| -> Option<String> {
@@ -340,46 +355,57 @@ impl RedisExecutionLog {
         let map = &entry.map;
 
         // Parse required fields
-        let task_id = map.get("task_id")
+        let task_id = map
+            .get("task_id")
             .and_then(get_string)
             .and_then(|s| Uuid::parse_str(&s).ok())
-            .ok_or_else(|| StorageError::Connection("Missing or invalid task_id in stream entry".to_string()))?;
+            .ok_or_else(|| {
+                StorageError::Connection("Missing or invalid task_id in stream entry".to_string())
+            })?;
 
-        let flow_id = map.get("flow_id")
+        let flow_id = map
+            .get("flow_id")
             .and_then(get_string)
             .and_then(|s| Uuid::parse_str(&s).ok())
-            .ok_or_else(|| StorageError::Connection("Missing or invalid flow_id in stream entry".to_string()))?;
+            .ok_or_else(|| {
+                StorageError::Connection("Missing or invalid flow_id in stream entry".to_string())
+            })?;
 
-        let flow_type = map.get("flow_type")
-            .and_then(get_string)
-            .ok_or_else(|| StorageError::Connection("Missing flow_type in stream entry".to_string()))?;
+        let flow_type = map.get("flow_type").and_then(get_string).ok_or_else(|| {
+            StorageError::Connection("Missing flow_type in stream entry".to_string())
+        })?;
 
-        let flow_data_b64 = map.get("flow_data")
-            .and_then(get_string)
-            .ok_or_else(|| StorageError::Connection("Missing flow_data in stream entry".to_string()))?;
+        let flow_data_b64 = map.get("flow_data").and_then(get_string).ok_or_else(|| {
+            StorageError::Connection("Missing flow_data in stream entry".to_string())
+        })?;
 
-        let flow_data = BASE64.decode(&flow_data_b64)
+        let flow_data = BASE64
+            .decode(&flow_data_b64)
             .map_err(|e| StorageError::Connection(format!("Failed to decode flow_data: {}", e)))?;
 
-        let created_at_ts: i64 = map.get("created_at")
+        let created_at_ts: i64 = map
+            .get("created_at")
             .and_then(get_string)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let created_at = chrono::DateTime::from_timestamp(created_at_ts, 0)
-            .unwrap_or_else(Utc::now);
+        let created_at =
+            chrono::DateTime::from_timestamp(created_at_ts, 0).unwrap_or_else(Utc::now);
 
-        let retry_count: u32 = map.get("retry_count")
+        let retry_count: u32 = map
+            .get("retry_count")
             .and_then(get_string)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
         // Parse optional fields
-        let parent_flow_id: Option<Uuid> = map.get("parent_flow_id")
+        let parent_flow_id: Option<Uuid> = map
+            .get("parent_flow_id")
             .and_then(get_string)
             .filter(|s| !s.is_empty())
             .and_then(|s| Uuid::parse_str(&s).ok());
 
-        let signal_token: Option<String> = map.get("signal_token")
+        let signal_token: Option<String> = map
+            .get("signal_token")
             .and_then(get_string)
             .filter(|s| !s.is_empty());
 
@@ -842,7 +868,7 @@ impl ExecutionLog for RedisExecutionLog {
         } else {
             // Immediate execution - use Redis Streams for atomic enqueue
             // XADD writes all fields atomically in a single operation
-            use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
             let flow_data_b64 = BASE64.encode(&flow.flow_data);
             let flow_key = Self::flow_key(task_id);
 
@@ -905,7 +931,10 @@ impl ExecutionLog for RedisExecutionLog {
                 .await
                 .map_err(|e| StorageError::Connection(format!("XADD failed: {}", e)))?;
 
-            debug!("Enqueued flow {} to stream with entry ID {}", task_id, entry_id);
+            debug!(
+                "Enqueued flow {} to stream with entry ID {}",
+                task_id, entry_id
+            );
 
             // Wake up one waiting worker (if any)
             if let Some(ref notify) = self.work_notify {
@@ -926,10 +955,7 @@ impl ExecutionLog for RedisExecutionLog {
             .count(1)
             .block(1000); // Block for 1 second if no messages
 
-        let reply: StreamReadReply = match conn
-            .xread_options(&[STREAM_KEY], &[">"], &opts)
-            .await
-        {
+        let reply: StreamReadReply = match conn.xread_options(&[STREAM_KEY], &[">"], &opts).await {
             Ok(r) => r,
             Err(e) => {
                 // If error is about missing group, ensure it exists and retry
@@ -939,9 +965,14 @@ impl ExecutionLog for RedisExecutionLog {
                     // Retry once
                     conn.xread_options(&[STREAM_KEY], &[">"], &opts)
                         .await
-                        .map_err(|e| StorageError::Connection(format!("XREADGROUP failed: {}", e)))?
+                        .map_err(|e| {
+                            StorageError::Connection(format!("XREADGROUP failed: {}", e))
+                        })?
                 } else {
-                    return Err(StorageError::Connection(format!("XREADGROUP failed: {}", e)));
+                    return Err(StorageError::Connection(format!(
+                        "XREADGROUP failed: {}",
+                        e
+                    )));
                 }
             }
         };
@@ -974,7 +1005,10 @@ impl ExecutionLog for RedisExecutionLog {
             }
             Err(e) => {
                 // Failed to parse - acknowledge to remove from PEL
-                warn!("Failed to parse stream entry {}: {}, acknowledging to skip", entry_id, e);
+                warn!(
+                    "Failed to parse stream entry {}: {}, acknowledging to skip",
+                    entry_id, e
+                );
                 let _: u64 = conn
                     .xack(STREAM_KEY, CONSUMER_GROUP, &[&entry_id])
                     .await
@@ -1001,13 +1035,23 @@ impl ExecutionLog for RedisExecutionLog {
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
             if acked > 0 {
-                debug!("Acknowledged stream entry {} for task {}", entry_id, &task_id.to_string()[..8]);
+                debug!(
+                    "Acknowledged stream entry {} for task {}",
+                    entry_id,
+                    &task_id.to_string()[..8]
+                );
             } else {
-                warn!("Failed to acknowledge stream entry {} (already acked?)", entry_id);
+                warn!(
+                    "Failed to acknowledge stream entry {} (already acked?)",
+                    entry_id
+                );
             }
         } else {
             // No entry_id means this was a delayed task that hasn't been dequeued from stream yet
-            debug!("No stream_entry_id for task {}, likely a delayed/retried flow", task_id);
+            debug!(
+                "No stream_entry_id for task {}, likely a delayed/retried flow",
+                task_id
+            );
         }
 
         // Update flow status and set TTL
@@ -1377,7 +1421,8 @@ impl ExecutionLog for RedisExecutionLog {
                     Ok(()) => {
                         info!(
                             "✓ Resumed flow via stream: flow_id={}, task_id={}",
-                            &flow_id.to_string()[..8], &task_id.to_string()[..8]
+                            &flow_id.to_string()[..8],
+                            &task_id.to_string()[..8]
                         );
 
                         // Wake up one waiting worker (if any)
@@ -1388,7 +1433,8 @@ impl ExecutionLog for RedisExecutionLog {
                     Err(e) => {
                         warn!(
                             "✗ Failed to re-enqueue flow {}: {}",
-                            &task_id.to_string()[..8], e
+                            &task_id.to_string()[..8],
+                            e
                         );
                         return Err(e);
                     }
@@ -1673,15 +1719,17 @@ impl ExecutionLog for RedisExecutionLog {
             let (next_cursor, claimed_entries) = match result {
                 redis::Value::Array(arr) if arr.len() >= 2 => {
                     let next_cursor = match &arr[0] {
-                        redis::Value::BulkString(bytes) => String::from_utf8(bytes.clone()).unwrap_or_else(|_| "0-0".to_string()),
+                        redis::Value::BulkString(bytes) => {
+                            String::from_utf8(bytes.clone()).unwrap_or_else(|_| "0-0".to_string())
+                        }
                         _ => "0-0".to_string(),
                     };
-                    
+
                     let entries = match &arr[1] {
                         redis::Value::Array(entries) => entries.clone(),
                         _ => vec![],
                     };
-                    
+
                     (next_cursor, entries)
                 }
                 _ => {
@@ -1697,7 +1745,7 @@ impl ExecutionLog for RedisExecutionLog {
                         // entry_arr[0] is the entry ID
                         // entry_arr[1] is the field-value pairs
                         total_claimed += 1;
-                        
+
                         // Immediately acknowledge these - the recovery agent doesn't process,
                         // it just re-enqueues back to the stream for a real worker to pick up
                         if let redis::Value::BulkString(entry_id_bytes) = &entry_arr[0] {
@@ -1707,9 +1755,12 @@ impl ExecutionLog for RedisExecutionLog {
                                     .xack(STREAM_KEY, CONSUMER_GROUP, &[&entry_id])
                                     .await
                                     .map_err(|e| StorageError::Connection(e.to_string()))?;
-                                
-                                debug!("Auto-claimed and re-acknowledged stale message {}", entry_id);
-                                
+
+                                debug!(
+                                    "Auto-claimed and re-acknowledged stale message {}",
+                                    entry_id
+                                );
+
                                 // The message is still in the stream, so it will be picked up
                                 // by XREADGROUP with ID "0" (pending messages)
                             }
