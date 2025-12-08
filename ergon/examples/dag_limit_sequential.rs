@@ -1,6 +1,7 @@
-//! Complex DAG: Push Ergon to the Limit
+//! Complex DAG: Sequential Execution
 //!
-//! A computation DAG with multiple fan-out/fan-in points and cross-branch dependencies.
+//! A computation DAG executed sequentially (one step at a time).
+//! This demonstrates the difference between parallel DAG execution and sequential steps.
 //!
 //! ```text
 //!                           ┌─── mul_2 ────────────────────────────────────────────┐
@@ -20,9 +21,7 @@
 //! ```
 //!
 //! Expected: final = 1670
-//! Critical path: fetch → mul/square → cross_mul → cross_add → aggregate → final
-//! Expected time: ~300ms (6 levels × 50ms)
-//! Sequential would be: ~500ms (10 steps × 50ms)
+//! Sequential execution: 10 steps × 50ms = ~500ms
 
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -31,11 +30,11 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
-struct ComplexDag {
+struct ComplexDagSequential {
     id: String,
 }
 
-impl ComplexDag {
+impl ComplexDagSequential {
     // =========================================================================
     // Level 0: Start
     // =========================================================================
@@ -43,11 +42,12 @@ impl ComplexDag {
     #[step]
     async fn start(self: Arc<Self>) -> Result<(), String> {
         println!("[L0] start");
+        tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(())
     }
 
     // =========================================================================
-    // Level 1: Fetch (fan-out from start)
+    // Level 1: Fetch (sequential instead of parallel)
     // =========================================================================
 
     #[step(depends_on = "start")]
@@ -58,7 +58,7 @@ impl ComplexDag {
         Ok(10)
     }
 
-    #[step(depends_on = "start")]
+    #[step(depends_on = "fetch_a")]
     async fn fetch_b(self: Arc<Self>) -> Result<i64, String> {
         println!("[L1] fetch_b starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -67,7 +67,7 @@ impl ComplexDag {
     }
 
     // =========================================================================
-    // Level 2: Compute (fan-out from fetch_a and fetch_b)
+    // Level 2: Compute (sequential instead of parallel)
     // =========================================================================
 
     #[step(depends_on = "fetch_a", inputs(a = "fetch_a"))]
@@ -79,7 +79,7 @@ impl ComplexDag {
         Ok(result)
     }
 
-    #[step(depends_on = "fetch_a", inputs(a = "fetch_a"))]
+    #[step(depends_on = "mul_2", inputs(a = "fetch_a"))]
     async fn mul_3(self: Arc<Self>, a: i64) -> Result<i64, String> {
         println!("[L2] mul_3 starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -88,7 +88,7 @@ impl ComplexDag {
         Ok(result)
     }
 
-    #[step(depends_on = "fetch_b", inputs(b = "fetch_b"))]
+    #[step(depends_on = "mul_3", inputs(b = "fetch_b"))]
     async fn square(self: Arc<Self>, b: i64) -> Result<i64, String> {
         println!("[L2] square starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -97,7 +97,7 @@ impl ComplexDag {
         Ok(result)
     }
 
-    #[step(depends_on = "fetch_b", inputs(b = "fetch_b"))]
+    #[step(depends_on = "square", inputs(b = "fetch_b"))]
     async fn cube(self: Arc<Self>, b: i64) -> Result<i64, String> {
         println!("[L2] cube starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -107,11 +107,11 @@ impl ComplexDag {
     }
 
     // =========================================================================
-    // Level 3: Cross-branch multiplication (fan-in from mul_3, square)
+    // Level 3: Cross-branch multiplication
     // =========================================================================
 
     #[step(
-        depends_on = ["mul_3", "square"],
+        depends_on = "cube",
         inputs(m = "mul_3", s = "square")
     )]
     async fn cross_mul(self: Arc<Self>, m: i64, s: i64) -> Result<i64, String> {
@@ -123,11 +123,11 @@ impl ComplexDag {
     }
 
     // =========================================================================
-    // Level 4: Cross-branch addition (fan-in from cross_mul, square)
+    // Level 4: Cross-branch addition
     // =========================================================================
 
     #[step(
-        depends_on = ["cross_mul", "square"],
+        depends_on = "cross_mul",
         inputs(cm = "cross_mul", s = "square")
     )]
     async fn cross_add(self: Arc<Self>, cm: i64, s: i64) -> Result<i64, String> {
@@ -139,11 +139,11 @@ impl ComplexDag {
     }
 
     // =========================================================================
-    // Level 5: Aggregate (fan-in from cross_mul, cross_add, cube)
+    // Level 5: Aggregate
     // =========================================================================
 
     #[step(
-        depends_on = ["cross_mul", "cross_add", "cube"],
+        depends_on = "cross_add",
         inputs(cm = "cross_mul", ca = "cross_add", c = "cube")
     )]
     async fn aggregate(self: Arc<Self>, cm: i64, ca: i64, c: i64) -> Result<i64, String> {
@@ -155,11 +155,11 @@ impl ComplexDag {
     }
 
     // =========================================================================
-    // Level 6: Final (fan-in from mul_2, aggregate)
+    // Level 6: Final
     // =========================================================================
 
     #[step(
-        depends_on = ["mul_2", "aggregate"],
+        depends_on = "aggregate",
         inputs(m2 = "mul_2", agg = "aggregate")
     )]
     async fn final_result(self: Arc<Self>, m2: i64, agg: i64) -> Result<i64, String> {
@@ -172,6 +172,7 @@ impl ComplexDag {
 
     #[flow]
     async fn run(self: Arc<Self>) -> Result<i64, String> {
+        // Sequential execution using dag! macro, but dependencies force sequential order
         dag! {
             self.register_start();
             self.register_fetch_a();
@@ -191,7 +192,7 @@ impl ComplexDag {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════════════════╗");
-    println!("║              Complex DAG: Fan-out / Fan-in / Cross-branch             ║");
+    println!("║           Complex DAG: SEQUENTIAL Execution (one at a time)          ║");
     println!("╚═══════════════════════════════════════════════════════════════════════╝\n");
 
     println!("DAG Structure:");
@@ -211,14 +212,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("                               (125)\n");
 
     println!("Expected: final = 1670");
-    println!("Critical path: 6 levels × 50ms = ~300ms");
-    println!("Sequential would be: 10 steps × 50ms = ~500ms\n");
+    println!("Sequential execution: 10 steps × 50ms = ~500ms\n");
     println!("═══════════════════════════════════════════════════════════════════════════\n");
 
     let storage = Arc::new(InMemoryExecutionLog::new());
     storage.reset().await?;
-    let workflow = Arc::new(ComplexDag {
-        id: "complex".into(),
+    let workflow = Arc::new(ComplexDagSequential {
+        id: "complex_sequential".into(),
     });
 
     let start = Instant::now();
@@ -254,36 +254,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("├─────────────────────────────────────────┤");
     println!("│ Timing                                  │");
     println!("├─────────────────────────────────────────┤");
-    println!("│ Actual:     {:>10.2?}                 │", elapsed);
-    println!("│ Sequential: {:>10}                 │", "~500ms");
-    println!(
-        "│ Speedup:    {:>10.2}x                │",
-        500.0 / elapsed.as_millis() as f64
-    );
+    println!("│ Sequential: {:>10.2?}                 │", elapsed);
     println!("└─────────────────────────────────────────┘");
+
+    println!("\n💡 Key Insight:");
+    println!("   Sequential execution runs each step one at a time,");
+    println!("   waiting for each to complete before starting the next.");
 
     Ok(())
 }
-// ```
 
 // **Expected output:**
 // ```
 // ╔═══════════════════════════════════════════════════════════════════════╗
-// ║              Complex DAG: Fan-out / Fan-in / Cross-branch             ║
+// ║           Complex DAG: SEQUENTIAL Execution (one at a time)          ║
 // ╚═══════════════════════════════════════════════════════════════════════╝
-
+//
 // [L0] start
 // [L1] fetch_a starting
-// [L1] fetch_b starting        ← parallel
 // [L1] fetch_a = 10
+// [L1] fetch_b starting        ← waits for fetch_a (sequential)
 // [L1] fetch_b = 5
 // [L2] mul_2 starting
-// [L2] mul_3 starting
-// [L2] square starting
-// [L2] cube starting           ← all 4 parallel
 // [L2] mul_2 = 10 × 2 = 20
+// [L2] mul_3 starting          ← waits for mul_2 (sequential)
 // [L2] mul_3 = 10 × 3 = 30
+// [L2] square starting
 // [L2] square = 5² = 25
+// [L2] cube starting           ← waits for square (sequential)
 // [L2] cube = 5³ = 125
 // [L3] cross_mul starting
 // [L3] cross_mul = 30 × 25 = 750
@@ -293,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // [L5] aggregate = 750 + 775 + 125 = 1650
 // [L6] final starting
 // [L6] final = 20 + 1650 = 1670
-
+//
 // ┌─────────────────────────────────────────┐
 // │ Verification                            │
 // ├─────────────────────────────────────────┤
@@ -303,7 +301,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ├─────────────────────────────────────────┤
 // │ Timing                                  │
 // ├─────────────────────────────────────────┤
-// │ Actual:     ~300ms                      │
 // │ Sequential: ~500ms                      │
-// │ Speedup:    ~1.67x                      │
 // └─────────────────────────────────────────┘
+//
+// 💡 Key Insight:
+//    Sequential execution runs each step one at a time,
+//    waiting for each to complete before starting the next.

@@ -105,3 +105,4 @@ ergon/output
 ergon/data
 output/
 data/
+*.txt

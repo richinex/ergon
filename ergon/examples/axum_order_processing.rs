@@ -380,7 +380,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nStarting Order Processing API with Ergon...\n");
 
     // Setup storage
-    let db_path = "/tmp/ergon_axum_orders.db";
+    let db_path = "data/ergon_axum_orders.db";
     let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
 
     // Setup flow scheduler
