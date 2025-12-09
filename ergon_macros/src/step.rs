@@ -224,24 +224,29 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             {
-                #[allow(unused_imports)]
-                use ::ergon::kind::*;
+                // Don't log completion if step is suspending for a signal
+                // await_external_signal sets suspend_reason before returning its error
+                // This prevents caching the suspension error as a "completed" step
+                if !__ctx.has_suspend_reason() {
+                    #[allow(unused_imports)]
+                    use ::ergon::kind::*;
 
-                // Compute is_retryable and should_cache once
-                let (__should_cache, __is_retryable_opt) = match __result.as_ref().err() {
-                    Some(__e) => {
-                        let __is_retryable = (__e).error_kind().is_retryable(__e);
-                        (!__is_retryable, Some(__is_retryable)) // should_cache = !is_retryable
-                    }
-                    None => (true, None), // Ok result: cache it, no retryability
-                };
+                    // Compute is_retryable and should_cache once
+                    let (__should_cache, __is_retryable_opt) = match __result.as_ref().err() {
+                        Some(__e) => {
+                            let __is_retryable = (__e).error_kind().is_retryable(__e);
+                            (!__is_retryable, Some(__is_retryable)) // should_cache = !is_retryable
+                        }
+                        None => (true, None), // Ok result: cache it, no retryability
+                    };
 
-                if __should_cache {
-                    let _ = __ctx.log_step_completion(__step, &__result).await;
+                    if __should_cache {
+                        let _ = __ctx.log_step_completion(__step, &__result).await;
 
-                    // If it's an error, update the is_retryable flag using the pre-computed value
-                    if let Some(__is_retryable) = __is_retryable_opt {
-                        let _ = __ctx.update_step_retryability(__step, __is_retryable).await;
+                        // If it's an error, update the is_retryable flag using the pre-computed value
+                        if let Some(__is_retryable) = __is_retryable_opt {
+                            let _ = __ctx.update_step_retryability(__step, __is_retryable).await;
+                        }
                     }
                 }
             }
@@ -375,6 +380,16 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         } else {
             // Default or RetryableError: Check if error should be cached
             quote! {
+                // Don't log completion if step is suspending for a signal
+                // await_external_signal sets suspend_reason before returning its error
+                // This prevents caching the suspension error as a "completed" step
+                if __ctx.has_suspend_reason() {
+                    // Suspension: don't cache, return error
+                    return Err(ergon::ExecutionError::Failed(
+                        format!("Step {} suspended", #method_name_str)
+                    ));
+                }
+
                 match &__result {
                     Ok(_) => {
                         // Success: log completion and return
@@ -393,7 +408,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let _ = __ctx.log_step_completion(__step, &__result).await;
                             Ok(__result)
                         } else {
-                            // Transient error (or Suspend): DON'T cache, stop execution
+                            // Transient error: DON'T cache, stop execution
                             // All framework decisions (suspend/retry) already made on original type
                             // This conversion just preserves error message for logging/debugging
                             Err(ergon::ExecutionError::Failed(
@@ -529,7 +544,25 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         // No cached result, continue with execution
                                     }
                                     Err(__e) => {
-                                        panic!("Step execution error at step {}: {}", __step, __e);
+                                        // Distinguish between programmer mistakes and environment problems
+                                        match __e {
+                                            ergon::ExecutionError::Incompatible(_) => {
+                                                // Non-determinism = programmer mistake (bug)
+                                                // Continuing would corrupt flow state - must panic
+                                                panic!("Non-determinism detected at step {}: {}", __step, __e);
+                                            }
+                                            _ => {
+                                                // Environment problem (storage, deserialization)
+                                                // Treat as cache miss - continue execution
+                                                // If storage is down, worst case is duplicate work
+                                                // But steps should be idempotent (best practice for durable workflows)
+                                                tracing::warn!(
+                                                    "Storage error during cache check at step {}: {}. Treating as cache miss. \
+                                                     Ensure your steps are idempotent to handle potential duplicate execution.",
+                                                    __step, __e
+                                                );
+                                            }
+                                        }
                                     }
                                 }
 
@@ -673,7 +706,24 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 // No cache, continue
                             }
                             Err(__e) => {
-                                panic!("Step execution error at step {}: {}", __step, __e);
+                                // Distinguish between programmer mistakes and environment problems
+                                match __e {
+                                    ergon::ExecutionError::Incompatible(_) => {
+                                        // Non-determinism = programmer mistake (bug)
+                                        // Continuing would corrupt flow state - must panic
+                                        panic!("Non-determinism detected at step {}: {}", __step, __e);
+                                    }
+                                    _ => {
+                                        // Environment problem (storage, deserialization)
+                                        // Treat as cache miss - just continue and execute
+                                        // If storage is down, worst case is we do duplicate work
+                                        tracing::warn!(
+                                            "Storage error during cache check at step {}: {}. Treating as cache miss. \
+                                             Ensure your steps are idempotent to handle potential duplicate execution.",
+                                            __step, __e
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

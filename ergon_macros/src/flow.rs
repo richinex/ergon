@@ -193,7 +193,26 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                             // No cached result, continue
                         }
                         Err(__e) => {
-                            panic!("Flow execution error at step {}: {}", __step, __e);
+                            // Distinguish between programmer mistakes and environment problems
+                            match __e {
+                                ergon::ExecutionError::Incompatible(_) => {
+                                    // Non-determinism = programmer mistake (bug)
+                                    // Continuing would corrupt flow state - must panic
+                                    panic!("Non-determinism detected at step {}: {}", __step, __e);
+                                }
+                                _ => {
+                                    // Environment problem (storage, deserialization)
+                                    // Treat as cache miss - continue execution
+                                    // Tradeoff: if storage is down, worst case is duplicate work
+                                    // But steps should be idempotent anyway (best practice)
+                                    // This is more resilient than blocking on storage errors
+                                    tracing::warn!(
+                                        "Storage error during cache check at step {}: {}. Treating as cache miss. \
+                                         Ensure your steps are idempotent to handle potential duplicate execution.",
+                                        __step, __e
+                                    );
+                                }
+                            }
                         }
                     }
 

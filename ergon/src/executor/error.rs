@@ -43,6 +43,12 @@ pub enum ExecutionError {
     /// An external signal timed out while waiting.
     #[error("signal timeout: {message}")]
     SignalTimeout { message: String },
+
+    /// Flow suspended, waiting for external event (timer or signal).
+    /// This is not an error - it's a normal control flow mechanism.
+    /// The actual suspension reason is stored in the execution context.
+    #[error("flow suspended: {0}")]
+    Suspended(String),
 }
 
 // Manual From implementations to convert nested errors to strings

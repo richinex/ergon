@@ -179,9 +179,10 @@ where
                 signal_name: signal_name.to_string(),
             };
             ctx.set_suspend_reason(reason);
-            // Return error to prevent step caching; worker checks context to detect suspension
-            return Err(ExecutionError::Failed(
-                "Flow suspended for signal".to_string(),
+            // Return Suspended error to indicate flow is waiting for signal
+            // This is not a failure - it's normal control flow for external events
+            return Err(ExecutionError::Suspended(
+                format!("Waiting for signal: {}", signal_name),
             ));
         }
     }
@@ -200,9 +201,10 @@ where
         signal_name: signal_name.to_string(),
     };
     ctx.set_suspend_reason(reason);
-    // Return error to prevent step caching; worker checks context to detect suspension
-    Err(ExecutionError::Failed(
-        "Flow suspended for signal".to_string(),
+    // Return Suspended error to indicate flow is waiting for signal
+    // This is not a failure - it's normal control flow for external events
+    Err(ExecutionError::Suspended(
+        format!("Waiting for signal: {}", signal_name),
     ))
 }
 
