@@ -384,7 +384,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
     // Verify expected events
-    let expected_events = vec![
+    let expected_events = [
         "payment_validated",
         "inventory_reserved",
         "shipment_created",

@@ -441,9 +441,8 @@ impl CreditCheck {
     #[step]
     async fn query_bureau(self: Arc<Self>) -> Result<(), CreditCheckError> {
         println!("[{}]     -> Querying credit bureau...", format_time());
-        ergon::executor::schedule_timer(Duration::from_millis(500))
-            .await
-            .map_err(|_| CreditCheckError::CreditBureauTimeout)?;
+        let timer_result = ergon::executor::schedule_timer(Duration::from_millis(500)).await;
+        timer_result.map_err(|_| CreditCheckError::CreditBureauTimeout)?;
         Ok(())
     }
 }
@@ -643,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     scheduler.schedule(app4, Uuid::new_v4()).await?;
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
 
     println!(
         "\nTotal credit check attempts: {}",

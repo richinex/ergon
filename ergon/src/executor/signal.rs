@@ -88,10 +88,11 @@ where
         .try_with(|c| c.clone())
         .expect("await_external_signal called outside execution context");
 
-    // Get the step number that was just allocated by the step macro
+    // Get the step number from enclosing step (set by #[step] macro)
+    // Steps now use hash-based IDs, not counters
     let current_step = ctx
-        .last_allocated_step()
-        .expect("await_external_signal called but no step allocated");
+        .get_enclosing_step()
+        .expect("await_external_signal called but no enclosing step set");
 
     // Check if we're resuming from a signal
     let existing_inv = ctx

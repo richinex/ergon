@@ -495,22 +495,28 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                         // Try to get execution context
                         match ergon::EXECUTION_CONTEXT.try_with(|ctx| ctx.clone()) {
                             Ok(__ctx) => {
-                                // For DAG steps, use a stable step ID derived from the step name
-                                // This ensures consistent IDs across executions even when parallel steps
-                                // execute in different orders
+                                // Serialize parameters first - needed for step ID hash
+                                let __params = #params_tuple;
+
+                                // For DAG steps, use a stable step ID derived from step name AND parameters
+                                // This ensures:
+                                // 1. Consistent IDs across executions (hash-based, not counter-based)
+                                // 2. Unique IDs when same step called with different parameters
+                                // 3. Stable child flow step IDs (derived from stable parent step ID)
                                 //
                                 // Uses seahash for stable hashing across Rust versions.
                                 // Masking with 0x7FFFFFFF ensures positive i32 without the i32::MIN.abs() bug.
                                 let __step = {
-                                    (seahash::hash(#step_name_str.as_bytes()) & 0x7FFFFFFF) as i32
+                                    let __params_bytes = ergon::serialize_value(&__params)
+                                        .expect("Failed to serialize step parameters");
+                                    let mut __hash_input = #step_name_str.as_bytes().to_vec();
+                                    __hash_input.extend_from_slice(&__params_bytes);
+                                    (seahash::hash(&__hash_input) & 0x7FFFFFFF) as i32
                                 };
                                 let __class_name = "Step";
 
-                                // Set enclosing step so invoke().result() knows who its parent is
+                                // Set enclosing step so invoke().result() and timers/signals know their parent
                                 __ctx.set_enclosing_step(__step);
-
-                                // Serialize parameters for cache check (includes self if present)
-                                let __params = #params_tuple;
 
                                 // Check cache first
                                 match __ctx.get_cached_result::<#return_type, _>(
@@ -591,22 +597,28 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Register step with dependency graph
                     #step_registration_code
 
-                    // Get stable step ID using hash (same as DAG execution)
-                    // This ensures consistent IDs across executions even when child invocations
-                    // allocate their own step numbers.
+                    // Serialize parameters first - needed for step ID hash
+                    let __params = ( #(&#param_names,)* );
+
+                    // Get stable step ID using hash of both method name AND parameters
+                    // This ensures:
+                    // 1. Consistent IDs across replays (hash-based, not counter-based)
+                    // 2. Unique IDs when same step called with different parameters
+                    // 3. Stable child flow step IDs (derived from stable parent step ID)
                     //
                     // Uses seahash for stable hashing across Rust versions.
                     // Masking with 0x7FFFFFFF ensures positive i32 without the i32::MIN.abs() bug.
                     let __step = {
-                        (seahash::hash(#step_name_str.as_bytes()) & 0x7FFFFFFF) as i32
+                        let __params_bytes = ergon::serialize_value(&__params)
+                            .expect("Failed to serialize step parameters");
+                        let mut __hash_input = #step_name_str.as_bytes().to_vec();
+                        __hash_input.extend_from_slice(&__params_bytes);
+                        (seahash::hash(&__hash_input) & 0x7FFFFFFF) as i32
                     };
                     let __class_name = "Step";
 
-                    // NEW: Set enclosing step so invoke().result() knows who its parent is
+                    // Set enclosing step so invoke().result() and timers/signals know their parent
                     __ctx.set_enclosing_step(__step);
-
-                    // Serialize parameters for caching
-                    let __params = ( #(&#param_names,)* );
 
                     // NEW: Check if this step has a pending child invocation
                     // This handles the replay case where:
