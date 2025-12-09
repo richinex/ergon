@@ -195,10 +195,7 @@ impl OrderProcessing {
 
     #[step(depends_on = "create_shipment")]
     async fn send_notification(self: Arc<Self>) -> Result<(), String> {
-        println!(
-            "[Step 4] Sending notification to {}",
-            self.customer_email
-        );
+        println!("[Step 4] Sending notification to {}", self.customer_email);
 
         self.invoke(NotificationSender {
             order_id: self.order_id.clone(),
@@ -283,10 +280,7 @@ struct NotificationSender {
 impl NotificationSender {
     #[flow]
     async fn send(self: Arc<Self>) -> Result<NotificationResult, String> {
-        println!(
-            "  [Child Flow] Sending email to {}",
-            self.customer_email
-        );
+        println!("  [Child Flow] Sending email to {}", self.customer_email);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Write analytics event
@@ -353,15 +347,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker =
         Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(50));
 
-    worker
-        .register(|f: Arc<OrderProcessing>| f.process())
-        .await;
-    worker
-        .register(|f: Arc<ShipmentCreation>| f.create())
-        .await;
-    worker
-        .register(|f: Arc<NotificationSender>| f.send())
-        .await;
+    worker.register(|f: Arc<OrderProcessing>| f.process()).await;
+    worker.register(|f: Arc<ShipmentCreation>| f.create()).await;
+    worker.register(|f: Arc<NotificationSender>| f.send()).await;
 
     let handle = worker.start().await;
 
@@ -400,7 +388,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("│ Verification                                                │");
     println!("├─────────────────────────────────────────────────────────────┤");
     println!("│ Expected events: 4                                          │");
-    println!("│ Found events:    {}                                          │", events.len());
+    println!(
+        "│ Found events:    {}                                          │",
+        events.len()
+    );
     println!(
         "│ Status:          {:<42} │",
         if all_present && events.len() == 4 {

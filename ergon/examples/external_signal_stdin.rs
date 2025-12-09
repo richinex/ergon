@@ -103,7 +103,7 @@ impl StdinSignalSource {
                 match reader.read_line(&mut line).await {
                     Ok(0) => break, // EOF
                     Ok(_) => {
-                        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                        let parts: Vec<&str> = line.split_whitespace().collect();
                         if parts.len() >= 4 {
                             let signal_name = parts[0];
                             let approved = parts[1].parse::<bool>().unwrap_or(false);

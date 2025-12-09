@@ -384,8 +384,8 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // await_external_signal sets suspend_reason before returning its error
                 // This prevents caching the suspension error as a "completed" step
                 if __ctx.has_suspend_reason() {
-                    // Suspension: don't cache, return error
-                    return Err(ergon::ExecutionError::Failed(
+                    // Suspension: don't cache, return suspension error
+                    return Err(ergon::ExecutionError::Suspended(
                         format!("Step {} suspended", #method_name_str)
                     ));
                 }
@@ -410,9 +410,9 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                         } else {
                             // Transient error: DON'T cache, stop execution
                             // All framework decisions (suspend/retry) already made on original type
-                            // This conversion just preserves error message for logging/debugging
+                            // Preserve error semantics using Display trait instead of Debug
                             Err(ergon::ExecutionError::Failed(
-                                format!("Step {} failed (retryable): {:?}", #method_name_str, __e)
+                                format!("Step {} failed (retryable): {}", #method_name_str, __e)
                             ))
                         }
                     }

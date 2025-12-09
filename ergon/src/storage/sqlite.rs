@@ -745,9 +745,8 @@ impl ExecutionLog for SqliteExecutionLog {
     ) -> Result<()> {
         // Calculate scheduled_for timestamp (current time + delay)
         let scheduled_for = Utc::now()
-            + chrono::Duration::from_std(delay).map_err(|e| {
-                StorageError::Connection(format!("Invalid delay duration: {}", e))
-            })?;
+            + chrono::Duration::from_std(delay)
+                .map_err(|e| StorageError::Connection(format!("Invalid delay duration: {}", e)))?;
 
         let result = sqlx::query(
             "UPDATE flow_queue

@@ -177,7 +177,10 @@ impl OrderProcessing {
     // These three operations run in PARALLEL after inventory is reserved
     #[step(depends_on = "reserve_inventory")]
     async fn create_shipment(self: Arc<Self>) -> Result<String, String> {
-        println!("[Step 3a] Creating shipment for order {} (parallel)", self.order_id);
+        println!(
+            "[Step 3a] Creating shipment for order {} (parallel)",
+            self.order_id
+        );
 
         let result = self
             .invoke(ShipmentCreation {
@@ -402,10 +405,7 @@ struct NotificationSender {
 impl NotificationSender {
     #[flow]
     async fn send(self: Arc<Self>) -> Result<NotificationResult, String> {
-        println!(
-            "  [Child Flow] Sending email to {}",
-            self.customer_email
-        );
+        println!("  [Child Flow] Sending email to {}", self.customer_email);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Write analytics event
@@ -472,21 +472,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker =
         Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(50));
 
-    worker
-        .register(|f: Arc<OrderProcessing>| f.process())
-        .await;
-    worker
-        .register(|f: Arc<ShipmentCreation>| f.create())
-        .await;
-    worker
-        .register(|f: Arc<RevenueAnalytics>| f.write())
-        .await;
+    worker.register(|f: Arc<OrderProcessing>| f.process()).await;
+    worker.register(|f: Arc<ShipmentCreation>| f.create()).await;
+    worker.register(|f: Arc<RevenueAnalytics>| f.write()).await;
     worker
         .register(|f: Arc<InventoryAnalytics>| f.write())
         .await;
-    worker
-        .register(|f: Arc<NotificationSender>| f.send())
-        .await;
+    worker.register(|f: Arc<NotificationSender>| f.send()).await;
 
     let handle = worker.start().await;
 
@@ -527,7 +519,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("│ Verification                                                │");
     println!("├─────────────────────────────────────────────────────────────┤");
     println!("│ Expected events: 6                                          │");
-    println!("│ Found events:    {}                                          │", events.len());
+    println!(
+        "│ Found events:    {}                                          │",
+        events.len()
+    );
     println!(
         "│ Status:          {:<42} │",
         if all_present && events.len() == 6 {

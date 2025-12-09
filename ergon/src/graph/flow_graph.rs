@@ -214,6 +214,8 @@ impl Graph {
         }
 
         // Add the edge (temporarily)
+        // SAFETY: Both keys are guaranteed to exist due to checks at lines 204-209.
+        // If these unwraps panic, it's a bug in this function's logic.
         self.nodes
             .get_mut(&step)
             .unwrap()
@@ -228,6 +230,7 @@ impl Graph {
         // Check for cycles
         if self.has_cycle() {
             // Rollback the edge
+            // SAFETY: Same as above - keys guaranteed to exist
             self.nodes.get_mut(&step).unwrap().predecessors.pop();
             self.nodes.get_mut(&dependency).unwrap().successors.pop();
 

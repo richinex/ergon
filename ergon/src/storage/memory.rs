@@ -326,7 +326,10 @@ impl ExecutionLog for InMemoryExecutionLog {
             // Clear the lock
             entry.locked_by = None;
             // Set scheduled_for timestamp (current time + delay)
-            entry.scheduled_for = Some(Utc::now() + chrono::Duration::from_std(delay).unwrap());
+            let chrono_delay = chrono::Duration::from_std(delay).map_err(|e| {
+                StorageError::InvalidParameter(format!("Invalid delay duration: {}", e))
+            })?;
+            entry.scheduled_for = Some(Utc::now() + chrono_delay);
             // Update timestamp
             entry.updated_at = Utc::now();
             Ok(())
@@ -453,7 +456,9 @@ impl ExecutionLog for InMemoryExecutionLog {
     }
 
     async fn cleanup_completed(&self, older_than: std::time::Duration) -> Result<u64> {
-        let cutoff = Utc::now() - chrono::Duration::from_std(older_than).unwrap();
+        let chrono_duration = chrono::Duration::from_std(older_than)
+            .map_err(|e| StorageError::InvalidParameter(format!("Invalid duration: {}", e)))?;
+        let cutoff = Utc::now() - chrono_duration;
 
         // Count and remove completed invocations older than cutoff
         let mut deleted = 0u64;

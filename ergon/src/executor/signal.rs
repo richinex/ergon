@@ -181,9 +181,10 @@ where
             ctx.set_suspend_reason(reason);
             // Return Suspended error to indicate flow is waiting for signal
             // This is not a failure - it's normal control flow for external events
-            return Err(ExecutionError::Suspended(
-                format!("Waiting for signal: {}", signal_name),
-            ));
+            return Err(ExecutionError::Suspended(format!(
+                "Waiting for signal: {}",
+                signal_name
+            )));
         }
     }
 
@@ -203,9 +204,10 @@ where
     ctx.set_suspend_reason(reason);
     // Return Suspended error to indicate flow is waiting for signal
     // This is not a failure - it's normal control flow for external events
-    Err(ExecutionError::Suspended(
-        format!("Waiting for signal: {}", signal_name),
-    ))
+    Err(ExecutionError::Suspended(format!(
+        "Waiting for signal: {}",
+        signal_name
+    )))
 }
 
 /// Helper function to signal a parent flow with a typed result.

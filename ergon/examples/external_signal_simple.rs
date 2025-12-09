@@ -221,11 +221,13 @@ impl DocumentApprovalFlow {
 
         // Another suspension point!
         let decision: ApprovalDecision =
-            await_external_signal(&format!("legal_review_{}", self.submission.document_id))
-                .await?;
+            await_external_signal(&format!("legal_review_{}", self.submission.document_id)).await?;
 
         if !decision.approved {
-            return Err(ExecutionError::Failed(format!("Legal rejected: {}", decision.comments)));
+            return Err(ExecutionError::Failed(format!(
+                "Legal rejected: {}",
+                decision.comments
+            )));
         }
 
         println!(
@@ -379,8 +381,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if start.elapsed() > Duration::from_secs(20) {
             println!("\n[TIMEOUT] Test 2 did not complete within 20 seconds");
             if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_2).await {
-                println!("[INFO] Final status: {:?}, retry_count: {}",
-                    scheduled.status, scheduled.retry_count);
+                println!(
+                    "[INFO] Final status: {:?}, retry_count: {}",
+                    scheduled.status, scheduled.retry_count
+                );
             }
             break;
         }

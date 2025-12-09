@@ -41,6 +41,10 @@ pub enum StorageError {
     /// A serialization/deserialization error occurred.
     #[error("serialization error")]
     Serialization,
+
+    /// An invalid parameter was provided.
+    #[error("invalid parameter: {0}")]
+    InvalidParameter(String),
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;

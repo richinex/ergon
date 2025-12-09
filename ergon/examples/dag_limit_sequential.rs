@@ -110,10 +110,7 @@ impl ComplexDagSequential {
     // Level 3: Cross-branch multiplication
     // =========================================================================
 
-    #[step(
-        depends_on = "cube",
-        inputs(m = "mul_3", s = "square")
-    )]
+    #[step(depends_on = "cube", inputs(m = "mul_3", s = "square"))]
     async fn cross_mul(self: Arc<Self>, m: i64, s: i64) -> Result<i64, String> {
         println!("[L3] cross_mul starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -126,10 +123,7 @@ impl ComplexDagSequential {
     // Level 4: Cross-branch addition
     // =========================================================================
 
-    #[step(
-        depends_on = "cross_mul",
-        inputs(cm = "cross_mul", s = "square")
-    )]
+    #[step(depends_on = "cross_mul", inputs(cm = "cross_mul", s = "square"))]
     async fn cross_add(self: Arc<Self>, cm: i64, s: i64) -> Result<i64, String> {
         println!("[L4] cross_add starting");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -158,10 +152,7 @@ impl ComplexDagSequential {
     // Level 6: Final
     // =========================================================================
 
-    #[step(
-        depends_on = "aggregate",
-        inputs(m2 = "mul_2", agg = "aggregate")
-    )]
+    #[step(depends_on = "aggregate", inputs(m2 = "mul_2", agg = "aggregate"))]
     async fn final_result(self: Arc<Self>, m2: i64, agg: i64) -> Result<i64, String> {
         println!("[L6] final starting");
         tokio::time::sleep(Duration::from_millis(50)).await;

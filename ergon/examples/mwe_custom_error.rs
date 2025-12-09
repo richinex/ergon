@@ -41,7 +41,10 @@ enum PaymentError {
 impl std::fmt::Display for PaymentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PaymentError::InsufficientFunds { available, required } => {
+            PaymentError::InsufficientFunds {
+                available,
+                required,
+            } => {
                 write!(
                     f,
                     "Insufficient funds: ${:.2} available, ${:.2} required",
@@ -181,11 +184,7 @@ struct PaymentProcessor {
 impl PaymentProcessor {
     #[step]
     async fn check_balance(self: Arc<Self>) -> Result<(), PaymentError> {
-        println!(
-            "[{}] checking balance for order {}",
-            ts(),
-            self.order_id
-        );
+        println!("[{}] checking balance for order {}", ts(), self.order_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Simulate balance check based on amount
@@ -316,9 +315,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker =
         Worker::new(storage.clone(), "worker").with_poll_interval(Duration::from_millis(50));
 
-    worker
-        .register(|f: Arc<PaymentOrder>| f.execute())
-        .await;
+    worker.register(|f: Arc<PaymentOrder>| f.execute()).await;
     worker
         .register(|f: Arc<PaymentProcessor>| f.process())
         .await;

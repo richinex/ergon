@@ -159,7 +159,7 @@ impl DocumentApprovalFlow {
         self.clone()
             .validate_document()
             .await
-            .map_err(|e| ExecutionError::Failed(e))?;
+            .map_err(ExecutionError::Failed)?;
 
         // Step 2: Wait for manager approval (SUSPENDS HERE!)
         // Step returns OUTCOME (success), not error
@@ -167,7 +167,7 @@ impl DocumentApprovalFlow {
             .clone()
             .await_manager_approval()
             .await
-            .map_err(|e| ExecutionError::Failed(e))?;
+            .map_err(ExecutionError::Failed)?;
 
         // Flow decides what rejection MEANS (permanent failure)
         match manager_outcome {
@@ -188,13 +188,13 @@ impl DocumentApprovalFlow {
         self.clone()
             .await_legal_review()
             .await
-            .map_err(|e| ExecutionError::Failed(e))?;
+            .map_err(ExecutionError::Failed)?;
 
         // Step 4: Publish document
         self.clone()
             .publish_document()
             .await
-            .map_err(|e| ExecutionError::Failed(e))?;
+            .map_err(ExecutionError::Failed)?;
 
         Ok(format!(
             "Document '{}' approved and published",
@@ -402,8 +402,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if start.elapsed() > Duration::from_secs(20) {
             println!("\n[TIMEOUT] Test 2 did not complete within 20 seconds");
             if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_2).await {
-                println!("[INFO] Final status: {:?}, retry_count: {}",
-                    scheduled.status, scheduled.retry_count);
+                println!(
+                    "[INFO] Final status: {:?}, retry_count: {}",
+                    scheduled.status, scheduled.retry_count
+                );
             }
             break;
         }

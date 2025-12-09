@@ -266,10 +266,7 @@ where
                         }
                     }
                     Err(e) => {
-                        warn!(
-                            "Failed to store signal params for '{}': {}",
-                            signal_name, e
-                        );
+                        warn!("Failed to store signal params for '{}': {}", signal_name, e);
                     }
                 }
             }
@@ -1103,10 +1100,9 @@ impl<
                         );
                         match storage.resume_flow(flow_id).await {
                             Ok(true) => debug!("Resumed flow {} with pending signal", flow_id),
-                            Ok(false) => debug!(
-                                "Flow {} already resumed by another worker",
-                                flow_id
-                            ),
+                            Ok(false) => {
+                                debug!("Flow {} already resumed by another worker", flow_id)
+                            }
                             Err(e) => warn!(
                                 "Failed to resume flow {} with pending signal: {}",
                                 flow_id, e

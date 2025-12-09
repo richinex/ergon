@@ -1078,9 +1078,8 @@ impl ExecutionLog for RedisExecutionLog {
         let mut conn = self.get_connection().await?;
         let flow_key = Self::flow_key(task_id);
         let scheduled_for = Utc::now()
-            + chrono::Duration::from_std(delay).map_err(|e| {
-                StorageError::Connection(format!("Invalid delay duration: {}", e))
-            })?;
+            + chrono::Duration::from_std(delay)
+                .map_err(|e| StorageError::Connection(format!("Invalid delay duration: {}", e)))?;
         let scheduled_ts = scheduled_for.timestamp_millis();
 
         // Acknowledge the failed stream attempt (if it exists)
@@ -1560,7 +1559,9 @@ impl ExecutionLog for RedisExecutionLog {
 
     async fn cleanup_completed(&self, older_than: Duration) -> Result<u64> {
         let mut conn = self.get_connection().await?;
-        let cutoff = Utc::now() - chrono::Duration::from_std(older_than).unwrap();
+        let chrono_duration = chrono::Duration::from_std(older_than)
+            .map_err(|e| StorageError::InvalidParameter(format!("Invalid duration: {}", e)))?;
+        let cutoff = Utc::now() - chrono_duration;
         let cutoff_ts = cutoff.timestamp();
 
         // Scan for all flow keys

@@ -81,9 +81,9 @@ impl std::error::Error for LoanError {}
 impl RetryableError for LoanError {
     fn is_retryable(&self) -> bool {
         match self {
-            LoanError::Infrastructure(_) => true,  // Infrastructure errors should retry
-            LoanError::BusinessRejection(_) => false,  // Business decisions are permanent
-            LoanError::SignalError(_) => true,  // Signal errors are handled by suspension
+            LoanError::Infrastructure(_) => true, // Infrastructure errors should retry
+            LoanError::BusinessRejection(_) => false, // Business decisions are permanent
+            LoanError::SignalError(_) => true,    // Signal errors are handled by suspension
         }
     }
 }
@@ -96,7 +96,9 @@ impl From<ExecutionError> for LoanError {
             ExecutionError::Core(msg) => LoanError::Infrastructure(msg),
             ExecutionError::Failed(msg) => LoanError::Infrastructure(msg),
             ExecutionError::Suspended(msg) => LoanError::SignalError(msg),
-            ExecutionError::Incompatible(msg) => LoanError::Infrastructure(format!("Non-determinism: {}", msg)),
+            ExecutionError::Incompatible(msg) => {
+                LoanError::Infrastructure(format!("Non-determinism: {}", msg))
+            }
             ExecutionError::NonRetryable(msg) => LoanError::BusinessRejection(msg),
             _ => LoanError::Infrastructure("Unknown error".to_string()),
         }
@@ -187,10 +189,7 @@ impl MockLoanSignalSource {
         let data = ergon::core::serialize_value(&decision).unwrap();
         let mut signals = self.signals.write().await;
         signals.insert(signal_name.to_string(), data);
-        println!(
-            "  [SIGNAL] Manager decision received for '{}'",
-            signal_name
-        );
+        println!("  [SIGNAL] Manager decision received for '{}'", signal_name);
     }
 }
 
@@ -228,11 +227,15 @@ impl LoanApplicationFlow {
 
         // Validate requested amount
         if self.application.requested_amount <= 0.0 {
-            return Err(LoanError::BusinessRejection("Amount must be greater than zero".to_string()));
+            return Err(LoanError::BusinessRejection(
+                "Amount must be greater than zero".to_string(),
+            ));
         }
 
         if self.application.requested_amount > 1_000_000.0 {
-            return Err(LoanError::BusinessRejection("Amount exceeds maximum loan limit".to_string()));
+            return Err(LoanError::BusinessRejection(
+                "Amount exceeds maximum loan limit".to_string(),
+            ));
         }
 
         println!("[{}] Application validation passed", ts());
@@ -324,12 +327,7 @@ impl LoanApplicationFlow {
                 reason,
                 rejected_by,
             } => {
-                println!(
-                    "[{}] Manager rejected by {}: {}",
-                    ts(),
-                    rejected_by,
-                    reason
-                );
+                println!("[{}] Manager rejected by {}: {}", ts(), rejected_by, reason);
             }
             LoanDecision::RequiresAdditionalReview { reason, reviewer } => {
                 println!(
@@ -398,18 +396,16 @@ impl LoanApplicationFlow {
             })?;
 
         // Step 2: Credit check
-        self.clone()
-            .check_credit()
-            .await
-            .map_err(|e| match e {
-                LoanError::BusinessRejection(msg) => ExecutionError::NonRetryable(msg),
-                LoanError::Infrastructure(msg) => ExecutionError::Failed(msg),
-                LoanError::SignalError(msg) => ExecutionError::Failed(msg),
-            })?;
+        self.clone().check_credit().await.map_err(|e| match e {
+            LoanError::BusinessRejection(msg) => ExecutionError::NonRetryable(msg),
+            LoanError::Infrastructure(msg) => ExecutionError::Failed(msg),
+            LoanError::SignalError(msg) => ExecutionError::Failed(msg),
+        })?;
 
         // Step 3: Wait for manager approval (SUSPENDS HERE!)
         // Step returns OUTCOME (success), not error
-        let decision = self.clone()
+        let decision = self
+            .clone()
             .await_manager_approval()
             .await
             .map_err(|e| match e {
@@ -422,10 +418,11 @@ impl LoanApplicationFlow {
         match decision.clone() {
             LoanDecision::Approved { .. } => {
                 // Continue to finalization
-                let loan_id = self.clone()
+                let loan_id = self
+                    .clone()
                     .finalize_loan(decision)
                     .await
-                    .map_err(|e| ExecutionError::Failed(e))?;
+                    .map_err(ExecutionError::Failed)?;
                 println!("[FLOW] Loan approved and finalized: {}\n", loan_id);
                 Ok(loan_id)
             }
@@ -482,10 +479,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker
         .register(|flow: Arc<LoanApplicationFlow>| flow.process())
         .await;
-    let worker = worker
-        .with_signals(signal_source.clone())
-        .start()
-        .await;
+    let worker = worker.with_signals(signal_source.clone()).start().await;
 
     // Create scheduler
     let scheduler = Scheduler::new(storage.clone());

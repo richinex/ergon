@@ -65,7 +65,10 @@ impl NormalFlow {
     #[step]
     async fn process_payment(self: Arc<Self>) -> Result<String, String> {
         let attempt = EXECUTION_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-        println!("[NORMAL] Processing payment: ${} (attempt #{})", self.amount, attempt);
+        println!(
+            "[NORMAL] Processing payment: ${} (attempt #{})",
+            self.amount, attempt
+        );
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -96,8 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     EXECUTION_COUNT.store(0, Ordering::SeqCst);
 
     let scheduler = Scheduler::new(storage.clone());
-    let worker = Worker::new(storage.clone(), "test-worker")
-        .with_poll_interval(Duration::from_millis(100));
+    let worker =
+        Worker::new(storage.clone(), "test-worker").with_poll_interval(Duration::from_millis(100));
 
     worker
         .register(|flow: Arc<NormalFlow>| flow.process())
