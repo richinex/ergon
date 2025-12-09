@@ -1,23 +1,28 @@
-//! External Signals with Custom Error Types
+//! External Signals with Non-Retryable Errors
 //!
 //! This example demonstrates:
-//! - Using custom error enums with external signals
+//! - Using external signals to suspend and resume flows
 //! - Properly modeling signal outcomes (approved/rejected) as DATA, not errors
-//! - Distinguishing between business outcomes and technical failures
-//! - Using `RetryableError` trait to control retry behavior
+//! - Using `ExecutionError::NonRetryable` for permanent business decisions
+//! - Distinguishing between retryable failures and permanent rejections
 //! - Worker integration with `.with_signals()`
 //!
 //! ## Key Principles
 //!
 //! ### Outcomes vs Errors
 //! - **Outcome**: Manager rejects a loan → `Ok(LoanDecision::Rejected)` (signal step succeeds!)
-//! - **Error**: Network timeout, deserialization failure → `Err(LoanError::...)`
+//! - **Error**: Network timeout, validation failure → `Err(...)`
 //!
-//! ### Retry Control via RetryableError
-//! - Implement `RetryableError` trait for your custom error type
-//! - Return `true` for transient errors (network timeouts, service unavailable)
-//! - Return `false` for permanent errors (validation failures, business rejections)
-//! - No need for `ExecutionError::NonRetryable` - the framework respects `is_retryable()`!
+//! ### Using NonRetryable
+//! - Signal steps return OUTCOMES: `Ok(LoanDecision::Approved)` or `Ok(LoanDecision::Rejected)`
+//! - Flow decides what outcomes MEAN: Rejection → `Err(ExecutionError::NonRetryable(...))`
+//! - NonRetryable errors stop retries immediately (permanent business decisions)
+//! - Regular errors trigger retries based on retry policy
+//!
+//! ## Note on Custom Errors
+//! This example includes a custom error type definition to show the pattern,
+//! but uses simple String/ExecutionError for actual error handling.
+//! For full custom error integration with `RetryableError`, see `custom_error_types.rs`.
 //!
 //! ## Run with
 //! ```bash
@@ -257,7 +262,7 @@ struct LoanApplicationFlow {
 
 impl LoanApplicationFlow {
     #[step]
-    async fn validate_application(self: Arc<Self>) -> Result<(), LoanError> {
+    async fn validate_application(self: Arc<Self>) -> Result<(), String> {
         println!(
             "[{}] Validating application {}",
             ts(),
@@ -267,17 +272,11 @@ impl LoanApplicationFlow {
 
         // Validate requested amount
         if self.application.requested_amount <= 0.0 {
-            return Err(LoanError::InvalidApplication {
-                field: "requested_amount".to_string(),
-                reason: "Amount must be greater than zero".to_string(),
-            });
+            return Err("Amount must be greater than zero".to_string());
         }
 
         if self.application.requested_amount > 1_000_000.0 {
-            return Err(LoanError::InvalidApplication {
-                field: "requested_amount".to_string(),
-                reason: "Amount exceeds maximum loan limit".to_string(),
-            });
+            return Err("Amount exceeds maximum loan limit".to_string());
         }
 
         println!("[{}] Application validation passed", ts());
@@ -285,7 +284,7 @@ impl LoanApplicationFlow {
     }
 
     #[step]
-    async fn check_credit(self: Arc<Self>) -> Result<CreditCheckResult, LoanError> {
+    async fn check_credit(self: Arc<Self>) -> Result<CreditCheckResult, String> {
         println!(
             "[{}] Running credit check for {}",
             ts(),
@@ -302,12 +301,10 @@ impl LoanApplicationFlow {
 
         // Check eligibility based on credit score
         if result.score < 600 {
-            return Err(LoanError::IneligibleApplicant {
-                reason: format!(
-                    "Credit score {} is below minimum requirement of 600",
-                    result.score
-                ),
-            });
+            return Err(format!(
+                "Credit score {} is below minimum requirement of 600",
+                result.score
+            ));
         }
 
         println!("[{}] Credit check passed: score {}", ts(), result.score);
@@ -315,7 +312,7 @@ impl LoanApplicationFlow {
     }
 
     #[step]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<LoanDecision, ExecutionError> {
+    async fn await_manager_approval(self: Arc<Self>) -> Result<LoanDecision, String> {
         println!(
             "[{}] Awaiting manager approval for {}...",
             ts(),
@@ -325,9 +322,9 @@ impl LoanApplicationFlow {
         let signal_name = format!("loan_approval_{}", self.application.application_id);
 
         // Await external signal (suspends flow until signal arrives)
-        // Use ExecutionError directly - don't convert to LoanError here!
-        // Suspension errors from the framework should stay as ExecutionError
-        let decision: ManagerDecisionSignal = await_external_signal(&signal_name).await?;
+        let decision: ManagerDecisionSignal = await_external_signal(&signal_name)
+            .await
+            .map_err(|e| format!("Failed to await signal: {}", e))?;
 
         // Convert signal to outcome - BOTH approved and rejected are successful outcomes!
         let outcome = if decision.approved {
@@ -391,7 +388,7 @@ impl LoanApplicationFlow {
     }
 
     #[step]
-    async fn finalize_loan(self: Arc<Self>, decision: LoanDecision) -> Result<String, LoanError> {
+    async fn finalize_loan(self: Arc<Self>, decision: LoanDecision) -> Result<String, String> {
         println!("[{}] Finalizing loan...", ts());
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -415,10 +412,7 @@ impl LoanApplicationFlow {
             }
             _ => {
                 // This shouldn't happen if flow logic is correct
-                Err(LoanError::InvalidApplication {
-                    field: "decision".to_string(),
-                    reason: "Cannot finalize non-approved loan".to_string(),
-                })
+                Err("Cannot finalize non-approved loan".to_string())
             }
         }
     }
@@ -439,23 +433,29 @@ impl LoanApplicationFlow {
         self.clone()
             .validate_application()
             .await
-            .map_err(|e| ExecutionError::Failed(e.to_string()))?;
+            .map_err(|e| ExecutionError::Failed(e))?;
 
         // Step 2: Credit check
         self.clone()
             .check_credit()
             .await
-            .map_err(|e| ExecutionError::Failed(e.to_string()))?;
+            .map_err(|e| ExecutionError::Failed(e))?;
 
         // Step 3: Wait for manager approval (SUSPENDS HERE!)
         // Step returns OUTCOME (success), not error
-        let decision = self.clone().await_manager_approval().await?;
+        let decision = self.clone()
+            .await_manager_approval()
+            .await
+            .map_err(|e| ExecutionError::Failed(e))?;
 
         // Flow decides what each outcome MEANS
         match decision.clone() {
             LoanDecision::Approved { .. } => {
                 // Continue to finalization
-                let loan_id = self.clone().finalize_loan(decision).await?;
+                let loan_id = self.clone()
+                    .finalize_loan(decision)
+                    .await
+                    .map_err(|e| ExecutionError::Failed(e))?;
                 println!("[FLOW] Loan approved and finalized: {}\n", loan_id);
                 Ok(loan_id)
             }
@@ -464,20 +464,20 @@ impl LoanApplicationFlow {
                 rejected_by,
             } => {
                 // Manager rejection is a permanent business decision
-                // Return custom error directly - RetryableError::is_retryable() = false means no retry!
+                // Use NonRetryable for permanent failures
                 println!("[FLOW] Loan rejected (permanent)\n");
-                Err(LoanError::BusinessRejection {
-                    reason,
-                    rejected_by,
-                })
+                Err(ExecutionError::NonRetryable(format!(
+                    "Loan rejected by {}: {}",
+                    rejected_by, reason
+                )))
             }
             LoanDecision::RequiresAdditionalReview { reason, reviewer } => {
                 // Additional review needed - could implement another signal wait here
                 println!("[FLOW] Additional review required\n");
-                Err(LoanError::BusinessRejection {
-                    reason: format!("Additional review required: {}", reason),
-                    rejected_by: reviewer,
-                })
+                Err(ExecutionError::NonRetryable(format!(
+                    "Additional review required by {}: {}",
+                    reviewer, reason
+                )))
             }
         }
     }
