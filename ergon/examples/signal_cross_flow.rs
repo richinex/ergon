@@ -308,10 +308,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .store_signal_params(signal.flow_id, signal.step, &approval_bytes)
                     .await?;
 
-                storage.resume_flow(signal.flow_id).await?;
-
-                println!("  ✓ Resumed flow {} (step {})", signal.flow_id, signal.step);
-                resumed_count += 1;
+                match storage.resume_flow(signal.flow_id).await? {
+                    true => {
+                        println!("  ✓ Resumed flow {} (step {})", signal.flow_id, signal.step);
+                        resumed_count += 1;
+                    }
+                    false => {
+                        println!(
+                            "  ⏳ Stored signal for flow {} (will resume when suspended)",
+                            signal.flow_id
+                        );
+                        resumed_count += 1;
+                    }
+                }
             }
 
             println!();
@@ -357,13 +366,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .store_signal_params(signal.flow_id, signal.step, &cancel_bytes)
                     .await?;
 
-                storage.resume_flow(signal.flow_id).await?;
-
-                println!(
-                    "  ✓ Cancelled flow {} (step {})",
-                    signal.flow_id, signal.step
-                );
-                cancelled_count += 1;
+                match storage.resume_flow(signal.flow_id).await? {
+                    true => {
+                        println!(
+                            "  ✓ Cancelled flow {} (step {})",
+                            signal.flow_id, signal.step
+                        );
+                        cancelled_count += 1;
+                    }
+                    false => {
+                        println!(
+                            "  ⏳ Stored cancel signal for flow {} (will cancel when suspended)",
+                            signal.flow_id
+                        );
+                        cancelled_count += 1;
+                    }
+                }
             }
 
             println!();

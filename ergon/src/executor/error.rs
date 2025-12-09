@@ -22,9 +22,15 @@ pub enum ExecutionError {
     #[error("graph error: {0}")]
     Graph(String),
 
-    /// Flow execution failed with the given reason.
+    /// Flow execution failed with the given reason (retryable based on policy).
     #[error("execution failed: {0}")]
     Failed(String),
+
+    /// Flow execution failed with a non-retryable error (permanent failure).
+    /// Use this for business logic errors, validation failures, or other
+    /// permanent errors that should not be retried automatically.
+    #[error("non-retryable error: {0}")]
+    NonRetryable(String),
 
     /// The flow structure is incompatible with the stored state.
     #[error("flow incompatible: {0}")]

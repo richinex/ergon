@@ -315,12 +315,17 @@ pub trait ExecutionLog: Send + Sync {
     ///
     /// # Returns
     ///
-    /// Returns Ok if the flow was re-enqueued, or an error if the flow wasn't found.
+    /// - `Ok(true)` - Flow was successfully resumed (was in SUSPENDED state)
+    /// - `Ok(false)` - Flow was not resumed (not in SUSPENDED state - may be RUNNING, COMPLETE, or FAILED)
+    /// - `Err(...)` - Storage error (connection failure, etc.)
+    ///
+    /// Returning `false` is NOT an error - it indicates the flow wasn't in a resumable state.
+    /// This is expected when signals/timers race with flow execution.
     ///
     /// # Default Implementation
     ///
     /// Returns `StorageError::Unsupported` by default.
-    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<bool> {
         let _ = flow_id;
         Err(StorageError::Unsupported(
             "flow resume not implemented for this storage backend".to_string(),
@@ -630,7 +635,7 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self).log_timer(flow_id, step, fire_at, timer_name).await
     }
 
-    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<bool> {
         (**self).resume_flow(flow_id).await
     }
 

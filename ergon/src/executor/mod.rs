@@ -48,7 +48,7 @@ pub use error::{ExecutionError, FlowOutcome, Result, SuspendReason};
 pub use instance::Executor;
 pub use retry_helper::retry_with_policy;
 pub use scheduler::Scheduler;
-pub use signal::{await_external_signal, signal_parent_flow, StepFuture};
+pub use signal::{await_external_signal, signal_parent_flow, SignalSource, StepFuture};
 pub use timer::{schedule_timer, schedule_timer_named};
 pub use worker::{
     Registry, WithStructuredTracing, WithTimers, WithoutStructuredTracing, WithoutTimers, Worker,

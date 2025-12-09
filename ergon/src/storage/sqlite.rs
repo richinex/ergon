@@ -744,7 +744,10 @@ impl ExecutionLog for SqliteExecutionLog {
         delay: std::time::Duration,
     ) -> Result<()> {
         // Calculate scheduled_for timestamp (current time + delay)
-        let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
+        let scheduled_for = Utc::now()
+            + chrono::Duration::from_std(delay).map_err(|e| {
+                StorageError::Connection(format!("Invalid delay duration: {}", e))
+            })?;
 
         let result = sqlx::query(
             "UPDATE flow_queue
@@ -983,7 +986,10 @@ impl ExecutionLog for SqliteExecutionLog {
     }
 
     async fn cleanup_completed(&self, older_than: std::time::Duration) -> Result<u64> {
-        let cutoff = Utc::now() - chrono::Duration::from_std(older_than).unwrap();
+        let cutoff = Utc::now()
+            - chrono::Duration::from_std(older_than).map_err(|e| {
+                StorageError::Connection(format!("Invalid duration for cleanup: {}", e))
+            })?;
         let cutoff_millis = cutoff.timestamp_millis();
 
         // Start a transaction to delete from multiple tables atomically
@@ -1030,7 +1036,7 @@ impl ExecutionLog for SqliteExecutionLog {
         Ok(deleted_invocations)
     }
 
-    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<bool> {
         // Find the task_id for this flow_id and re-enqueue it
         // ONLY resume flows that are SUSPENDED (waiting for signals/child flows)
         // DO NOT resume RUNNING flows - this causes race conditions with multiple workers
@@ -1047,11 +1053,14 @@ impl ExecutionLog for SqliteExecutionLog {
         .execute(&self.pool)
         .await?;
 
+        // Return false if no rows affected (flow not in SUSPENDED state)
+        // This is NOT an error - it's an expected state during race conditions
         if result.rows_affected() == 0 {
-            return Err(StorageError::Connection(format!(
-                "Task not found or not in SUSPENDED state for flow_id: {}",
+            debug!(
+                "Flow not resumed (not in SUSPENDED state): flow_id={}",
                 flow_id
-            )));
+            );
+            return Ok(false);
         }
 
         debug!("Resumed flow: flow_id={}", flow_id);
@@ -1061,7 +1070,7 @@ impl ExecutionLog for SqliteExecutionLog {
             notify.notify_one();
         }
 
-        Ok(())
+        Ok(true)
     }
 
     async fn store_step_child_mapping(

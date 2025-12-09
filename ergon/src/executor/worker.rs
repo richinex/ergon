@@ -48,6 +48,19 @@ pub struct WithTimers {
 }
 
 // ============================================================================
+// Signal Typestates
+// ============================================================================
+
+/// Typestate: Worker without signal processing
+pub struct WithoutSignals;
+
+/// Typestate: Worker with signal processing enabled
+pub struct WithSignals<Src> {
+    pub signal_source: Arc<Src>,
+    pub signal_poll_interval: Duration,
+}
+
+// ============================================================================
 // Tracing Typestates
 // ============================================================================
 
@@ -78,6 +91,19 @@ pub struct WithStructuredTracing;
 #[async_trait::async_trait]
 pub trait TimerProcessing: Send + Sync {
     async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
+}
+
+// ============================================================================
+// Signal Processing Trait
+// ============================================================================
+
+/// Trait that defines signal processing behavior based on type state.
+///
+/// This trait uses the typestate pattern to provide different behaviors
+/// for workers with and without signal processing enabled.
+#[async_trait::async_trait]
+pub trait SignalProcessing: Send + Sync {
+    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
 }
 
 // ============================================================================
@@ -136,11 +162,16 @@ impl TimerProcessing for WithTimers {
                             );
 
                             // Resume the flow by re-enqueuing it
-                            if let Err(e) = storage.resume_flow(timer.flow_id).await {
-                                warn!(
+                            match storage.resume_flow(timer.flow_id).await {
+                                Ok(true) => debug!("Resumed flow after timer: {}", timer.flow_id),
+                                Ok(false) => debug!(
+                                    "Flow {} not in SUSPENDED state after timer (may have already resumed)",
+                                    timer.flow_id
+                                ),
+                                Err(e) => warn!(
                                     "Failed to resume flow after timer: flow={} step={} error={}",
                                     timer.flow_id, timer.step, e
-                                );
+                                ),
                             }
                         }
                         Ok(false) => {
@@ -161,6 +192,86 @@ impl TimerProcessing for WithTimers {
             }
             Err(e) => {
                 warn!("Failed to fetch expired timers: {}", e);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Signal Processing Implementations
+// ============================================================================
+
+#[async_trait::async_trait]
+impl SignalProcessing for WithoutSignals {
+    async fn process_signals<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str) {
+        // No-op: signal processing disabled
+    }
+}
+
+#[async_trait::async_trait]
+impl<Src> SignalProcessing for WithSignals<Src>
+where
+    Src: crate::executor::SignalSource + 'static,
+{
+    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str) {
+        // Get all flows waiting for signals
+        let waiting_signals = match storage.get_waiting_signals().await {
+            Ok(signals) => signals,
+            Err(e) => {
+                warn!("Failed to fetch waiting signals: {}", e);
+                return;
+            }
+        };
+
+        if !waiting_signals.is_empty() {
+            debug!("Processing {} waiting signals", waiting_signals.len());
+        }
+
+        for signal_info in waiting_signals {
+            let Some(signal_name) = &signal_info.signal_name else {
+                continue;
+            };
+
+            // Check if signal source has the signal
+            if let Some(signal_data) = self.signal_source.poll_for_signal(signal_name).await {
+                // Store signal params
+                match storage
+                    .store_signal_params(signal_info.flow_id, signal_info.step, &signal_data)
+                    .await
+                {
+                    Ok(_) => {
+                        // Consume signal so we don't re-process
+                        self.signal_source.consume_signal(signal_name).await;
+
+                        // Try to resume flow
+                        match storage.resume_flow(signal_info.flow_id).await {
+                            Ok(true) => {
+                                debug!(
+                                    "Signal '{}' delivered to flow {}",
+                                    signal_name, signal_info.flow_id
+                                );
+                            }
+                            Ok(false) => {
+                                debug!(
+                                    "Signal '{}' stored for flow {} (will resume when suspended)",
+                                    signal_name, signal_info.flow_id
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to resume flow {} after signal '{}': {}",
+                                    signal_info.flow_id, signal_name, e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to store signal params for '{}': {}",
+                            signal_name, e
+                        );
+                    }
+                }
             }
         }
     }
@@ -477,12 +588,18 @@ impl<S: ExecutionLog + 'static> Default for Registry<S> {
 /// # Ok(())
 /// # }
 /// ```
-pub struct Worker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStructuredTracing> {
+pub struct Worker<
+    S: ExecutionLog + 'static,
+    T = WithoutTimers,
+    Sig = WithoutSignals,
+    Tr = WithoutStructuredTracing,
+> {
     storage: Arc<S>,
     worker_id: String,
     registry: Arc<RwLock<Registry<S>>>,
     poll_interval: Duration,
     timer_state: T,
+    signal_state: Sig,
     tracing_state: Tr,
     /// Optional semaphore for backpressure control (limits concurrent flow execution)
     max_concurrent_flows: Option<Arc<Semaphore>>,
@@ -490,7 +607,7 @@ pub struct Worker<S: ExecutionLog + 'static, T = WithoutTimers, Tr = WithoutStru
     work_notify: Arc<tokio::sync::Notify>,
 }
 
-impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
+impl<S: ExecutionLog + 'static, Sig, Tr> Worker<S, WithoutTimers, Sig, Tr> {
     /// Enables timer processing for this worker.
     ///
     /// Returns a worker in the `WithTimers` state, which allows configuring
@@ -506,7 +623,7 @@ impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
     ///     .with_timers()
     ///     .with_timer_interval(Duration::from_millis(100));
     /// ```
-    pub fn with_timers(self) -> Worker<S, WithTimers, Tr> {
+    pub fn with_timers(self) -> Worker<S, WithTimers, Sig, Tr> {
         Worker {
             storage: self.storage,
             worker_id: self.worker_id,
@@ -515,6 +632,7 @@ impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
             timer_state: WithTimers {
                 timer_poll_interval: Duration::from_secs(1),
             },
+            signal_state: self.signal_state,
             tracing_state: self.tracing_state,
             max_concurrent_flows: self.max_concurrent_flows,
             work_notify: self.work_notify,
@@ -522,8 +640,8 @@ impl<S: ExecutionLog + 'static, Tr> Worker<S, WithoutTimers, Tr> {
     }
 }
 
-impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracing> {
-    /// Creates a new flow worker without timer processing or structured tracing.
+impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutSignals, WithoutStructuredTracing> {
+    /// Creates a new flow worker without timer processing, signal processing, or structured tracing.
     ///
     /// This is the default state providing zero-cost abstraction.
     ///
@@ -557,6 +675,7 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracin
             registry: Arc::new(RwLock::new(Registry::new())),
             poll_interval: Duration::from_secs(1),
             timer_state: WithoutTimers,
+            signal_state: WithoutSignals,
             tracing_state: WithoutStructuredTracing,
             max_concurrent_flows: None,
             work_notify,
@@ -564,7 +683,7 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutStructuredTracin
     }
 }
 
-impl<S: ExecutionLog + 'static, Tr> Worker<S, WithTimers, Tr> {
+impl<S: ExecutionLog + 'static, Sig, Tr> Worker<S, WithTimers, Sig, Tr> {
     /// Sets the interval for checking expired timers.
     ///
     /// Only available when timer processing is enabled.
@@ -585,8 +704,65 @@ impl<S: ExecutionLog + 'static, Tr> Worker<S, WithTimers, Tr> {
     }
 }
 
+// Methods for enabling signals
+impl<S: ExecutionLog + 'static, T, Tr> Worker<S, T, WithoutSignals, Tr> {
+    /// Enables signal processing for this worker.
+    ///
+    /// Returns a worker in the `WithSignals<Src>` state, which will automatically
+    /// process external signals from the provided source.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let signal_source = Arc::new(MySignalSource::new());
+    /// let worker = Worker::new(storage, "worker-1")
+    ///     .with_signals(signal_source);
+    /// ```
+    pub fn with_signals<Src>(self, source: Arc<Src>) -> Worker<S, T, WithSignals<Src>, Tr>
+    where
+        Src: crate::executor::SignalSource + 'static,
+    {
+        Worker {
+            storage: self.storage,
+            worker_id: self.worker_id,
+            registry: self.registry,
+            poll_interval: self.poll_interval,
+            timer_state: self.timer_state,
+            signal_state: WithSignals {
+                signal_source: source,
+                signal_poll_interval: Duration::from_millis(500),
+            },
+            tracing_state: self.tracing_state,
+            max_concurrent_flows: self.max_concurrent_flows,
+            work_notify: self.work_notify,
+        }
+    }
+}
+
+impl<S: ExecutionLog + 'static, T, Src, Tr> Worker<S, T, WithSignals<Src>, Tr>
+where
+    Src: crate::executor::SignalSource + 'static,
+{
+    /// Sets the interval for polling signals.
+    ///
+    /// Only available when signal processing is enabled.
+    /// Default is 500ms.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let worker = Worker::new(storage, "worker-1")
+    ///     .with_signals(signal_source)
+    ///     .with_signal_interval(Duration::from_millis(100));
+    /// ```
+    pub fn with_signal_interval(mut self, interval: Duration) -> Self {
+        self.signal_state.signal_poll_interval = interval;
+        self
+    }
+}
+
 // State transition methods for tracing
-impl<S: ExecutionLog + 'static, T> Worker<S, T, WithoutStructuredTracing> {
+impl<S: ExecutionLog + 'static, T, Sig> Worker<S, T, Sig, WithoutStructuredTracing> {
     /// Enables structured tracing for this worker.
     ///
     /// Returns a worker in the `WithStructuredTracing` state, which creates
@@ -605,13 +781,14 @@ impl<S: ExecutionLog + 'static, T> Worker<S, T, WithoutStructuredTracing> {
     ///     .start()
     ///     .await;
     /// ```
-    pub fn with_structured_tracing(self) -> Worker<S, T, WithStructuredTracing> {
+    pub fn with_structured_tracing(self) -> Worker<S, T, Sig, WithStructuredTracing> {
         Worker {
             storage: self.storage,
             worker_id: self.worker_id,
             registry: self.registry,
             poll_interval: self.poll_interval,
             timer_state: self.timer_state,
+            signal_state: self.signal_state,
             tracing_state: WithStructuredTracing,
             max_concurrent_flows: self.max_concurrent_flows,
             work_notify: self.work_notify,
@@ -619,9 +796,13 @@ impl<S: ExecutionLog + 'static, T> Worker<S, T, WithoutStructuredTracing> {
     }
 }
 
-// Methods available for all timer and tracing state combinations
-impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavior + 'static>
-    Worker<S, T, Tr>
+// Methods available for all timer, signal, and tracing state combinations
+impl<
+        S: ExecutionLog + 'static,
+        T: TimerProcessing + 'static,
+        Sig: SignalProcessing + 'static,
+        Tr: TracingBehavior + 'static,
+    > Worker<S, T, Sig, Tr>
 {
     /// Sets the poll interval for checking the queue.
     ///
@@ -788,26 +969,31 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             return;
         }
 
-        if let Err(e) = storage.resume_flow(parent_id).await {
-            // resume_flow will fail if parent is not in SUSPENDED state
-            // This is expected when parent has already completed or in race condition
-            debug!(
-                "Could not resume parent flow {} (may have already completed): {}",
-                parent_id, e
-            );
-        } else {
-            let status = if success { "success" } else { "error" };
-            debug!(
-                "Auto-signaled parent flow {} with token {} ({}{})",
-                parent_id,
-                signal_token,
-                status,
-                if let Some(msg) = error_msg {
-                    format!(": {}", msg)
-                } else {
-                    String::new()
-                }
-            );
+        match storage.resume_flow(parent_id).await {
+            Ok(true) => {
+                let status = if success { "success" } else { "error" };
+                debug!(
+                    "Auto-signaled parent flow {} with token {} ({}{})",
+                    parent_id,
+                    signal_token,
+                    status,
+                    if let Some(msg) = error_msg {
+                        format!(": {}", msg)
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+            Ok(false) => {
+                // Parent not in SUSPENDED state - expected during race conditions
+                debug!(
+                    "Parent flow {} not in SUSPENDED state (will resume when it suspends)",
+                    parent_id
+                );
+            }
+            Err(e) => {
+                warn!("Failed to resume parent flow {}: {}", parent_id, e);
+            }
         }
     }
 
@@ -904,9 +1090,9 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
         // FIX: Check if signal arrived while we were still RUNNING
         // Race condition with multiple workers:
         // - Worker A: Parent suspends (RUNNING)
-        // - Worker B: Child completes, calls resume_flow() → FAILS (parent still RUNNING)
+        // - Worker B: Child completes, calls resume_flow() → returns false (parent still RUNNING)
         // - Worker A: Marks parent SUSPENDED
-        // - Parent is stuck! Need to check for pending signals and resume immediately
+        // - Need to check for pending signals and resume immediately
         if let Ok(invocations) = storage.get_invocations_for_flow(flow_id).await {
             for inv in invocations.iter() {
                 if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
@@ -915,7 +1101,17 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
                             "Found pending signal for suspended flow {} step {}, resuming immediately",
                             flow_id, inv.step()
                         );
-                        let _ = storage.resume_flow(flow_id).await;
+                        match storage.resume_flow(flow_id).await {
+                            Ok(true) => debug!("Resumed flow {} with pending signal", flow_id),
+                            Ok(false) => debug!(
+                                "Flow {} already resumed by another worker",
+                                flow_id
+                            ),
+                            Err(e) => warn!(
+                                "Failed to resume flow {} with pending signal: {}",
+                                flow_id, e
+                            ),
+                        }
                         break;
                     }
                 }
@@ -966,6 +1162,16 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
             "Worker {} flow failed: task_id={}, error={}",
             worker_id, flow_task_id, error_msg
         );
+
+        // Mark NonRetryable errors as non-retryable in storage
+        if matches!(error, ExecutionError::NonRetryable(_)) {
+            if let Err(e) = storage.update_is_retryable(flow.flow_id, 0, false).await {
+                warn!(
+                    "Worker {} failed to mark error as non-retryable: {}",
+                    worker_id, e
+                );
+            }
+        }
 
         // Check retry policy
         match Self::check_should_retry(storage, flow).await {
@@ -1169,6 +1375,13 @@ impl<S: ExecutionLog + 'static, T: TimerProcessing + 'static, Tr: TracingBehavio
 
                             self.timer_state
                                 .process_timers(&self.storage, &self.worker_id)
+                                .await;
+                        }
+
+                        // Process pending signals (deliver to waiting flows)
+                        {
+                            self.signal_state
+                                .process_signals(&self.storage, &self.worker_id)
                                 .await;
                         }
 

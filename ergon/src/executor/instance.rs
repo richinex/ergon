@@ -244,7 +244,9 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
             .map_err(ExecutionError::from)?;
 
         // Re-enqueue the flow so a worker can pick it up
-        self.storage
+        // Returns false if flow isn't suspended yet (race condition) - that's fine
+        let _ = self
+            .storage
             .resume_flow(self.id)
             .await
             .map_err(ExecutionError::from)?;

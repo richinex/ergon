@@ -1077,7 +1077,10 @@ impl ExecutionLog for RedisExecutionLog {
     ) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let flow_key = Self::flow_key(task_id);
-        let scheduled_for = Utc::now() + chrono::Duration::from_std(delay).unwrap();
+        let scheduled_for = Utc::now()
+            + chrono::Duration::from_std(delay).map_err(|e| {
+                StorageError::Connection(format!("Invalid delay duration: {}", e))
+            })?;
         let scheduled_ts = scheduled_for.timestamp_millis();
 
         // Acknowledge the failed stream attempt (if it exists)
@@ -1377,7 +1380,7 @@ impl ExecutionLog for RedisExecutionLog {
         Ok(())
     }
 
-    async fn resume_flow(&self, flow_id: Uuid) -> Result<()> {
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<bool> {
         let mut conn = self.get_connection().await?;
 
         // O(1) lookup using flow_id -> task_id index (no more slow SCAN!)
@@ -1386,11 +1389,10 @@ impl ExecutionLog for RedisExecutionLog {
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        let task_id = task_id_str
-            .and_then(|s| Uuid::parse_str(&s).ok())
-            .ok_or_else(|| {
-                StorageError::Connection(format!("Task not found for flow_id: {}", flow_id))
-            })?;
+        let Some(task_id) = task_id_str.and_then(|s| Uuid::parse_str(&s).ok()) else {
+            debug!("Task not found for flow_id: {}", flow_id);
+            return Ok(false);
+        };
 
         let flow_key = Self::flow_key(task_id);
         let now = Utc::now().timestamp();
@@ -1401,10 +1403,10 @@ impl ExecutionLog for RedisExecutionLog {
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        // Resume if SUSPENDED, or if RUNNING (race condition: child completed while parent being processed)
-        // The dequeue Lua script will handle checking if task is already in queue
+        // Only resume if SUSPENDED - this prevents race condition errors
+        // RUNNING, PENDING, COMPLETE, FAILED are all valid non-error states
         match status.as_deref() {
-            Some("SUSPENDED") | Some("RUNNING") => {
+            Some("SUSPENDED") => {
                 // Resume the flow by updating status and re-enqueuing to stream
                 let _: () = redis::pipe()
                     .atomic()
@@ -1417,54 +1419,37 @@ impl ExecutionLog for RedisExecutionLog {
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
 
                 // Re-enqueue to stream
-                match self.reenqueue_to_stream(&mut conn, task_id).await {
-                    Ok(()) => {
-                        info!(
-                            "✓ Resumed flow via stream: flow_id={}, task_id={}",
-                            &flow_id.to_string()[..8],
-                            &task_id.to_string()[..8]
-                        );
+                self.reenqueue_to_stream(&mut conn, task_id).await?;
 
-                        // Wake up one waiting worker (if any)
-                        if let Some(ref notify) = self.work_notify {
-                            notify.notify_one();
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "✗ Failed to re-enqueue flow {}: {}",
-                            &task_id.to_string()[..8],
-                            e
-                        );
-                        return Err(e);
-                    }
+                info!(
+                    "Resumed flow: flow_id={}, task_id={}",
+                    &flow_id.to_string()[..8],
+                    &task_id.to_string()[..8]
+                );
+
+                // Wake up one waiting worker (if any)
+                if let Some(ref notify) = self.work_notify {
+                    notify.notify_one();
                 }
+
+                Ok(true)
             }
-            Some("COMPLETE") | Some("FAILED") => {
-                // Already completed - this is fine (duplicate signal/child completion)
+            Some("RUNNING") | Some("PENDING") | Some("COMPLETE") | Some("FAILED") => {
+                // Flow not in SUSPENDED state - this is expected during races
                 debug!(
-                    "Flow already completed: flow_id={}, task_id={}",
-                    flow_id, task_id
+                    "Flow not resumed (state: {:?}): flow_id={}, task_id={}",
+                    status, flow_id, task_id
                 );
-                return Ok(());
-            }
-            Some("PENDING") => {
-                // Already in queue - this is fine
-                debug!(
-                    "Flow already pending: flow_id={}, task_id={}",
-                    flow_id, task_id
-                );
-                return Ok(());
+                Ok(false)
             }
             _ => {
-                return Err(StorageError::Connection(format!(
-                    "Task in unexpected state {:?} for flow_id: {}",
+                warn!(
+                    "Flow in unexpected state {:?} for flow_id: {}",
                     status, flow_id
-                )));
+                );
+                Ok(false)
             }
         }
-
-        Ok(())
     }
 
     // ===== Signal Operations =====

@@ -18,7 +18,49 @@ use super::context::EXECUTION_CONTEXT;
 use super::error::{ExecutionError, Result, SuspendReason};
 use crate::core::{deserialize_value, InvocationStatus};
 use serde::de::DeserializeOwned;
+use tracing::debug;
 use uuid::Uuid;
+
+// ============================================================================
+// Signal Source Trait
+// ============================================================================
+
+/// Trait for external signal sources that can be integrated with the Worker.
+///
+/// Implement this trait to provide custom signal sources (HTTP webhooks,
+/// stdin, message queues, etc.). The Worker will automatically poll for
+/// signals and resume flows.
+///
+/// # Example
+///
+/// ```ignore
+/// struct HttpSignalSource {
+///     signals: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+/// }
+///
+/// #[async_trait]
+/// impl SignalSource for HttpSignalSource {
+///     async fn poll_for_signal(&self, signal_name: &str) -> Option<Vec<u8>> {
+///         self.signals.write().await.remove(signal_name)
+///     }
+///
+///     async fn consume_signal(&self, _signal_name: &str) {
+///         // Already consumed in poll_for_signal
+///     }
+/// }
+/// ```
+#[async_trait::async_trait]
+pub trait SignalSource: Send + Sync {
+    /// Poll for a signal by name.
+    ///
+    /// Returns Some(signal_data) if the signal is available, None otherwise.
+    async fn poll_for_signal(&self, signal_name: &str) -> Option<Vec<u8>>;
+
+    /// Mark a signal as consumed after processing.
+    ///
+    /// This prevents the signal from being re-processed.
+    async fn consume_signal(&self, signal_name: &str);
+}
 
 /// Wrapper type for step futures (for backwards compatibility with step macro).
 ///
@@ -119,12 +161,10 @@ where
             if let Some(params) = ctx.storage.get_signal_params(ctx.id, current_step).await? {
                 // Signal arrived! Deserialize and return the data
                 let result: T = deserialize_value(&params)?;
-                // CRITICAL: Mark invocation as complete BEFORE removing params
-                // This ensures on replay we return the cached value instead of suspending again
-                ctx.storage
-                    .log_invocation_completion(ctx.id, current_step, &params)
-                    .await?;
-                // Clean up signal params
+                // DO NOT mark invocation as complete here - let the step macro do it!
+                // The step might return an error after reading the signal,
+                // and we don't want to cache it as Complete if it fails.
+                // Clean up signal params so they aren't re-delivered on retry
                 ctx.storage
                     .remove_signal_params(ctx.id, current_step)
                     .await?;
@@ -254,8 +294,15 @@ where
         .store_signal_params(parent_flow_id, waiting_step.step(), &result_bytes)
         .await?;
 
-    // Resume parent flow
-    storage.resume_flow(parent_flow_id).await?;
+    // Resume parent flow - may return false if parent isn't suspended yet (race condition)
+    // The worker's handle_suspended_flow will check for pending signals and resume
+    match storage.resume_flow(parent_flow_id).await? {
+        true => debug!("Resumed parent flow {}", parent_flow_id),
+        false => debug!(
+            "Parent flow {} not in SUSPENDED state (will resume when it suspends)",
+            parent_flow_id
+        ),
+    }
 
     Ok(())
 }
