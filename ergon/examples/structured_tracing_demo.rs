@@ -174,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing(structured, full_spans);
 
     // Create storage
-    let storage = Arc::new(SqliteExecutionLog::in_memory().await?);
+    let storage = Arc::new(InMemoryExecutionLog::new());
 
     println!("\n=== Structured Tracing Demo ===\n");
 

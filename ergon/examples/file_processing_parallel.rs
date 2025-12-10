@@ -28,8 +28,15 @@
 
 use ergon::prelude::*;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+// Global execution counters
+static READ_CSV_COUNT: AtomicU32 = AtomicU32::new(0);
+static VALIDATE_COUNT: AtomicU32 = AtomicU32::new(0);
+static COMPUTE_STATS_COUNT: AtomicU32 = AtomicU32::new(0);
+static WRITE_RESULTS_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Serialize, Deserialize, Clone, FlowType)]
 struct FileProcessor {
@@ -63,6 +70,7 @@ impl FileProcessor {
 
     #[step]
     async fn read_csv(self: Arc<Self>) -> Result<Vec<Record>, String> {
+        READ_CSV_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("  [Step 1] Reading CSV file: {}", self.input_file);
 
         // Read file contents
@@ -111,6 +119,7 @@ impl FileProcessor {
         self: Arc<Self>,
         records: Vec<Record>,
     ) -> Result<Vec<Record>, String> {
+        VALIDATE_COUNT.fetch_add(1, Ordering::Relaxed);
         println!(
             "  [Step 2] Validating {} records from {}",
             records.len(),
@@ -154,6 +163,7 @@ impl FileProcessor {
         self: Arc<Self>,
         records: Vec<Record>,
     ) -> Result<Statistics, String> {
+        COMPUTE_STATS_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("  [Step 3] Computing statistics for {}", self.input_file);
 
         let total = records.len();
@@ -196,6 +206,7 @@ impl FileProcessor {
 
     #[step(inputs(stats = "compute_statistics"))]
     async fn write_results(self: Arc<Self>, stats: Statistics) -> Result<ProcessingReport, String> {
+        WRITE_RESULTS_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("  [Step 4] Writing results to: {}", self.output_file);
 
         // Create output directory if needed
@@ -274,16 +285,28 @@ struct ProcessingReport {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nParallel File Processing Flow Example");
-    println!("======================================\n");
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║        Parallel File Processing Flow Example              ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     // Create sample input files
     setup_sample_files().await?;
 
-    // Create storage
     let storage = Arc::new(InMemoryExecutionLog::new());
 
-    // Schedule file processing flows
+    // ============================================================
+    // PART 1: API Server / Scheduler Process
+    // ============================================================
+    // In production, this would be an HTTP endpoint that:
+    //   POST /api/process-files -> schedules workflows -> returns 202 Accepted
+    //
+    // The scheduler does NOT wait for completion. It returns immediately.
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 1: Scheduling File Processing (API Server)           ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
     let scheduler = Scheduler::new(storage.clone());
 
     let files = vec![
@@ -292,16 +315,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("data/sales_2024_q3.csv", "output/sales_q3_report.txt"),
     ];
 
-    for (input, output) in files {
+    let mut task_ids = Vec::new();
+    for (input, output) in &files {
         let processor = FileProcessor {
             input_file: input.to_string(),
             output_file: output.to_string(),
         };
-        scheduler.schedule(processor, Uuid::new_v4()).await?;
+        let task_id = scheduler.schedule(processor, Uuid::new_v4()).await?;
+        println!("   ✓ {} scheduled (task_id: {})", input, &task_id.to_string()[..8]);
+        task_ids.push(task_id);
     }
 
-    println!("Scheduled {} file processing flows", 3);
-    println!("Starting 3 workers for parallel processing...\n");
+    println!("\n   → In production: Return HTTP 202 Accepted");
+    println!("   → Response body: {{\"task_ids\": [{:?}, ...]}}", &task_ids[0].to_string()[..8]);
+    println!("   → Client polls GET /api/tasks/:id for status\n");
+
+    // ============================================================
+    // PART 2: Worker Service (Separate Process)
+    // ============================================================
+    // In production, workers run in separate pods/containers/services.
+    // They continuously poll the shared storage for work.
+    //
+    // Workers are completely decoupled from the scheduler.
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 2: Starting Workers (Separate Service)               ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let start = Instant::now();
 
@@ -338,6 +378,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_handles.push(handle);
     }
 
+    println!("   ✓ 3 workers started and polling for work\n");
+
+    // ============================================================
+    // PART 3: Client Status Monitoring (Demo Only)
+    // ============================================================
+    // In production, the CLIENT would poll a status API endpoint:
+    //   GET /api/tasks/:id -> returns {status: "pending|running|complete|failed"}
+    //
+    // This demonstrates that workflows actually execute, but in production
+    // the scheduler process would NOT do this polling.
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("   → Simulating client polling GET /api/tasks/:id...\n");
+
     // Wait for all workers to complete
     for handle in worker_handles {
         handle.await?;
@@ -345,15 +402,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let duration = start.elapsed();
 
-    println!("\nProcessing Complete!");
-    println!("====================");
-    println!("\nResults:");
-    println!("  Files processed: 3");
-    println!("  Workers used:    3");
-    println!("  Total time:      {:?}", duration);
-    println!("\nCheck the 'output/' directory for results.");
-    println!("\nNotice: The output shows INTERLEAVED execution from");
-    println!("        different workers processing files concurrently!\n");
+    println!("\n=== Summary ===\n");
+
+    println!("Step Execution Counts:");
+    println!("  read_csv:         {}", READ_CSV_COUNT.load(Ordering::Relaxed));
+    println!(
+        "  validate_clean:   {}",
+        VALIDATE_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  compute_stats:    {}",
+        COMPUTE_STATS_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  write_results:    {}",
+        WRITE_RESULTS_COUNT.load(Ordering::Relaxed)
+    );
+
+    println!("\nExecution Metrics:");
+    println!("  Files processed:  {}", files.len());
+    println!("  Workers used:     3");
+    println!("  Total time:       {:.2}s", duration.as_secs_f64());
 
     Ok(())
 }

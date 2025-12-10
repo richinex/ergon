@@ -258,59 +258,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(db);
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
-    let scheduler = Scheduler::new(storage.clone());
 
     println!("\n=== Testing Custom Error Types ===\n");
 
+    // ============================================================
+    // PART 1: API Server / Scheduler Process
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 1: Scheduling Payment Orders (API Server)            ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    let scheduler = Scheduler::new(storage.clone());
+    let mut task_ids = Vec::new();
+
     // Test 1: Successful payment
-    println!("--- Test 1: Successful Payment ---");
     let order1 = PaymentOrder {
         order_id: "ORD-001".into(),
         amount: 100.0,
         card_number: "1234567890123456".into(),
     };
     let task_id = scheduler.schedule(order1, Uuid::new_v4()).await?;
-    println!("[{}] scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    println!("   ✓ ORD-001 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    task_ids.push(task_id);
 
-    // Test 2: Invalid card (validation error)
-    println!("--- Test 2: Invalid Card ---");
+    // Test 2: Invalid card
     let order2 = PaymentOrder {
         order_id: "ORD-002".into(),
         amount: 200.0,
         card_number: "123".into(), // Too short
     };
     let task_id = scheduler.schedule(order2, Uuid::new_v4()).await?;
-    println!("[{}] scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    println!("   ✓ ORD-002 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    task_ids.push(task_id);
 
     // Test 3: Fraud detection
-    println!("--- Test 3: Fraud Detection ---");
     let order3 = PaymentOrder {
         order_id: "ORD-003".into(),
         amount: 15000.0, // High amount triggers fraud
         card_number: "1234567890123456".into(),
     };
     let task_id = scheduler.schedule(order3, Uuid::new_v4()).await?;
-    println!("[{}] scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    println!("   ✓ ORD-003 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    task_ids.push(task_id);
 
     // Test 4: Insufficient funds
-    println!("--- Test 4: Insufficient Funds ---");
     let order4 = PaymentOrder {
         order_id: "ORD-004".into(),
         amount: 8000.0, // Exceeds simulated balance of 5000
         card_number: "1234567890123456".into(),
     };
     let task_id = scheduler.schedule(order4, Uuid::new_v4()).await?;
-    println!("[{}] scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    println!("   ✓ ORD-004 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    task_ids.push(task_id);
 
     // Test 5: Network error
-    println!("--- Test 5: Network Error ---");
     let order5 = PaymentOrder {
         order_id: "ORD-005".into(),
         amount: 300.0,
         card_number: "4000123456789012".into(), // 4000 prefix triggers network error
     };
     let task_id = scheduler.schedule(order5, Uuid::new_v4()).await?;
-    println!("[{}] scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    println!("   ✓ ORD-005 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    task_ids.push(task_id);
+
+    println!("\n   → In production: Return HTTP 202 Accepted with task_ids\n");
+
+    // ============================================================
+    // PART 2: Worker Service (Separate Process)
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 2: Starting Worker (Separate Service)                ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let worker =
         Worker::new(storage.clone(), "worker").with_poll_interval(Duration::from_millis(50));
@@ -321,13 +341,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let handle = worker.start().await;
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    handle.shutdown().await;
+    println!("   ✓ Worker started and polling for work\n");
 
+    // ============================================================
+    // PART 3: Client Status Monitoring (Demo Only)
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    let timeout_duration = Duration::from_secs(5);
+    let wait_result = tokio::time::timeout(timeout_duration, async {
+        loop {
+            let mut all_complete = true;
+            for &task_id in &task_ids {
+                if let Some(scheduled) = storage.get_scheduled_flow(task_id).await? {
+                    if !matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
+                        all_complete = false;
+                        break;
+                    }
+                }
+            }
+            if all_complete {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await;
+
+    match wait_result {
+        Ok(_) => println!("\n=== All Tests Complete ===\n"),
+        Err(_) => println!("\n[WARN] Timeout waiting for tests to complete\n"),
+    }
+
+    handle.shutdown().await;
     storage.close().await?;
 
-    println!("\n=== All Tests Complete ===");
-    println!("\nNote: Check the execution log to see how different error types");
+    println!("Note: Check the execution log to see how different error types");
     println!("are stored and can be used for error recovery strategies.");
 
     Ok(())

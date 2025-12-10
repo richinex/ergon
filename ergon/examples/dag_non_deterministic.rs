@@ -74,11 +74,6 @@ impl PaymentProcessor {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Non-Determinism Detection Demo");
-    println!("===============================\n");
-
-    println!("This shows how hash-based detection catches Option<Some> vs Option<None>.\n");
-
     let db = "/tmp/nondeterminism_test.db";
     let _ = std::fs::remove_file(db);
 
@@ -94,8 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Run 1: Customer HAS discount code
     // =========================================================================
-    println!("Run 1: Customer HAS discount code");
-    println!("----------------------------------\n");
 
     let processor1 = Arc::new(PaymentProcessor {
         amount: 100.0,
@@ -117,7 +110,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Show database state
-    println!("Database state after Run 1:");
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
     for inv in &invocations {
         if inv.step() > 0 {
@@ -135,10 +127,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run 2: External state changed - customer NO LONGER has discount
     // =========================================================================
     HAS_DISCOUNT_CODE.store(false, Ordering::SeqCst);
-
-    println!("Run 2: Customer NO LONGER has discount code (state changed!)");
-    println!("-------------------------------------------------------------\n");
-    println!("       Calling apply_discount with None instead of Some(\"SAVE20\")...\n");
 
     let processor2 = Arc::new(PaymentProcessor {
         amount: 100.0,
@@ -159,18 +147,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Results
     // =========================================================================
-    println!("Detection Result");
-    println!("----------------\n");
 
     match result2 {
         Ok(FlowOutcome::Completed(result)) => {
-            println!("  Result: {:?}", result);
-            println!("\n[FAIL] Non-determinism was NOT detected.");
-            println!("       This should not happen if hash validation is working.");
+            println!("Result: {:?}", result);
         }
         Ok(FlowOutcome::Suspended(reason)) => {
-            println!("  Suspended: {:?}", reason);
-            println!("\n[WARN] Flow suspended, non-determinism may or may not be detected.");
+            println!("Suspended: {:?}", reason);
         }
         Err(panic) => {
             let panic_msg = panic
@@ -179,19 +162,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .or_else(|| panic.downcast_ref::<&str>().copied())
                 .unwrap_or("Unknown panic");
 
-            println!("[PASS] Non-determinism detected. Flow panicked with:");
-            println!("       {}\n", panic_msg);
-            println!("       Hash-based detection caught Option<Some> vs Option<None>.");
-            println!("       The stored params hash differs from the current params hash.");
+            println!("Flow panicked with: {}", panic_msg);
         }
     }
-
-    println!("\nKey Insight");
-    println!("-----------\n");
-    println!("  The bug: discount_code was set from external state OUTSIDE a step.");
-    println!("  When state changed between runs, the flow struct had different data.");
-    println!("  Ergon's hash validation detected the mismatch and prevented silent corruption.");
-    println!("\n  Fix: Capture external state INSIDE a step so it's recorded and replayed.");
 
     Ok(())
 }

@@ -197,9 +197,6 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nCrash Recovery & Step Resumability Demo");
-    println!("========================================\n");
-
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = Scheduler::new(storage.clone());
 
@@ -218,9 +215,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     // PHASE 1: First worker processes until crash
     // ========================================================================
-
-    println!("PHASE 1: Worker-1 starts processing (will crash)");
-    println!("=================================================\n");
 
     let storage_clone = storage.clone();
     let worker1 = tokio::spawn(async move {
@@ -245,13 +239,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check what happened
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    println!("STATUS CHECK: What happened after crash?");
-    println!("=========================================\n");
-
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
 
-    println!("Flow Invocations:");
-    println!("Completed Steps:");
     for inv in &invocations {
         if inv.step() > 0 {
             // Skip flow itself (step 0)
@@ -279,12 +268,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     // PHASE 2: Demonstrate manual retry/recovery (in production: automatic)
     // ========================================================================
-
-    println!("\nPHASE 2: Recovery - Retry the failed flow");
-    println!("==========================================\n");
-
-    println!("Note: For automatic retry with exponential backoff, see retry_recovery_demo.rs");
-    println!("This demo shows manual re-scheduling to demonstrate crash recovery\n");
 
     // Re-schedule the same order to demonstrate crash recovery and resumability
     let order_retry = OrderProcessor {
@@ -316,9 +299,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // FINAL RESULTS
     // ========================================================================
 
-    println!("\nFINAL RESULTS");
-    println!("=============\n");
-
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
     let flow_invocation = invocations.iter().find(|i| i.step() == 0);
 
@@ -326,7 +306,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Flow Status: {:?}", flow.status());
     }
 
-    println!("\nAll Steps:");
     for inv in &invocations {
         if inv.step() > 0 {
             println!("  {} (completed)", inv.method_name());
@@ -336,37 +315,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
     let inventory_count = INVENTORY_RESERVE_COUNT.load(Ordering::SeqCst);
 
-    println!("\nExecution Statistics:");
-    println!("  Payment charged:     {} time(s)", payment_count);
-    println!("  Inventory reserved:  {} time(s)", inventory_count);
-
-    println!("\nKey Takeaways:");
-
-    if payment_count == 1 {
-        println!("  - Payment step ran exactly ONCE despite worker crash");
-        println!("  - Worker-2 resumed at 'reserve_inventory' step");
-        println!("  - Payment data automatically loaded from storage");
-        println!("  - No duplicate charges - customer billed correctly");
-    } else {
-        println!(
-            "  - Payment step ran {} times - duplicate charge!",
-            payment_count
-        );
-    }
-
-    println!("\nWith Regular Queues:");
-    println!("  - Entire task would retry from step 1");
-    println!(
-        "  - Customer would be charged {} times",
-        if payment_count == 1 { 2 } else { payment_count }
-    );
-    println!("  - Need 50+ lines of manual idempotency checks");
-
-    println!("\nWith Ergon:");
-    println!("  - Automatic step-level resumability");
-    println!("  - Zero boilerplate idempotency code");
-    println!("  - Exactly-once execution guaranteed");
-    println!("  - For automatic retry with backoff, see: retry_recovery_demo.rs\n");
+    println!("Payment charged:     {} time(s)", payment_count);
+    println!("Inventory reserved:  {} time(s)", inventory_count);
 
     Ok(())
 }

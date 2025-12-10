@@ -1598,7 +1598,6 @@ impl WorkerHandle {
 mod tests {
     use super::*;
     use crate::executor::Scheduler;
-    use crate::storage::SqliteExecutionLog;
     use ergon_macros::FlowType;
     use serde::{Deserialize, Serialize};
 
@@ -1617,7 +1616,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_worker_registry() {
-        let storage = Arc::new(SqliteExecutionLog::in_memory().await.unwrap());
+        let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
         let worker = Worker::new(storage.clone(), "test-worker");
 
         worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
@@ -1628,7 +1627,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scheduler_enqueue() {
-        let storage = Arc::new(SqliteExecutionLog::in_memory().await.unwrap());
+        let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
         let scheduler = Scheduler::new(storage.clone());
 
         let flow = TestFlow { value: 21 };

@@ -807,11 +807,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("\nEXTRACT Phase (3 steps - natural sequential flow):");
         println!("  Time spread: {}ms", time_diff);
-        if time_diff > 200 {
-            println!("  Result: Steps executed SEQUENTIALLY (significant time gap)");
-        } else {
-            println!("  Result: Steps executed close together");
-        }
     }
 
     // Analyze silver layer execution
@@ -832,18 +827,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("\nTRANSFORM-SILVER Phase (3 steps - natural sequential flow):");
         println!("  Time spread: {}ms", time_diff);
-        if time_diff > 150 {
-            println!("  Result: Steps executed SEQUENTIALLY (significant time gap)");
-        } else {
-            println!("  Result: Steps executed close together");
-        }
     }
 
-    println!("\n==========================================================");
-    println!("Note: Compare this with comparison_etl_parallel.rs to see");
-    println!("      the performance difference between sequential and parallel");
-    println!("      execution of the same ETL workflow.");
-    println!("==========================================================\n");
+    println!("\n==========================================================\n");
 
     Ok(())
 }

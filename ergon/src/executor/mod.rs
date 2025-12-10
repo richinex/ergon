@@ -60,27 +60,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Executes multiple independent steps in parallel.
-///
-/// This macro provides a clean syntax for parallel step execution
-/// using tokio::join! under the hood.
-///
-/// # Example
-///
-/// ```ignore
-/// let (user, orders, preferences) = parallel!(
-///     self.fetch_user(user_id),
-///     self.fetch_orders(user_id),
-///     self.fetch_preferences(user_id),
-/// );
-/// ```
-#[macro_export]
-macro_rules! parallel {
-    ($($future:expr),+ $(,)?) => {
-        tokio::join!($($future),+)
-    };
-}
-
 // =============================================================================
 // ARC HELPER FOR ERGONOMIC STEP CALLING
 // =============================================================================

@@ -567,13 +567,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n=== Key Observations ===\n");
-    println!("1. Parent flow suspends three times (waiting for each child)");
-    println!("2. Each child executes as independent flow with separate flow_id");
-    println!("3. Children signal parent with typed results on completion");
-    println!("4. Parent resumes after each signal and continues");
-    println!("5. This achieves function tree semantics using signals!");
-
     storage.close().await?;
     Ok(())
 }

@@ -123,7 +123,6 @@ impl<S: ExecutionLog> Scheduler<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::SqliteExecutionLog;
     use ergon_macros::FlowType;
     use serde::{Deserialize, Serialize};
 
@@ -134,7 +133,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_schedule_flow() {
-        let storage = Arc::new(SqliteExecutionLog::in_memory().await.unwrap());
+        let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
         let scheduler = Scheduler::new(storage.clone());
 
         let flow = TestFlow {

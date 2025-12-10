@@ -467,9 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         LABELS_GENERATED.load(Ordering::SeqCst)
     );
 
-    println!("\nAll orders completed successfully");
-    println!("   Notice how different workers handled different flows.");
-    println!("   Parent and children can be processed by different workers.\n");
+    println!("\nAll orders completed successfully\n");
 
     storage.close().await?;
     Ok(())

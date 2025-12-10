@@ -347,7 +347,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("multi_worker.db").await?);
     storage.reset().await?;
 
-    // Schedule 2 orders
+    // ============================================================
+    // PART 1: API Server / Scheduler Process
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 1: Scheduling Orders (API Server)                    ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
     let scheduler = Scheduler::new(storage.clone());
 
     let order1 = OrderFulfillment {
@@ -364,16 +371,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         amount: 299.99,
     };
 
-    println!("Scheduling orders...");
-    let flow1_id = Uuid::new_v4();
-    let flow2_id = Uuid::new_v4();
-    scheduler.schedule(order1, flow1_id).await?;
-    scheduler.schedule(order2, flow2_id).await?;
-    println!("   - ORD-001 scheduled");
-    println!("   - ORD-002 scheduled\n");
+    let task_id_1 = scheduler.schedule(order1, Uuid::new_v4()).await?;
+    let task_id_2 = scheduler.schedule(order2, Uuid::new_v4()).await?;
+    println!("   ✓ ORD-001 scheduled (task_id: {})", task_id_1);
+    println!("   ✓ ORD-002 scheduled (task_id: {})", task_id_2);
 
-    // Start 3 workers
-    println!("Starting 3 workers...\n");
+    println!("\n   → In production: Return HTTP 202 Accepted with task_ids");
+    println!("   → Client polls GET /api/tasks/:id for status\n");
+
+    // ============================================================
+    // PART 2: Worker Service (Separate Process)
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 2: Starting 3 Workers (Separate Service)             ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let storage_clone = storage.clone();
     let worker1 = tokio::spawn(async move {
@@ -394,8 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
 
         let handle = worker.start().await;
-        tokio::time::sleep(Duration::from_secs(8)).await;
-        handle.shutdown().await;
+        handle
     });
 
     let storage_clone = storage.clone();
@@ -417,8 +428,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
 
         let handle = worker.start().await;
-        tokio::time::sleep(Duration::from_secs(8)).await;
-        handle.shutdown().await;
+        handle
     });
 
     let storage_clone = storage.clone();
@@ -440,12 +450,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
 
         let handle = worker.start().await;
-        tokio::time::sleep(Duration::from_secs(8)).await;
-        handle.shutdown().await;
+        handle
     });
 
-    // Wait for all workers
-    let _ = tokio::join!(worker1, worker2, worker3);
+    let w1 = worker1.await?;
+    let w2 = worker2.await?;
+    let w3 = worker3.await?;
+
+    println!("   ✓ 3 workers started and polling for work\n");
+
+    // ============================================================
+    // PART 3: Client Status Monitoring (Demo Only)
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    // Wait for all flows to complete
+    let timeout_duration = Duration::from_secs(10);
+    let task_ids = vec![task_id_1, task_id_2];
+    let wait_result = tokio::time::timeout(timeout_duration, async {
+        loop {
+            let mut all_complete = true;
+            for &task_id in &task_ids {
+                if let Some(scheduled) = storage.get_scheduled_flow(task_id).await? {
+                    if !matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
+                        all_complete = false;
+                        break;
+                    }
+                }
+            }
+            if all_complete {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await;
+
+    match wait_result {
+        Ok(_) => println!("\nAll orders completed successfully!\n"),
+        Err(_) => println!("\n[WARN] Timeout waiting for orders to complete\n"),
+    }
 
     // Print summary
     println!("\n╔════════════════════════════════════════════════════════════╗");
@@ -465,9 +513,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         LABELS_GENERATED.load(Ordering::SeqCst)
     );
 
-    println!("\nAll orders completed successfully");
-    println!("   Notice how different workers handled different flows.");
-    println!("   Parent and children can be processed by different workers.\n");
+    // Shutdown workers
+    w1.shutdown().await;
+    w2.shutdown().await;
+    w3.shutdown().await;
 
     storage.close().await?;
     Ok(())

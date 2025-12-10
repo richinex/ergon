@@ -52,7 +52,6 @@ impl Default for PoolConfig {
 /// natively async without `spawn_blocking` overhead.
 pub struct SqliteExecutionLog {
     pool: SqlitePool,
-    db_path: String,
     /// Optional notify handle for waking workers when work becomes available
     work_notify: Option<Arc<Notify>>,
 }
@@ -67,10 +66,8 @@ impl SqliteExecutionLog {
 
     /// Creates a new SQLite execution log with custom pool configuration.
     pub async fn with_config(db_path: impl AsRef<Path>, config: PoolConfig) -> Result<Self> {
-        let db_path_str = db_path.as_ref().to_string_lossy().to_string();
-
         // Configure SQLite connection options for optimal concurrent access
-        let connect_options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path_str))
+        let connect_options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.as_ref().to_string_lossy()))
             .map_err(|e| StorageError::Connection(e.to_string()))?
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
@@ -81,7 +78,6 @@ impl SqliteExecutionLog {
 
         let log = Self {
             pool,
-            db_path: db_path_str,
             work_notify: Some(Arc::new(Notify::new())),
         };
 
@@ -90,63 +86,6 @@ impl SqliteExecutionLog {
         Ok(log)
     }
 
-    /// Creates an in-memory SQLite execution log.
-    ///
-    /// Note: In-memory databases with connection pooling share the same
-    /// database across all connections using a special URI.
-    pub async fn in_memory() -> Result<Self> {
-        Self::in_memory_with_config(PoolConfig::default()).await
-    }
-
-    /// Creates an in-memory SQLite execution log with custom pool configuration.
-    ///
-    /// For in-memory databases, we use a single connection to ensure data consistency
-    /// across the application. This is suitable for sequential flows but NOT for DAG
-    /// flows which require concurrent write access. For DAG flows, use file-based storage.
-    pub async fn in_memory_with_config(config: PoolConfig) -> Result<Self> {
-        // For in-memory, we use a single connection to ensure data consistency
-        let mut in_memory_config = config;
-        in_memory_config.max_size = 1;
-        in_memory_config.min_idle = Some(0);
-
-        let connect_options = SqliteConnectOptions::from_str("sqlite::memory:")
-            .map_err(|e| StorageError::Connection(e.to_string()))?
-            .journal_mode(SqliteJournalMode::Memory)
-            .synchronous(SqliteSynchronous::Normal);
-
-        let pool = Self::build_pool(connect_options, &in_memory_config).await?;
-
-        let log = Self {
-            pool,
-            db_path: ":memory:".to_string(),
-            work_notify: Some(Arc::new(Notify::new())),
-        };
-
-        log.initialize().await?;
-
-        Ok(log)
-    }
-
-    /// Sets the work notification handle for waking workers when work becomes available.
-    ///
-    /// This enables event-driven worker wakeup instead of polling with sleep.
-    /// Workers wait on `notify.notified()` instead of sleeping when the queue is empty.
-    ///
-    /// # Arguments
-    ///
-    /// * `notify` - Shared Notify handle that workers will wait on
-    pub fn with_work_notify(mut self, notify: Arc<Notify>) -> Self {
-        self.work_notify = Some(notify);
-        self
-    }
-
-    /// Returns a reference to the work notification handle.
-    ///
-    /// Workers should use this notify to wait for work instead of sleeping.
-    /// The storage backend signals this notify when new work becomes available.
-    pub fn work_notify(&self) -> Option<&Arc<Notify>> {
-        self.work_notify.as_ref()
-    }
 
     /// Builds the connection pool with the given configuration.
     async fn build_pool(
@@ -287,20 +226,6 @@ impl SqliteExecutionLog {
         Ok(())
     }
 
-    /// Returns the database path.
-    pub fn db_path(&self) -> &str {
-        &self.db_path
-    }
-
-    /// Returns the current pool state for monitoring.
-    pub fn pool_size(&self) -> u32 {
-        self.pool.size()
-    }
-
-    /// Returns the number of idle connections.
-    pub fn idle_connections(&self) -> usize {
-        self.pool.num_idle()
-    }
 
     fn row_to_scheduled_flow(row: &sqlx::sqlite::SqliteRow) -> Result<super::ScheduledFlow> {
         let task_id_str: String = row.try_get("task_id")?;
@@ -558,12 +483,34 @@ impl ExecutionLog for SqliteExecutionLog {
     }
 
     async fn get_incomplete_flows(&self) -> Result<Vec<Invocation>> {
+        // JOIN flow_queue with execution_log to catch ALL incomplete flows:
+        // 1. Flows in queue but not started (no execution_log entry)
+        // 2. Flows in progress (execution_log exists, not complete)
+        // 3. Flows suspended (execution_log exists, suspended)
         let rows = sqlx::query(
-            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
-             FROM execution_log
-             WHERE step = 0
-               AND status <> 'COMPLETE'
-             ORDER BY timestamp ASC",
+            "SELECT
+                q.flow_id,
+                q.flow_type,
+                q.created_at,
+                COALESCE(e.id, q.flow_id) as id,
+                COALESCE(e.step, 0) as step,
+                COALESCE(e.timestamp, q.created_at) as timestamp,
+                COALESCE(e.class_name, q.flow_type) as class_name,
+                COALESCE(e.method_name, 'flow') as method_name,
+                COALESCE(e.status, 'PENDING') as status,
+                COALESCE(e.attempts, 0) as attempts,
+                COALESCE(e.parameters, X'') as parameters,
+                COALESCE(e.params_hash, 0) as params_hash,
+                e.return_value,
+                e.delay,
+                e.retry_policy,
+                e.is_retryable,
+                e.timer_fire_at,
+                e.timer_name
+             FROM flow_queue q
+             LEFT JOIN execution_log e ON q.flow_id = e.id AND e.step = 0
+             WHERE q.status NOT IN ('COMPLETE', 'FAILED')
+             ORDER BY q.created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -573,7 +520,10 @@ impl ExecutionLog for SqliteExecutionLog {
             .map(Self::row_to_invocation)
             .collect::<Result<Vec<_>>>()?;
 
-        info!("Found {} incomplete flows", invocations.len());
+        info!(
+            "Found {} incomplete flows (includes scheduled-but-not-started)",
+            invocations.len()
+        );
 
         Ok(invocations)
     }
@@ -1114,6 +1064,10 @@ impl ExecutionLog for SqliteExecutionLog {
 
         Ok(child_step)
     }
+
+    fn work_notify(&self) -> Option<&Arc<Notify>> {
+        self.work_notify.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -1123,7 +1077,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_log_invocation() {
-        let log = SqliteExecutionLog::in_memory().await.unwrap();
+        let temp_file = "/tmp/test_sqlite_invocation.db";
+        let _ = std::fs::remove_file(temp_file);
+        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1151,11 +1107,15 @@ mod tests {
         assert_eq!(invocation.attempts(), 1);
         // Verify the hash was computed internally by storage
         assert_eq!(invocation.params_hash(), expected_hash);
+
+        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_log_completion() {
-        let log = SqliteExecutionLog::in_memory().await.unwrap();
+        let temp_file = "/tmp/test_sqlite_completion.db";
+        let _ = std::fs::remove_file(temp_file);
+        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1180,11 +1140,15 @@ mod tests {
 
         assert_eq!(invocation.status(), InvocationStatus::Complete);
         assert!(invocation.return_value().is_some());
+
+        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_get_incomplete_flows() {
-        let log = SqliteExecutionLog::in_memory().await.unwrap();
+        let temp_file = "/tmp/test_sqlite_incomplete.db";
+        let _ = std::fs::remove_file(temp_file);
+        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
 
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
@@ -1236,11 +1200,15 @@ mod tests {
         assert!(incomplete.iter().any(|i| i.id() == id1));
         assert!(incomplete.iter().any(|i| i.id() == id2));
         assert!(!incomplete.iter().any(|i| i.id() == id3));
+
+        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_retry_increments_attempts() {
-        let log = SqliteExecutionLog::in_memory().await.unwrap();
+        let temp_file = "/tmp/test_sqlite_retry.db";
+        let _ = std::fs::remove_file(temp_file);
+        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1276,11 +1244,15 @@ mod tests {
 
         let inv2 = log.get_invocation(id, 0).await.unwrap().unwrap();
         assert_eq!(inv2.attempts(), 2);
+
+        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_get_latest_invocation() {
-        let log = SqliteExecutionLog::in_memory().await.unwrap();
+        let temp_file = "/tmp/test_sqlite_latest.db";
+        let _ = std::fs::remove_file(temp_file);
+        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1302,22 +1274,7 @@ mod tests {
 
         let latest = log.get_latest_invocation(id).await.unwrap().unwrap();
         assert_eq!(latest.step(), 4);
-    }
 
-    #[tokio::test]
-    async fn test_pool_config() {
-        let config = PoolConfig {
-            max_size: 5,
-            min_idle: Some(1),
-            connection_timeout: Duration::from_secs(10),
-            max_lifetime: None,
-            idle_timeout: Some(Duration::from_secs(300)),
-        };
-
-        // For in-memory, pool size is forced to 1
-        let log = SqliteExecutionLog::in_memory_with_config(config)
-            .await
-            .unwrap();
-        assert_eq!(log.pool_size(), 1); // In-memory uses single connection
+        std::fs::remove_file(temp_file).unwrap();
     }
 }

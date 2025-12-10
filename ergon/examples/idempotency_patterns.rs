@@ -167,20 +167,20 @@ impl OrderProcessingFlow {
     }
 
     /// Pattern 2: Idempotency Keys with External Services
+    ///
+    /// IMPORTANT: Use business keys (order_id), NOT flow_id for idempotency!
+    /// - flow_id changes on retry → breaks idempotency
+    /// - order_id is stable → idempotency works correctly
     #[step]
     async fn process_payment(self: Arc<Self>, flow_id: Uuid) -> Result<String, String> {
         println!("[STEP] Processing payment for order {}", self.order_id);
 
-        // Get current step number for unique key
-        let step = ergon::EXECUTION_CONTEXT
-            .try_with(|ctx| ctx.next_step() - 1) // -1 because we already incremented
-            .expect("Must be in flow");
+        // Create deterministic idempotency key using BUSINESS KEY (order_id)
+        // NOT flow_id! Flow ID changes on retry, business key doesn't.
+        let idempotency_key = format!("{}-payment", self.order_id);
 
-        // Create deterministic idempotency key
-        // Format: {flow_id}-{step}-{business_id}
-        let idempotency_key = format!("{}-{}-payment", flow_id, step);
-
-        println!("      Idempotency key: {}", idempotency_key);
+        println!("      Flow ID: {}", flow_id);
+        println!("      Idempotency key: {} (based on order_id, NOT flow_id)", idempotency_key);
 
         // Use idempotency key with external service
         let payment_service = PAYMENT_SERVICE.get().expect("Service not initialized");
@@ -198,13 +198,11 @@ impl OrderProcessingFlow {
     ) -> Result<(), String> {
         println!("[STEP] Sending confirmation email");
 
-        let step = ergon::EXECUTION_CONTEXT
-            .try_with(|ctx| ctx.next_step() - 1)
-            .expect("Must be in flow");
+        // Use business key (order_id) for idempotency, NOT flow_id
+        let idempotency_key = format!("{}-email", self.order_id);
 
-        let idempotency_key = format!("{}-{}-email", flow_id, step);
-
-        println!("      Idempotency key: {}", idempotency_key);
+        println!("      Flow ID: {}", flow_id);
+        println!("      Idempotency key: {} (based on order_id, NOT flow_id)", idempotency_key);
 
         let email_service = EMAIL_SERVICE.get().expect("Service not initialized");
         email_service
@@ -241,19 +239,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
 
-    println!("\n=== Test: Execute flow twice (simulating re-execution) ===\n");
-
     let order = OrderProcessingFlow {
         order_id: "ORD-001".to_string(),
         customer_email: "customer@example.com".to_string(),
         amount: 99.99,
     };
 
-    let flow_id = Uuid::new_v4();
-
-    // First execution
-    println!(">>> First Execution");
-    let executor1 = Executor::new(flow_id, order.clone(), storage.clone());
+    // First execution - uses flow_id_1
+    let flow_id_1 = Uuid::new_v4();
+    println!(">>> First Execution (flow_id: {})", &flow_id_1.to_string()[..8]);
+    let executor1 = Executor::new(flow_id_1, order.clone(), storage.clone());
     let outcome1 = executor1
         .execute(|f| Box::pin(Arc::new(f.clone()).process()))
         .await;
@@ -264,9 +259,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         FlowOutcome::Suspended(reason) => println!("\n[SUSPENDED] First execution: {:?}", reason),
     }
 
-    // Second execution (simulates cache miss due to storage error)
-    println!("\n\n>>> Second Execution (simulating cache miss/re-execution)");
-    let executor2 = Executor::new(flow_id, order.clone(), storage.clone());
+    // Second execution - uses DIFFERENT flow_id_2
+    // This forces steps to re-execute (no cache from first execution)
+    // But uses SAME business key (order_id) for idempotency keys
+    let flow_id_2 = Uuid::new_v4();
+    println!("\n\n>>> Second Execution (flow_id: {})", &flow_id_2.to_string()[..8]);
+    let executor2 = Executor::new(flow_id_2, order.clone(), storage.clone());
     let outcome2 = executor2
         .execute(|f| Box::pin(Arc::new(f.clone()).process()))
         .await;
@@ -277,29 +275,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         FlowOutcome::Suspended(reason) => println!("\n[SUSPENDED] Second execution: {:?}", reason),
     }
 
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Key Observations                                         ║");
-    println!("╚═══════════════════════════════════════════════════════════╝");
-
-    println!("\n1. Payment was processed only ONCE despite two executions");
-    println!("   → Idempotency key prevented duplicate charge\n");
-
-    println!("2. Email was sent only ONCE");
-    println!("   → Idempotency key prevented duplicate email\n");
-
-    println!("3. Validation ran twice (read-only, safe)");
-    println!("   → No side effects from re-execution\n");
-
-    println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Best Practices                                           ║");
-    println!("╚═══════════════════════════════════════════════════════════╝");
-
-    println!("\n✓ Use deterministic IDs: flow_id + step + business_key");
-    println!("✓ Pass idempotency keys to external services");
-    println!("✓ Read operations are naturally idempotent");
-    println!("✓ Check-then-create pattern for mutations");
-    println!("✓ NEVER use Uuid::new_v4() in steps!");
-    println!("✓ NEVER use timestamps for business logic!\n");
 
     storage.close().await?;
     Ok(())

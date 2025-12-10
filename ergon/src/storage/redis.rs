@@ -128,31 +128,6 @@ impl RedisExecutionLog {
         Ok(log)
     }
 
-    /// Creates a connection pool with custom TTL configuration.
-    pub async fn with_ttl_config(
-        redis_url: &str,
-        completed_ttl_secs: i64,
-        signal_ttl_secs: i64,
-    ) -> Result<Self> {
-        let cfg = Config::from_url(redis_url);
-        let pool = cfg
-            .create_pool(Some(Runtime::Tokio1))
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        let log = Self {
-            pool,
-            completed_ttl: completed_ttl_secs,
-            signal_ttl: signal_ttl_secs,
-            stale_message_timeout_ms: DEFAULT_STALE_MESSAGE_TIMEOUT_MS,
-            work_notify: Some(Arc::new(Notify::new())),
-        };
-
-        // Ensure consumer group exists
-        log.ensure_consumer_group().await?;
-
-        Ok(log)
-    }
-
     /// Creates a connection pool with full configuration including stale message timeout.
     /// Useful for testing with shorter timeouts.
     pub async fn with_full_config(
@@ -178,27 +153,6 @@ impl RedisExecutionLog {
         log.ensure_consumer_group().await?;
 
         Ok(log)
-    }
-
-    /// Sets the work notification handle for waking workers when work becomes available.
-    ///
-    /// This enables event-driven worker wakeup instead of polling with sleep.
-    /// Workers wait on `notify.notified()` instead of sleeping when the queue is empty.
-    ///
-    /// # Arguments
-    ///
-    /// * `notify` - Shared Notify handle that workers will wait on
-    pub fn with_work_notify(mut self, notify: Arc<Notify>) -> Self {
-        self.work_notify = Some(notify);
-        self
-    }
-
-    /// Returns a reference to the work notification handle.
-    ///
-    /// Workers should use this notify to wait for work instead of sleeping.
-    /// The storage backend signals this notify when new work becomes available.
-    pub fn work_notify(&self) -> Option<&Arc<Notify>> {
-        self.work_notify.as_ref()
     }
 
     /// Gets an async connection from the pool.
@@ -687,51 +641,104 @@ impl ExecutionLog for RedisExecutionLog {
     async fn get_incomplete_flows(&self) -> Result<Vec<Invocation>> {
         let mut conn = self.get_connection().await?;
 
-        // Scan for all flow invocation lists
+        // Scan for all flow metadata keys (not invocations!)
+        // This is the equivalent of querying flow_queue in SQLite
         let mut cursor = 0u64;
-        let mut all_flows = Vec::new();
+        let mut flow_keys = Vec::new();
 
         loop {
             let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                 .cursor_arg(cursor)
                 .arg("MATCH")
-                .arg("ergon:invocations:*")
+                .arg("ergon:flow:*")  // ← Changed from ergon:invocations:*
                 .arg("COUNT")
                 .arg(100)
                 .query_async(&mut *conn)
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-            all_flows.extend(keys);
+            flow_keys.extend(keys);
             cursor = new_cursor;
             if cursor == 0 {
                 break;
             }
         }
 
-        // For each flow, check if incomplete
-        let mut incomplete = Vec::new();
-        for inv_list_key in all_flows {
-            // Get first invocation (step 0) from the list
-            let inv_keys: Vec<String> = conn
-                .lrange(&inv_list_key, 0, 0)
+        // For each flow metadata, check if incomplete
+        let mut incomplete_flows = Vec::new();
+        for flow_key in flow_keys {
+            // Get the flow status from metadata
+            let status: Option<String> = conn
+                .hget(&flow_key, "status")
                 .await
                 .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-            if let Some(first_key) = inv_keys.first() {
-                let data: HashMap<String, Vec<u8>> = conn
-                    .hgetall(first_key)
+            // Skip completed and failed flows
+            if let Some(status_str) = status {
+                if status_str == "COMPLETE" || status_str == "FAILED" {
+                    continue;
+                }
+
+                // Get flow_id from metadata
+                let flow_id_str: String = conn
+                    .hget(&flow_key, "flow_id")
                     .await
                     .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-                let invocation = self.parse_invocation(data)?;
-                if invocation.status() != InvocationStatus::Complete {
-                    incomplete.push(invocation);
+                let flow_id = Uuid::parse_str(&flow_id_str)
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                // Try to get actual invocation if it exists
+                let inv_list_key = format!("ergon:invocations:{}", flow_id);
+                let inv_keys: Vec<String> = conn
+                    .lrange(&inv_list_key, 0, 0)
+                    .await
+                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                if let Some(first_key) = inv_keys.first() {
+                    // Flow has started - use actual invocation data
+                    let data: HashMap<String, Vec<u8>> = conn
+                        .hgetall(first_key)
+                        .await
+                        .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                    let invocation = self.parse_invocation(data)?;
+                    incomplete_flows.push(invocation);
+                } else {
+                    // Flow scheduled but not yet executed - build invocation from flow metadata
+                    // This is equivalent to SQLite's LEFT JOIN with COALESCE for missing execution_log entries
+                    let flow_type: String = conn
+                        .hget(&flow_key, "flow_type")
+                        .await
+                        .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                    let created_at: i64 = conn
+                        .hget(&flow_key, "created_at")
+                        .await
+                        .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+                    // Build invocation data from flow metadata (equivalent to SQLite's COALESCE)
+                    let mut invocation_data = HashMap::new();
+                    invocation_data.insert("id".to_string(), flow_id.to_string().into_bytes());
+                    invocation_data.insert("step".to_string(), "0".to_string().into_bytes());
+                    invocation_data.insert("timestamp".to_string(), created_at.to_string().into_bytes());
+                    invocation_data.insert("class_name".to_string(), flow_type.into_bytes());
+                    invocation_data.insert("method_name".to_string(), "flow".to_string().into_bytes());
+                    invocation_data.insert("status".to_string(), status_str.into_bytes());
+                    invocation_data.insert("attempts".to_string(), "0".to_string().into_bytes());
+                    invocation_data.insert("parameters".to_string(), Vec::new());
+                    invocation_data.insert("params_hash".to_string(), "0".to_string().into_bytes());
+                    invocation_data.insert("delay_ms".to_string(), "0".to_string().into_bytes());
+                    invocation_data.insert("retry_policy".to_string(), "".to_string().into_bytes());
+                    invocation_data.insert("is_retryable".to_string(), "true".to_string().into_bytes());
+
+                    let invocation = self.parse_invocation(invocation_data)?;
+                    incomplete_flows.push(invocation);
                 }
             }
         }
 
-        Ok(incomplete)
+        Ok(incomplete_flows)
     }
 
     async fn has_non_retryable_error(&self, flow_id: Uuid) -> Result<bool> {
@@ -1396,58 +1403,54 @@ impl ExecutionLog for RedisExecutionLog {
         let flow_key = Self::flow_key(task_id);
         let now = Utc::now().timestamp();
 
-        // Check flow status
-        let status: Option<String> = conn
-            .hget(&flow_key, "status")
+        // Atomic check-and-update using Lua script to prevent race conditions
+        // Multiple workers may call resume_flow() simultaneously when a signal arrives
+        // This ensures only ONE worker actually resumes and re-enqueues the flow
+        let script = redis::Script::new(
+            r#"
+            local status = redis.call('HGET', KEYS[1], 'status')
+            if status == 'SUSPENDED' then
+                redis.call('HSET', KEYS[1], 'status', 'PENDING')
+                redis.call('HDEL', KEYS[1], 'locked_by')
+                redis.call('HDEL', KEYS[1], 'stream_entry_id')
+                redis.call('HSET', KEYS[1], 'updated_at', ARGV[1])
+                return 1
+            else
+                return 0
+            end
+            "#,
+        );
+
+        let resumed: i32 = script
+            .key(&flow_key)
+            .arg(now)
+            .invoke_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        // Only resume if SUSPENDED - this prevents race condition errors
-        // RUNNING, PENDING, COMPLETE, FAILED are all valid non-error states
-        match status.as_deref() {
-            Some("SUSPENDED") => {
-                // Resume the flow by updating status and re-enqueuing to stream
-                let _: () = redis::pipe()
-                    .atomic()
-                    .hset(&flow_key, "status", "PENDING")
-                    .hdel(&flow_key, "locked_by")
-                    .hdel(&flow_key, "stream_entry_id") // Clear old entry_id
-                    .hset(&flow_key, "updated_at", now)
-                    .query_async(&mut *conn)
-                    .await
-                    .map_err(|e| StorageError::Connection(e.to_string()))?;
+        if resumed == 1 {
+            // We won the race - re-enqueue to stream
+            self.reenqueue_to_stream(&mut conn, task_id).await?;
 
-                // Re-enqueue to stream
-                self.reenqueue_to_stream(&mut conn, task_id).await?;
+            info!(
+                "Resumed flow: flow_id={}, task_id={}",
+                &flow_id.to_string()[..8],
+                &task_id.to_string()[..8]
+            );
 
-                info!(
-                    "Resumed flow: flow_id={}, task_id={}",
-                    &flow_id.to_string()[..8],
-                    &task_id.to_string()[..8]
-                );
-
-                // Wake up one waiting worker (if any)
-                if let Some(ref notify) = self.work_notify {
-                    notify.notify_one();
-                }
-
-                Ok(true)
+            // Wake up one waiting worker (if any)
+            if let Some(ref notify) = self.work_notify {
+                notify.notify_one();
             }
-            Some("RUNNING") | Some("PENDING") | Some("COMPLETE") | Some("FAILED") => {
-                // Flow not in SUSPENDED state - this is expected during races
-                debug!(
-                    "Flow not resumed (state: {:?}): flow_id={}, task_id={}",
-                    status, flow_id, task_id
-                );
-                Ok(false)
-            }
-            _ => {
-                warn!(
-                    "Flow in unexpected state {:?} for flow_id: {}",
-                    status, flow_id
-                );
-                Ok(false)
-            }
+
+            Ok(true)
+        } else {
+            // Another worker already resumed, or flow not in SUSPENDED state
+            debug!(
+                "Flow not resumed (already resumed or not suspended): flow_id={}, task_id={}",
+                flow_id, task_id
+            );
+            Ok(false)
         }
     }
 
@@ -1813,5 +1816,9 @@ impl ExecutionLog for RedisExecutionLog {
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(Some(child_step))
+    }
+
+    fn work_notify(&self) -> Option<&Arc<Notify>> {
+        self.work_notify.as_ref()
     }
 }

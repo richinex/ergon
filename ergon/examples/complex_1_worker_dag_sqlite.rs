@@ -576,11 +576,6 @@ fn timestamp() -> f64 {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║  Complex 1-Worker SEQUENTIAL + Child Flows (SQLite)       ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-    println!("Scenario: 3 concurrent orders, 1 worker, SEQUENTIAL execution (NO DAG)\n");
-
     let db_path = "/tmp/ergon_test_1_worker.db";
     let _ = std::fs::remove_file(db_path);
 
@@ -613,15 +608,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
-    println!("Scheduling orders...");
     for order in &orders {
         scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
         println!("   - {} scheduled", order.order_id);
     }
-    println!();
 
     // Start 1 worker (testing for logic bugs independent of concurrency)
-    println!("Starting 1 worker...\n");
 
     let worker =
         Worker::new(storage.clone(), "test-worker").with_poll_interval(Duration::from_millis(100));
@@ -637,12 +629,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_secs(45)).await;
     handle.shutdown().await;
 
-    // Print summary
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                       Summary                              ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
-    println!("Step Execution Counts:");
     println!(
         "  validate_customer:   {}",
         VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed)
@@ -668,7 +654,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed)
     );
 
-    println!("\nPer-Order Step Attempts:");
     for i in 1..=3 {
         let order_id = format!("ORD-{:03}", i);
         if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
@@ -684,12 +669,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-
-    println!("\nKey Features Demonstrated:");
-    println!("  - Parent-child flow invocation");
-    println!("  - Retryable vs permanent errors");
-    println!("  - Single worker (isolating logic bugs)");
-    println!("  - SQLite storage backend\n");
 
     storage.close().await?;
     Ok(())

@@ -244,8 +244,6 @@ impl OrderProcessor {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n=== Scenario 1: Successful Order ===\n");
-
     let storage1 = Arc::new(InMemoryExecutionLog::new());
     storage1.reset().await?;
 
@@ -270,7 +268,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Result: {:?}\n", result);
     }
 
-    println!("Total attempts:");
     println!(
         "  validate_customer:  {}",
         VALIDATE_CUSTOMER_ATTEMPTS.load(Ordering::SeqCst)
@@ -287,9 +284,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  finalize_order:     {}",
         FINALIZE_ORDER_ATTEMPTS.load(Ordering::SeqCst)
     );
-    println!();
-
-    println!("\n=== Scenario 2: Out of Stock (cache_errors) ===\n");
 
     let storage2 = Arc::new(InMemoryExecutionLog::new());
     storage2.reset().await?;
@@ -315,7 +309,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Result: {:?}\n", result);
     }
 
-    println!("Total attempts:");
     println!(
         "  validate_customer:  {}",
         VALIDATE_CUSTOMER_ATTEMPTS.load(Ordering::SeqCst)
@@ -332,9 +325,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  finalize_order:     {}",
         FINALIZE_ORDER_ATTEMPTS.load(Ordering::SeqCst)
     );
-    println!();
-
-    println!("\n=== Scenario 3: InsufficientFunds (RetryableError) ===\n");
 
     let storage3 = Arc::new(InMemoryExecutionLog::new());
     storage3.reset().await?;
@@ -360,7 +350,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Result: {:?}\n", result);
     }
 
-    println!("Total attempts:");
     println!(
         "  validate_customer:  {}",
         VALIDATE_CUSTOMER_ATTEMPTS.load(Ordering::SeqCst)
@@ -380,32 +369,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
-// ● Excellent! The output shows exactly what makes the DAG executor powerful:
-
-//   Key Observations from the Output
-
-//   Scenario 1 - Parallel Execution & Partial Progress:
-//   Run 3
-//       [validate_customer] Attempt #3  ← Succeeds!
-//       [check_inventory] Attempt #1    ← Starts immediately (parallel)
-//       [authorize_payment] Attempt #1  ← Starts immediately (parallel)
-//   Both check_inventory and authorize_payment start in parallel as soon as their dependency (validate_customer) completes. This is the DAG executor working!
-
-//   Run 4-5: Notice validate_customer and check_inventory don't run again - they're cached! Only the failed step (authorize_payment) retries. This is partial progress -
-//   way more efficient than restarting everything.
-
-//   Scenario 2 - cache_errors in Action:
-//   Total attempts:
-//     check_inventory:    1  ← Only 1 attempt! Error cached
-//   The OUT_OF_STOCK error is permanent (cache_errors attribute), so it only runs once.
-
-//   Scenario 3 - RetryableError Working:
-//   Run 4: NetworkTimeout (retryable)     ← Retry
-//   Run 5: ServiceUnavailable (retryable) ← Retry
-//          InsufficientFunds (NOT retryable - will be cached)  ← Stop
-//   The framework correctly identifies transient errors (NetworkTimeout, ServiceUnavailable) and retries them, but stops when it hits a permanent error
-//   (InsufficientFunds).
-
-//   This is production-ready error handling for distributed LLM workflows! Your rust_de framework is doing exactly what Temporal/Inngest do, but with Rust's type safety
-//   and zero-cost abstractions.

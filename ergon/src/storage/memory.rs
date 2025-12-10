@@ -2,6 +2,8 @@ use super::{error::Result, error::StorageError, params::InvocationStartParams, E
 use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
 
 /// In-memory execution log using DashMap for concurrent access.
@@ -27,15 +29,30 @@ pub struct InMemoryExecutionLog {
     flow_queue: dashmap::DashMap<Uuid, super::ScheduledFlow>,
     /// Concurrent storage for signal parameters keyed by (flow_id, step)
     signal_params: dashmap::DashMap<(Uuid, i32), Vec<u8>>,
+    /// Concurrent storage for step-child mappings keyed by (flow_id, parent_step)
+    step_child_mappings: dashmap::DashMap<(Uuid, i32), i32>,
+    /// Index mapping flow_id to task_id for fast lookup during resume_flow
+    flow_task_map: dashmap::DashMap<Uuid, Uuid>,
+    /// Channel for pending flows (mimics Redis Stream)
+    pending_tx: mpsc::UnboundedSender<Uuid>,
+    pending_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Uuid>>>,
+    /// Notification mechanism to wake up workers when new work arrives
+    work_notify: Option<Arc<Notify>>,
 }
 
 impl InMemoryExecutionLog {
     /// Creates a new in-memory execution log.
     pub fn new() -> Self {
+        let (pending_tx, pending_rx) = mpsc::unbounded_channel();
         Self {
             invocations: dashmap::DashMap::new(),
             flow_queue: dashmap::DashMap::new(),
             signal_params: dashmap::DashMap::new(),
+            step_child_mappings: dashmap::DashMap::new(),
+            flow_task_map: dashmap::DashMap::new(),
+            pending_tx,
+            pending_rx: Arc::new(tokio::sync::Mutex::new(pending_rx)),
+            work_notify: Some(Arc::new(Notify::new())),
         }
     }
 }
@@ -215,6 +232,16 @@ impl ExecutionLog for InMemoryExecutionLog {
     async fn reset(&self) -> Result<()> {
         self.invocations.clear();
         self.flow_queue.clear();
+        self.signal_params.clear();
+        self.step_child_mappings.clear();
+        self.flow_task_map.clear();
+
+        // Drain the channel by receiving all pending messages
+        let mut rx = self.pending_rx.lock().await;
+        while rx.try_recv().is_ok() {
+            // Discard all messages
+        }
+
         Ok(())
     }
 
@@ -226,74 +253,66 @@ impl ExecutionLog for InMemoryExecutionLog {
 
     async fn enqueue_flow(&self, flow: super::ScheduledFlow) -> Result<Uuid> {
         let task_id = flow.task_id;
+        let flow_id = flow.flow_id;
+
+        // Store metadata in DashMap
         self.flow_queue.insert(task_id, flow);
+        self.flow_task_map.insert(flow_id, task_id);
+
+        // Send to channel (mimics Redis Stream XADD)
+        // UnboundedSender::send never fails unless receiver is dropped
+        self.pending_tx.send(task_id).map_err(|_| {
+            StorageError::Connection("pending channel closed".to_string())
+        })?;
+
         Ok(task_id)
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        // Retry loop to handle race conditions when multiple workers compete
-        // for the same flow. This ensures we find the next oldest flow if the
-        // first candidate is claimed by another worker.
-        let mut retry_count = 0;
-        loop {
-            retry_count += 1;
-            // Limit retries to prevent infinite loops
-            if retry_count > 10 {
-                // Too many retries - all pending flows are being competed for
-                // Sleep briefly and return None to let other branches process
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                return Ok(None);
-            }
+        // Receive task_id from channel (mimics Redis Stream XREADGROUP)
+        // This provides proper FIFO ordering and avoids DashMap iteration deadlocks
+        let mut rx = self.pending_rx.lock().await;
 
-            // Find the oldest pending flow that is ready to execute
-            // Note: DashMap doesn't have built-in ordering, so we need to scan
-            let mut oldest: Option<(Uuid, super::ScheduledFlow)> = None;
+        // Try to receive with a short timeout to avoid blocking forever
+        let task_id = match tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            rx.recv()
+        ).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(None), // Channel closed
+            Err(_) => return Ok(None),   // Timeout - no pending flows
+        };
+
+        // Release lock immediately after receiving
+        drop(rx);
+
+        // Look up flow metadata in DashMap
+        if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
             let now = Utc::now();
 
-            for entry in self.flow_queue.iter() {
-                let flow = entry.value();
-                // Only consider pending flows that are ready to execute
-                if flow.status == super::TaskStatus::Pending {
-                    // Check if scheduled_for time has passed (or is None)
-                    let is_ready = flow.scheduled_for.is_none_or(|scheduled| scheduled <= now);
+            // Check if flow is still pending and ready to execute
+            if entry.status == super::TaskStatus::Pending {
+                // Check if scheduled_for time has passed (or is None)
+                let is_ready = entry.scheduled_for.is_none_or(|scheduled| scheduled <= now);
 
-                    if is_ready {
-                        if let Some((_, ref current_oldest)) = oldest {
-                            if flow.created_at < current_oldest.created_at {
-                                oldest = Some((*entry.key(), flow.clone()));
-                            }
-                        } else {
-                            oldest = Some((*entry.key(), flow.clone()));
-                        }
-                    }
-                }
-            }
-
-            // If no pending flows found, return None
-            let Some((task_id, mut flow)) = oldest else {
-                return Ok(None);
-            };
-
-            // Try to atomically lock the flow
-            if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
-                // Double-check it's still pending (another thread might have taken it)
-                if entry.status == super::TaskStatus::Pending {
-                    // Successfully locked it
+                if is_ready {
+                    // Atomically claim the flow
                     entry.status = super::TaskStatus::Running;
                     entry.locked_by = Some(worker_id.to_string());
                     entry.updated_at = Utc::now();
 
-                    // Return the updated flow
-                    flow.status = super::TaskStatus::Running;
-                    flow.locked_by = Some(worker_id.to_string());
-                    flow.updated_at = Utc::now();
-                    return Ok(Some(flow));
+                    // Return claimed flow
+                    return Ok(Some(entry.clone()));
+                } else {
+                    // Flow is delayed - put it back in the channel for later
+                    let _ = self.pending_tx.send(task_id);
+                    return Ok(None);
                 }
             }
-
-            // Flow was claimed by another worker, retry to find the next oldest
-            continue;
         }
+
+        // Flow was already claimed or doesn't exist - return None
+        Ok(None)
     }
 
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
@@ -482,6 +501,64 @@ impl ExecutionLog for InMemoryExecutionLog {
         });
 
         Ok(deleted)
+    }
+
+    async fn resume_flow(&self, flow_id: Uuid) -> Result<bool> {
+        // O(1) lookup using flow_id -> task_id index
+        let Some(task_id) = self.flow_task_map.get(&flow_id).map(|v| *v) else {
+            return Ok(false);
+        };
+
+        // Atomically check and update the flow status
+        // ONLY resume flows that are SUSPENDED (waiting for signals/child flows)
+        if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
+            if entry.status == super::TaskStatus::Suspended {
+                entry.status = super::TaskStatus::Pending;
+                entry.locked_by = None;
+                entry.updated_at = Utc::now();
+
+                // Re-enqueue to channel (mimics Redis re-adding to stream)
+                // This is the critical fix for signals!
+                self.pending_tx.send(task_id).map_err(|_| {
+                    StorageError::Connection("pending channel closed".to_string())
+                })?;
+
+                // Wake up one waiting worker since we just made a flow available
+                if let Some(ref notify) = self.work_notify {
+                    notify.notify_one();
+                }
+
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn store_step_child_mapping(
+        &self,
+        flow_id: Uuid,
+        parent_step: i32,
+        child_step: i32,
+    ) -> Result<()> {
+        self.step_child_mappings
+            .insert((flow_id, parent_step), child_step);
+        Ok(())
+    }
+
+    async fn get_child_step_for_parent(
+        &self,
+        flow_id: Uuid,
+        parent_step: i32,
+    ) -> Result<Option<i32>> {
+        Ok(self
+            .step_child_mappings
+            .get(&(flow_id, parent_step))
+            .map(|v| *v))
+    }
+
+    fn work_notify(&self) -> Option<&Arc<Notify>> {
+        self.work_notify.as_ref()
     }
 }
 

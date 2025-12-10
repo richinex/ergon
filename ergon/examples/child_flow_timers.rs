@@ -801,7 +801,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Test 1: Successful Loan Application (all timers complete)
     // ==========================================================================
-    println!("\n=== Test 1: Successful Application (3s + 2s + 4s = ~9s total) ===");
+    println!("\n=== Test 1: Successful Application ===");
 
     let app1 = LoanApplication {
         application_id: "APP-001".to_string(),
@@ -816,7 +816,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Test 2: Credit Score Too Low (Permanent Error - No Retry)
     // ==========================================================================
-    println!("\n\n=== Test 2: Low Credit Score (Permanent Error - Fails Fast) ===");
+    println!("\n\n=== Test 2: Low Credit Score ===");
 
     let app2 = LoanApplication {
         application_id: "APP-002".to_string(),
@@ -831,8 +831,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Test 3: Bureau Timeout (Retryable - Auto-Retry)
     // ==========================================================================
-    println!("\n\n=== Test 3: Credit Bureau Timeout (Retryable - Auto-Retry) ===");
-    println!("Note: Will fail first 2 attempts, succeed on 3rd\n");
+    println!("\n\n=== Test 3: Credit Bureau Timeout ===\n");
 
     CREDIT_ATTEMPTS.store(0, Ordering::SeqCst);
 
@@ -854,7 +853,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Test 4: Fraud Detected (Permanent Error after all timers)
     // ==========================================================================
-    println!("\n\n=== Test 4: Fraud Detected (Permanent - After All Checks) ===");
+    println!("\n\n=== Test 4: Fraud Detected ===");
 
     let app4 = LoanApplication {
         application_id: "APP-004".to_string(),
@@ -870,16 +869,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     worker.shutdown().await;
-
-    println!("\n\n=== Summary ===\n");
-    println!("✓ Level 3 API: Children have NO parent_flow_id fields");
-    println!("✓ Timers: Each child has realistic processing delays");
-    println!("  - Credit check: 3s timer");
-    println!("  - Income verification: 2s timer");
-    println!("  - Fraud check: 4s timer");
-    println!("✓ Custom Errors: Rich domain-specific error context");
-    println!("✓ Retry Control: Only transient errors retry automatically");
-    println!("✓ Durable Execution: Timers survive worker restarts\n");
 
     storage.close().await?;
     Ok(())

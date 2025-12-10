@@ -98,10 +98,18 @@ pub fn derive_flow_type(input: TokenStream) -> TokenStream {
 
 /// Helper macro for ergonomic DAG execution.
 ///
-/// Eliminates boilerplate by automatically:
-/// 1. Creating the DeferredRegistry
-/// 2. Executing the registry
-/// 3. Resolving the final handle
+/// Automatically handles both parallel and sequential execution based on step dependencies.
+///
+/// Steps without dependencies run in parallel. Steps with dependencies run sequentially
+/// after their dependencies complete. This is determined by the `depends_on` attribute
+/// on your `#[step]` definitions.
+///
+/// # What it does
+///
+/// 1. Creates the DeferredRegistry
+/// 2. Registers all steps
+/// 3. Executes the DAG (parallel where possible, sequential where required)
+/// 4. Resolves the final result
 ///
 /// # Usage
 ///

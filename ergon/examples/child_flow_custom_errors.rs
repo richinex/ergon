@@ -553,16 +553,78 @@ fn format_time() -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nChild Flow Level 3 API + Custom Error Types");
-    println!("=============================================\n");
-    println!("Combining:");
-    println!("1. Level 3 child flow API (no parent_flow_id fields)");
-    println!("2. Custom error types with retry control\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("child_custom_errors.db").await?);
     storage.reset().await?;
 
-    // Start worker
+    // ============================================================
+    // PART 1: API Server / Scheduler Process
+    // ============================================================
+    // In production: POST /api/loan-applications -> returns 202 with task_id
+    // ============================================================
+
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 1: Scheduling Loan Applications (API Server)         ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    let scheduler = ergon::executor::Scheduler::new(storage.clone());
+    let mut task_ids = Vec::new();
+
+    // Test 1: Successful Loan Application
+    let app1 = LoanApplication {
+        application_id: "APP-001".to_string(),
+        applicant_name: "Alice Johnson".to_string(),
+        requested_amount: 50000.0,
+        simulate_error: None,
+    };
+    let task_id = scheduler.schedule(app1, Uuid::new_v4()).await?;
+    println!("   ✓ APP-001 scheduled (task_id: {})", task_id);
+    task_ids.push(task_id);
+
+    // Test 2: Credit Score Too Low (Permanent Error)
+    let app2 = LoanApplication {
+        application_id: "APP-002".to_string(),
+        applicant_name: "Bob Smith".to_string(),
+        requested_amount: 30000.0,
+        simulate_error: Some("low_credit_score".to_string()),
+    };
+    let task_id = scheduler.schedule(app2, Uuid::new_v4()).await?;
+    println!("   ✓ APP-002 scheduled (task_id: {})", task_id);
+    task_ids.push(task_id);
+
+    // Test 3: Insufficient Income (Permanent Error)
+    let app3 = LoanApplication {
+        application_id: "APP-003".to_string(),
+        applicant_name: "Carol Davis".to_string(),
+        requested_amount: 100000.0,
+        simulate_error: Some("insufficient_income".to_string()),
+    };
+    let task_id = scheduler.schedule(app3, Uuid::new_v4()).await?;
+    println!("   ✓ APP-003 scheduled (task_id: {})", task_id);
+    task_ids.push(task_id);
+
+    // Test 4: Bureau Timeout (Retryable Error)
+    CREDIT_CHECK_ATTEMPTS.store(0, Ordering::SeqCst);
+    let app4 = LoanApplication {
+        application_id: "APP-004".to_string(),
+        applicant_name: "Dave Wilson".to_string(),
+        requested_amount: 25000.0,
+        simulate_error: Some("bureau_timeout".to_string()),
+    };
+    let task_id = scheduler.schedule(app4, Uuid::new_v4()).await?;
+    println!("   ✓ APP-004 scheduled (task_id: {})", task_id);
+    task_ids.push(task_id);
+
+    println!("\n   → In production: Return HTTP 202 Accepted with task_ids");
+    println!("   → Client polls GET /api/tasks/:id for status\n");
+
+    // ============================================================
+    // PART 2: Worker Service (Separate Process)
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 2: Starting Worker (Separate Service)                ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
     let worker = Worker::new(storage.clone(), "loan-worker")
         .with_timers()
         .with_timer_interval(Duration::from_millis(100))
@@ -577,166 +639,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let worker = worker.start().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    println!("   ✓ Worker started and polling for work\n");
 
-    let scheduler = ergon::executor::Scheduler::new(storage.clone());
+    // ============================================================
+    // PART 3: Client Status Monitoring (Demo Only)
+    // ============================================================
 
-    // ==========================================================================
-    // Test 1: Successful Loan Application
-    // ==========================================================================
-    println!("\n\n=== Test 1: Successful Application ===");
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
 
-    let app1 = LoanApplication {
-        application_id: "APP-001".to_string(),
-        applicant_name: "Alice Johnson".to_string(),
-        requested_amount: 50000.0,
-        simulate_error: None,
-    };
+    // Wait for all flows to complete
+    let timeout_duration = Duration::from_secs(20);
+    let wait_result = tokio::time::timeout(timeout_duration, async {
+        loop {
+            let mut all_complete = true;
+            for &task_id in &task_ids {
+                if let Some(scheduled) = storage.get_scheduled_flow(task_id).await? {
+                    if !matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
+                        all_complete = false;
+                        break;
+                    }
+                }
+            }
+            if all_complete {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await;
 
-    scheduler.schedule(app1, Uuid::new_v4()).await?;
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // ==========================================================================
-    // Test 2: Credit Score Too Low (Permanent Error)
-    // ==========================================================================
-    println!("\n\n=== Test 2: Low Credit Score (Permanent Error) ===");
-
-    let app2 = LoanApplication {
-        application_id: "APP-002".to_string(),
-        applicant_name: "Bob Smith".to_string(),
-        requested_amount: 30000.0,
-        simulate_error: Some("low_credit_score".to_string()),
-    };
-
-    scheduler.schedule(app2, Uuid::new_v4()).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // ==========================================================================
-    // Test 3: Insufficient Income (Permanent Error)
-    // ==========================================================================
-    println!("\n\n=== Test 3: Insufficient Income (Permanent Error) ===");
-
-    let app3 = LoanApplication {
-        application_id: "APP-003".to_string(),
-        applicant_name: "Carol Davis".to_string(),
-        requested_amount: 100000.0,
-        simulate_error: Some("insufficient_income".to_string()),
-    };
-
-    scheduler.schedule(app3, Uuid::new_v4()).await?;
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // ==========================================================================
-    // Test 4: Bureau Timeout (Retryable Error)
-    // ==========================================================================
-    println!("\n\n=== Test 4: Credit Bureau Timeout (Retryable - Auto-Retry) ===");
-    println!("Note: Will fail first 2 attempts, succeed on 3rd\n");
-
-    CREDIT_CHECK_ATTEMPTS.store(0, Ordering::SeqCst);
-
-    let app4 = LoanApplication {
-        application_id: "APP-004".to_string(),
-        applicant_name: "Dave Wilson".to_string(),
-        requested_amount: 25000.0,
-        simulate_error: Some("bureau_timeout".to_string()),
-    };
-
-    scheduler.schedule(app4, Uuid::new_v4()).await?;
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    match wait_result {
+        Ok(_) => println!("\nAll loan applications processed!\n"),
+        Err(_) => println!("\n[WARN] Timeout waiting for applications to complete\n"),
+    }
 
     println!(
-        "\nTotal credit check attempts: {}",
+        "Total credit check attempts: {}",
         CREDIT_CHECK_ATTEMPTS.load(Ordering::SeqCst)
     );
 
-    // Wait for completion
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
     worker.shutdown().await;
-
-    println!("\n\n=== Summary ===\n");
-    println!("✓ Level 3 API: Children have NO parent_flow_id fields");
-    println!("✓ Custom Errors: Rich domain-specific error context");
-    println!("✓ Retry Control: Only transient errors retry automatically");
-    println!("✓ Type Safety: Compiler enforces error handling at compile time\n");
-
     storage.close().await?;
     Ok(())
 }
-
-// Exactly! The child_flow_custom_errors.rs example is a comprehensive integration test that validates the entire parent-child flow system
-//   working together. Let me break down what it tests:
-
-//   What It Tests
-
-//   1. Parent-Child Flow Orchestration
-
-//   - ✅ Parent (LoanApplication) invokes multiple children sequentially
-//   - ✅ Level 3 API: No parent_flow_id fields, token-based signaling
-//   - ✅ Type-safe child invocation with compile-time guarantees
-
-//   2. Worker Execution
-
-//   - ✅ Worker polls queue and picks up flows
-//   - ✅ Worker executes flows in background tasks
-//   - ✅ Worker handles completion, retries, and failures
-//   - ✅ Worker signals parent AFTER retry decision (the fix we just made!)
-
-//   3. Step Execution & Caching
-
-//   - ✅ #[step] macro for both parent and children
-//   - ✅ Steps cached on replay (parent suspends → child runs → parent resumes from cache)
-//   - ✅ await_external_signal for parent waiting on child (signal.rs:82)
-
-//   4. Custom Error Handling
-
-//   - ✅ Domain-specific errors (CreditCheckError, IncomeVerificationError)
-//   - ✅ RetryableError trait implementation
-//   - ✅ Parent catches child errors and makes business decisions
-
-//   5. Retry Logic
-
-//   - ✅ Retryable errors (CreditBureauTimeout) → retry with default policy
-//   - ✅ Permanent errors (CreditScoreTooLow) → fail immediately, no retry
-//   - ✅ Default RetryPolicy::STANDARD (3 attempts, exponential backoff)
-//   - ✅ has_non_retryable_error check prevents retrying permanent errors
-
-//   6. Signal Coordination
-
-//   - ✅ Parent suspends with await_external_signal (via invoke().result())
-//   - ✅ Worker wraps result in ChildResult<T>
-//   - ✅ Worker signals parent with success (ChildResult::Ok) or error (ChildResult::Err)
-//   - ✅ Signal params stored/retrieved from storage
-
-//   7. Test Scenarios Cover All Paths
-
-//   | Test   | Scenario                     | What It Validates                                    |
-//   |--------|------------------------------|------------------------------------------------------|
-//   | Test 1 | Success (all checks pass)    | Happy path, both children succeed                    |
-//   | Test 2 | Permanent error (low credit) | Child fails, no retry, parent gets error immediately |
-//   | Test 3 | Permanent error (income)     | Second child fails after first succeeds              |
-//   | Test 4 | Retryable error (timeout)    | Child retries 3 times, succeeds on 3rd, parent waits |
-
-//   Why Test 4 is Critical
-
-//   Test 4 validates the entire fix we just implemented:
-
-//   Attempt #1: CreditBureauTimeout (retryable) → Worker: "will retry"
-//   Attempt #2: CreditBureauTimeout again      → Worker: "will retry"
-//   Attempt #3: Bureau recovered               → Worker: "success!"
-//               ↓ NOW signals parent with ChildResult::Ok
-//   Parent resumes: "Credit check passed: score=720"
-
-//   Before the fix: Parent got error after attempt #2
-//   After the fix: Parent waits until attempt #3 succeeds ✅
-
-//   Integration Test Coverage
-
-//   This example tests the full stack:
-//   User Code (Parent/Child flows with custom errors)
-//            ↓
-//   Executor (step caching, await_external_signal)
-//            ↓
-//   Worker (polling, retry decision, parent signaling)
-//            ↓
-//   Storage (invocations, signal_params, task queue)

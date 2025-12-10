@@ -29,10 +29,17 @@ use ergon::executor::{await_external_signal, SignalSource};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+// Global execution counters
+static VALIDATE_COUNT: AtomicU32 = AtomicU32::new(0);
+static MANAGER_APPROVAL_COUNT: AtomicU32 = AtomicU32::new(0);
+static LEGAL_REVIEW_COUNT: AtomicU32 = AtomicU32::new(0);
+static PUBLISH_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ============================================================================
 // Domain Types
@@ -204,6 +211,7 @@ impl DocumentApprovalFlow {
 
     #[step]
     async fn validate_document(self: Arc<Self>) -> Result<(), String> {
+        VALIDATE_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Validating document format...");
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("       [OK] Validation passed");
@@ -212,6 +220,7 @@ impl DocumentApprovalFlow {
 
     #[step]
     async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, String> {
+        MANAGER_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [SUSPEND] Waiting for manager approval...");
 
         // This SUSPENDS the flow until signal arrives!
@@ -239,6 +248,7 @@ impl DocumentApprovalFlow {
 
     #[step]
     async fn await_legal_review(self: Arc<Self>) -> Result<(), String> {
+        LEGAL_REVIEW_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [SUSPEND] Waiting for legal review...");
 
         // Another suspension point!
@@ -260,6 +270,7 @@ impl DocumentApprovalFlow {
 
     #[step]
     async fn publish_document(self: Arc<Self>) -> Result<(), String> {
+        PUBLISH_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Publishing document...");
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("       [OK] Document published");
@@ -277,28 +288,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║     External Signal Abstraction Example                  ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
-    // Setup storage
     let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
-
-    // Choose your signal source implementation
-    // Option 1: Mock (for testing)
     let signal_source = Arc::new(SimulatedUserInputSource::new());
 
-    // Option 2: Real user input (you could implement this)
-    // let signal_source = Arc::new(StdinSignalSource::new());
+    // ============================================================
+    // PART 1: API Server / Scheduler Process
+    // ============================================================
+    // In production, this would be an HTTP endpoint that:
+    //   POST /api/documents -> schedules workflow -> returns 202 Accepted with task_id
+    //
+    // The scheduler does NOT wait for completion. It returns immediately.
+    // ============================================================
 
-    // Option 3: HTTP endpoint (you could implement this)
-    // let signal_source = Arc::new(HttpSignalSource::new("http://localhost:8080"));
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 1: Scheduling Documents (API Server)                 ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
 
-    // Start worker with signal processing
-    // The worker automatically handles signal delivery to waiting flows
-    let worker = Worker::new(storage.clone(), "approval-worker");
-    worker
-        .register(|flow: Arc<DocumentApprovalFlow>| flow.process())
-        .await;
-    let worker = worker.with_signals(signal_source.clone()).start().await;
-
-    // Create scheduler
     let scheduler = Scheduler::new(storage.clone());
 
     println!("=== Test 1: Approved Document ===\n");
@@ -316,6 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let flow_id_1 = Uuid::new_v4();
     let task_id_1 = scheduler.schedule(flow1, flow_id_1).await?;
+    println!("   ✓ DOC-001 scheduled (task_id: {})", task_id_1);
 
     // Simulate manager approving after 1 second
     let signal_source_clone = signal_source.clone();
@@ -376,6 +382,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let flow_id_2 = Uuid::new_v4();
     let task_id_2 = scheduler.schedule(flow2, flow_id_2).await?;
+    println!("   ✓ DOC-002 scheduled (task_id: {})", task_id_2);
+
+    println!("\n   → In production: Return HTTP 202 Accepted");
+    println!("   → Response body: {{\"task_ids\": [\"{}\", ...]}}", &task_id_1.to_string()[..8]);
+    println!("   → Client polls GET /api/tasks/:id for status\n");
+
+    // ============================================================
+    // PART 2: Worker Service (Separate Process)
+    // ============================================================
+    // In production, workers run in separate pods/containers/services.
+    // They continuously poll the shared storage for work.
+    //
+    // Workers are completely decoupled from the scheduler.
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 2: Starting Worker (Separate Service)                ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    let worker = Worker::new(storage.clone(), "document-processor");
+    worker
+        .register(|flow: Arc<DocumentApprovalFlow>| flow.process())
+        .await;
+    let worker = worker.with_signals(signal_source.clone()).start().await;
+    println!("   ✓ Worker started with signal processing enabled\n");
 
     // Simulate manager rejecting after 1 second
     // Key insight: Rejection is an OUTCOME (step succeeds), not an error
@@ -431,21 +462,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shutdown
     worker.shutdown().await;
 
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Example Complete - Flows suspended and resumed via      ║");
-    println!("║  external signals using abstracted signal sources!       ║");
-    println!("╚═══════════════════════════════════════════════════════════╝");
+    println!("\n=== Summary ===\n");
 
-    println!("\n[INFO] To implement a real signal source:");
-    println!("   1. Implement the ergon::executor::SignalSource trait");
-    println!("   2. Replace SimulatedUserInputSource with your implementation");
-    println!("   3. Add it to Worker with .with_signals(your_source)");
-    println!("   4. Examples:");
-    println!("      - StdinSignalSource: Read from terminal input");
-    println!("      - HttpSignalSource: Poll HTTP endpoint or webhook");
-    println!("      - RedisSignalSource: Use Redis pub/sub");
-    println!("      - KafkaSignalSource: Consume from Kafka topic");
-    println!("\n   The Worker automatically handles signal delivery - no manual polling needed!\n");
+    println!("Step Execution Counts:");
+    println!(
+        "  validate_document:      {}",
+        VALIDATE_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  await_manager_approval: {} (SIGNAL steps)",
+        MANAGER_APPROVAL_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  await_legal_review:     {} (SIGNAL steps)",
+        LEGAL_REVIEW_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  publish_document:       {}",
+        PUBLISH_COUNT.load(Ordering::Relaxed)
+    );
+
+    println!("\nFlow Results:");
+    match storage.get_scheduled_flow(task_id_1).await? {
+        Some(scheduled) => println!("  DOC-001: {:?}", scheduled.status),
+        None => println!("  DOC-001: Complete (removed from queue)"),
+    }
+    match storage.get_scheduled_flow(task_id_2).await? {
+        Some(scheduled) => println!("  DOC-002: {:?}", scheduled.status),
+        None => println!("  DOC-002: Complete (removed from queue)"),
+    }
 
     storage.close().await?;
     Ok(())

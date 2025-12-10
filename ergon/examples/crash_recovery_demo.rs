@@ -82,7 +82,7 @@ impl OrderProcessor {
         let count = PAYMENT_CHARGE_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
 
         println!(
-            "    💳 CHARGING ${:.2} to customer {} (charge attempt #{})",
+            "    CHARGING ${:.2} to customer {} (charge attempt #{})",
             self.amount, self.customer_id, count
         );
 
@@ -90,7 +90,7 @@ impl OrderProcessor {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         println!(
-            "    ✓ Payment successful! Transaction ID: TXN-{}",
+            "    Payment successful! Transaction ID: TXN-{}",
             self.order_id
         );
 
@@ -127,7 +127,7 @@ impl OrderProcessor {
 
         // Success on 3rd attempt
         tokio::time::sleep(Duration::from_millis(150)).await;
-        println!("    ✓ Inventory reserved successfully on attempt {}", count);
+        println!("    Inventory reserved successfully on attempt {}", count);
 
         Ok(InventoryResult {
             reservation_id: format!("RES-{}", self.order_id),
@@ -184,9 +184,6 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nCrash Recovery & Step Resumability Demo");
-    println!("========================================\n");
-
     // let storage = Arc::new(InMemoryExecutionLog::new());
     let redis_url = "redis://127.0.0.1:6379";
 
@@ -204,16 +201,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id = Uuid::new_v4();
     scheduler.schedule(order.clone(), flow_id).await?;
 
-    println!("📋 Scheduled order: {}", order.order_id);
-    println!("💰 Amount to charge: ${:.2}", order.amount);
-    println!("🔄 Retry Policy: STANDARD (3 attempts, exponential backoff)\n");
+    println!("Scheduled order: {}", order.order_id);
+    println!("Amount to charge: ${:.2}", order.amount);
 
     // ========================================================================
     // Worker with Automatic Retry
     // ========================================================================
-
-    println!("Processing Order with Automatic Retry & Crash Recovery");
-    println!("======================================================\n");
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {
@@ -237,9 +230,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // FINAL RESULTS
     // ========================================================================
 
-    println!("\nFINAL RESULTS");
-    println!("=============\n");
-
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
     let flow_invocation = invocations.iter().find(|i| i.step() == 0);
 
@@ -247,59 +237,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Flow Status: {:?}", flow.status());
     }
 
-    println!("\nAll Steps:");
     for inv in &invocations {
         if inv.step() > 0 {
-            println!("  ✓ {} (completed)", inv.method_name());
+            println!("  {} (completed)", inv.method_name());
         }
     }
 
     let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
     let inventory_count = INVENTORY_RESERVE_COUNT.load(Ordering::SeqCst);
 
-    println!("\n📊 Execution Statistics:");
-    println!("  Payment charged:     {} time(s)", payment_count);
-    println!("  Inventory reserved:  {} time(s)", inventory_count);
-
-    println!("\nKey Takeaways:");
-
-    if payment_count == 1 {
-        println!(
-            "  ✓ Payment step ran exactly ONCE despite {} retry attempts",
-            inventory_count
-        );
-        println!("  ✓ Worker automatically retried flow with exponential backoff");
-        println!("  ✓ Flow resumed at 'reserve_inventory' step on each retry");
-        println!("  ✓ Payment data automatically loaded from storage");
-        println!("  ✓ No duplicate charges - customer billed correctly");
-    } else {
-        println!(
-            "  ✗ Payment step ran {} times - duplicate charge!",
-            payment_count
-        );
-    }
-
-    if inventory_count == 3 {
-        println!(
-            "  ✓ Inventory step retried {} times (as expected)",
-            inventory_count
-        );
-        println!("  ✓ Succeeded on attempt 3 after automatic retries");
-    } else {
-        println!("  Inventory attempts: {} (expected 3)", inventory_count);
-    }
-
-    println!("\nWith Regular Queues:");
-    println!("  ✗ Entire task would retry from step 1");
-    println!("  ✗ Customer would be charged {} times", inventory_count);
-    println!("  ✗ Need 50+ lines of manual idempotency checks");
-
-    println!("\nWith Ergon:");
-    println!("  ✓ Automatic worker-level retry with exponential backoff");
-    println!("  ✓ Step-level resumability - flow resumes from failed step");
-    println!("  ✓ Zero boilerplate idempotency code");
-    println!("  ✓ Exactly-once execution guaranteed for idempotent steps");
-    println!("  ✓ Durable retry - survives worker crashes\n");
+    println!("Payment charged:     {} time(s)", payment_count);
+    println!("Inventory reserved:  {} time(s)", inventory_count);
 
     Ok(())
 }

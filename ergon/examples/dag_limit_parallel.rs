@@ -189,30 +189,6 @@ impl ComplexDag {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔═══════════════════════════════════════════════════════════════════════╗");
-    println!("║              Complex DAG: Fan-out / Fan-in / Cross-branch             ║");
-    println!("╚═══════════════════════════════════════════════════════════════════════╝\n");
-
-    println!("DAG Structure:");
-    println!("                          ┌─── mul_2 ────────────────────────────────────────────┐");
-    println!("                          │    (20)                                               │");
-    println!("        ┌── fetch_a ──────┤                                                       │");
-    println!("        │    (10)         │                      ┌── cross_mul ───┐               │");
-    println!("        │                 └─── mul_3 ────────────┤     (750)      │               │");
-    println!("        │                      (30)              │                │               │");
-    println!("        │                                        │                ├── aggregate ──┼── final");
-    println!("start ──┤                                        │                │    (1650)     │  (1670)");
-    println!("        │                 ┌─── square ───────────┤                │               │");
-    println!("        │                 │    (25)              │                │               │");
-    println!("        └── fetch_b ──────┤                      └── cross_add ───┘               │");
-    println!("             (5)          │                           (775)                       │");
-    println!("                          └─── cube ─────────────────────────────────────────────┘");
-    println!("                               (125)\n");
-
-    println!("Expected: final = 1670");
-    println!("Critical path: 6 levels × 50ms = ~300ms\n");
-    println!("═══════════════════════════════════════════════════════════════════════════\n");
-
     let storage = Arc::new(InMemoryExecutionLog::new());
     storage.reset().await?;
     let workflow = Arc::new(ComplexDag {
@@ -227,33 +203,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let elapsed = start.elapsed();
 
-    println!("\n═══════════════════════════════════════════════════════════════════════════");
-    println!("\nResult: {:?}", result);
+    println!("Result: {:?}", result);
     println!("Time: {:?}", elapsed);
 
     let expected = 1670i64;
     let correct = result.as_ref().map(|&v| v == expected).unwrap_or(false);
 
-    println!("\n┌─────────────────────────────────────────┐");
-    println!("│ Verification                            │");
-    println!("├─────────────────────────────────────────┤");
-    println!("│ Expected: {:<28} │", expected);
+    println!("Expected: {}", expected);
     println!(
-        "│ Got:      {:<28} │",
+        "Got:      {}",
         result
             .as_ref()
             .map(|v| v.to_string())
             .unwrap_or("ERROR".into())
     );
     println!(
-        "│ Status:   {:<28} │",
-        if correct { "✅ CORRECT" } else { "❌ WRONG" }
+        "Status:   {}",
+        if correct { "CORRECT" } else { "WRONG" }
     );
-    println!("├─────────────────────────────────────────┤");
-    println!("│ Timing                                  │");
-    println!("├─────────────────────────────────────────┤");
-    println!("│ Parallel:   {:>10.2?}                 │", elapsed);
-    println!("└─────────────────────────────────────────┘");
+    println!("Parallel: {:?}", elapsed);
 
     Ok(())
 }

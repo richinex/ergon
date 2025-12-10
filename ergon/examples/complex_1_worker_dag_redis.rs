@@ -584,11 +584,6 @@ fn timestamp() -> f64 {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║  Complex Multi-Worker SEQUENTIAL + Child Flows (Redis)    ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-    println!("Scenario: 3 concurrent orders, 4 workers, SEQUENTIAL execution (NO DAG)\n");
-
     let redis_url = "redis://127.0.0.1:6379";
     // Use shorter stale lock timeout (30s instead of 5min) for testing
     // This allows recovery of stuck flows during test execution
@@ -630,14 +625,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
-    println!("Scheduling orders...");
     for order in &orders {
         let task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
         println!("   - {} scheduled (task_id: {})", order.order_id, task_id);
     }
 
     // Start 1 worker (testing for concurrency vs logic bugs)
-    println!("\nStarting 1 worker...\n");
 
     let workers: Vec<_> = (1..=1)
         .map(|i| {
@@ -672,12 +665,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker.await?;
     }
 
-    // Print summary
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                       Summary                              ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
-    println!("Step Execution Counts:");
     println!(
         "  validate_customer:   {}",
         VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed)
@@ -703,7 +690,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed)
     );
 
-    println!("\nPer-Order Step Attempts:");
     for i in 1..=3 {
         let order_id = format!("ORD-{:03}", i);
         if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
@@ -719,13 +705,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-
-    println!("\nKey Features Demonstrated:");
-    println!("  - DAG parallel execution (validate, fraud, inventory run concurrently)");
-    println!("  - Parent-child flow invocation from DAG step");
-    println!("  - Retryable vs permanent errors");
-    println!("  - Multiple workers distributing load");
-    println!("  - Complex dependency management\n");
 
     storage.close().await?;
     Ok(())

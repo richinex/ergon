@@ -395,15 +395,12 @@ impl OrderFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Custom Error Types Example ===\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("custom_errors.db").await?);
     storage.reset().await?;
 
     // ==========================================================================
     // Test 1: Successful Order
     // ==========================================================================
-    println!("\n--- Test 1: Successful Order ---");
 
     let order1 = OrderFlow {
         order_id: "ORD-001".to_string(),
@@ -431,7 +428,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Test 2: Inventory Error (Permanent)
     // ==========================================================================
-    println!("\n\n--- Test 2: Out of Stock Error (Permanent) ---");
 
     let order2 = OrderFlow {
         order_id: "ORD-002".to_string(),
@@ -459,7 +455,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Test 3: Payment Error (Permanent)
     // ==========================================================================
-    println!("\n\n--- Test 3: Insufficient Funds Error (Permanent) ---");
 
     let order3 = OrderFlow {
         order_id: "ORD-003".to_string(),
@@ -487,8 +482,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Test 4: Network Error (Retryable with Automatic Retry)
     // ==========================================================================
-    println!("\n\n--- Test 4: Network Timeout (Retryable with Automatic Retry) ---");
-    println!("Note: Will fail first 2 attempts, then succeed on 3rd retry\n");
 
     // Reset counter for this test
     PAYMENT_ATTEMPT_COUNT.store(0, Ordering::SeqCst);
@@ -538,7 +531,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "\nResult: ORD-004 - Completed after {} payment attempts!",
                     PAYMENT_ATTEMPT_COUNT.load(Ordering::SeqCst)
                 );
-                println!("Automatic retry successfully recovered from transient network errors");
             }
             _ => {
                 println!("\nOrder status: {:?}", flow.status());

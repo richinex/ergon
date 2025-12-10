@@ -818,12 +818,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let time_diff = (*max_time - *min_time).num_milliseconds();
 
         println!("\nEXTRACT Phase (3 independent steps):");
-        println!("  Time spread: {}ms", time_diff);
-        if time_diff < 50 {
-            println!("  Result: Steps executed in PARALLEL (nearly simultaneous)");
-        } else {
-            println!("  Result: Steps executed sequentially");
-        }
+        println!("  Start time spread: {}ms", time_diff);
     }
 
     // Analyze silver layer parallelism
@@ -843,12 +838,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let time_diff = (*max_time - *min_time).num_milliseconds();
 
         println!("\nTRANSFORM-SILVER Phase (3 independent steps):");
-        println!("  Time spread: {}ms", time_diff);
-        if time_diff < 50 {
-            println!("  Result: Steps executed in PARALLEL (nearly simultaneous)");
-        } else {
-            println!("  Result: Steps executed sequentially");
-        }
+        println!("  Start time spread: {}ms", time_diff);
     }
 
     println!("\n==========================================================\n");

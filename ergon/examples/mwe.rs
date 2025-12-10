@@ -1,22 +1,25 @@
-//! Ergon Minimal Example - Durable Workflow with Child Flow
+//! Ergon minimal example: durable workflow with child flow invocation.
 //!
-//! Demonstrates step dependencies, child flow invocation, and
-//! automatic replay on recovery. Each step executes exactly once.
+//! Demonstrates step dependencies, child flow invocation, and automatic replay
+//! on recovery. Each step executes exactly once.
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use ergon::executor::{InvokeChild, Worker};
 use ergon::prelude::*;
 use ergon::storage::SqliteExecutionLog;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::time::Duration;
+use uuid::Uuid;
 
+/// A shipping label containing tracking information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Label {
     tracking: String,
 }
 
-/// Order (becomes a parent flow to Shipment)
+/// An order flow that becomes a parent to shipment flows.
 #[derive(Clone, Serialize, Deserialize, FlowType)]
 struct Order {
     id: String,
@@ -60,7 +63,7 @@ impl Order {
     }
 }
 
-// Shipment Flow (child)
+/// A shipment flow (child of order flow) that creates shipping labels.
 #[derive(Clone, Serialize, Deserialize, FlowType)]
 #[invokable(output = Label)]
 struct Shipment {
@@ -73,41 +76,48 @@ impl Shipment {
         println!("[{}] creating label for {}", ts(), self.order_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        Ok(Label {
-            tracking: format!("TRK-{}", &Uuid::new_v4().to_string()[..8]),
-        })
+        let tracking = format!("TRK-{}", &Uuid::new_v4().to_string()[..8]);
+        Ok(Label { tracking })
     }
 }
 
+/// Returns the current timestamp formatted for logging.
 fn ts() -> String {
     Utc::now().format("%H:%M:%S%.3f").to_string()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = "/tmp/ergon_mwe.db";
-    let _ = std::fs::remove_file(db);
+    // Clean up any existing database file
+    let db_path = "/tmp/ergon_mwe.db";
+    let _ = std::fs::remove_file(db_path);
 
-    let storage = Arc::new(SqliteExecutionLog::new(db).await?);
+    // Initialize storage and scheduler
+    let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
     let scheduler = Scheduler::new(storage.clone());
 
+    // Schedule an order flow
     let order = Order {
         id: "ORD-001".into(),
         amount: 99.99,
     };
     let task_id = scheduler.schedule(order, Uuid::new_v4()).await?;
-    println!("[{}] scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    println!("[{}] scheduled: {}", ts(), &task_id.to_string()[..8]);
 
+    // Set up worker with fast poll interval for demo purposes
     let worker =
         Worker::new(storage.clone(), "worker").with_poll_interval(Duration::from_millis(50));
 
+    // Register flow handlers
     worker.register(|f: Arc<Order>| f.fulfill()).await;
     worker.register(|f: Arc<Shipment>| f.create()).await;
 
+    // Start the worker and let it run
     let handle = worker.start().await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     handle.shutdown().await;
 
+    // Clean shutdown
     storage.close().await?;
     Ok(())
 }

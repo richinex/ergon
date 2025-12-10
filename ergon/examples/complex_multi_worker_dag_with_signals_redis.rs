@@ -1,33 +1,39 @@
-//! Complex Multi-Worker DAG with Parent-Child Flows (SQLite)
+//! Complex Multi-Worker with Signals (Redis)
 //!
 //! This example demonstrates the full power of Ergon by combining:
 //! 1. **Multiple Workers** (4 workers) processing concurrently
 //! 2. **Multiple Parent Flows** (3 orders) executing in parallel
-//! 3. **DAG Execution** with parallel steps and dependencies
-//! 4. **Child Flow Invocation** from DAG steps
-//! 5. **Error Handling** with retryable vs permanent errors
-//! 6. **Load Distribution** across workers
+//! 3. **Sequential Steps** with suspension/resumption on signals
+//! 4. **External Signals** for human-in-the-loop approval workflows
+//! 5. **Child Flow Invocation** from workflow steps
+//! 6. **Error Handling** with retryable vs permanent errors
+//! 7. **Load Distribution** across workers
 //!
-//! ## Scenario: E-Commerce Order Fulfillment System
+//! ## Scenario: E-Commerce Order Fulfillment with Manager Approval
 //!
-//! Each order goes through a complex DAG:
+//! Each order goes through a SEQUENTIAL workflow with a signal-based approval step:
 //!
 //! ```text
-//! validate_customer ──┬──> process_payment ──┐
-//!                     │                       │
-//!                     └──> check_fraud ───────┤
-//!                     │                       │
-//!                     └──> reserve_inventory ─┤
-//!                                             │
-//!                                             ├──> generate_label (CHILD FLOW)
-//!                                             │
-//!                                             └──> notify_customer
+//! validate_customer → check_fraud → reserve_inventory → await_manager_approval (SIGNAL) →
+//!     process_payment → generate_label (CHILD FLOW) → notify_customer
 //! ```
 //!
-//! - validate_customer, check_fraud, reserve_inventory run in PARALLEL
-//! - process_payment waits for validate_customer
-//! - generate_label is a CHILD FLOW (spawns separate task)
-//! - notify_customer waits for ALL steps to complete
+//! **Key behaviors:**
+//! - All steps run SEQUENTIALLY (not parallel)
+//! - await_manager_approval SUSPENDS the flow until signal arrives
+//! - generate_label spawns a CHILD FLOW (separate task)
+//! - On retry, cached results avoid re-suspension (appears as attempt #2)
+//!
+//! ## Signal Integration
+//!
+//! The example uses `await_external_signal()` to suspend the flow until a manager
+//! provides approval. The signal returns an `ApprovalDecision` which can be either
+//! approved or rejected. This demonstrates:
+//!
+//! - **Flow Suspension**: Flow pauses at signal step until external input arrives
+//! - **Signal Caching**: Once received, signal result is cached (no re-suspension on retry)
+//! - **Human-in-the-Loop**: Real-world approval workflows with external decision makers
+//! - **Signal Source Abstraction**: Easy to swap signal sources (mock, HTTP, Redis, etc.)
 //!
 //! ## Workers
 //!
@@ -39,24 +45,28 @@
 //! ## Run
 //!
 //! ```bash
-//! cargo run --example complex_multi_worker_dag --features=sqlite
+//! cargo run --example complex_multi_worker_dag_with_signals_redis --features=redis
 //! ```
 
+use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{ExecutionError, InvokeChild, Worker};
+use ergon::executor::{await_external_signal, ExecutionError, InvokeChild, SignalSource, Worker};
 use ergon::prelude::*;
-use ergon::storage::SqliteExecutionLog;
+use ergon::storage::RedisExecutionLog;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use tokio::sync::RwLock;
 
 // Global execution counters (for summary statistics only)
 static VALIDATE_CUSTOMER_COUNT: AtomicU32 = AtomicU32::new(0);
 static CHECK_FRAUD_COUNT: AtomicU32 = AtomicU32::new(0);
 static RESERVE_INVENTORY_COUNT: AtomicU32 = AtomicU32::new(0);
+static AWAIT_APPROVAL_COUNT: AtomicU32 = AtomicU32::new(0);
 static PROCESS_PAYMENT_COUNT: AtomicU32 = AtomicU32::new(0);
 static GENERATE_LABEL_COUNT: AtomicU32 = AtomicU32::new(0);
 static NOTIFY_CUSTOMER_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -70,6 +80,7 @@ struct OrderAttempts {
     validate_customer: AtomicU32,
     check_fraud: AtomicU32,
     reserve_inventory: AtomicU32,
+    await_approval: AtomicU32,
     process_payment: AtomicU32,
     generate_label: AtomicU32,
     notify_customer: AtomicU32,
@@ -120,6 +131,22 @@ impl OrderAttempts {
             .entry(order_id.to_string())
             .or_default()
             .reserve_inventory
+            .fetch_add(1, Ordering::Relaxed)
+            + 1
+    }
+
+    /// Increment and return await_approval attempt counter
+    fn inc_approval(order_id: &str) -> u32 {
+        // Fast path: use read lock if entry exists
+        if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
+            return attempts.await_approval.fetch_add(1, Ordering::Relaxed) + 1;
+        }
+
+        // Slow path: create entry with write lock only on first access
+        ORDER_ATTEMPTS
+            .entry(order_id.to_string())
+            .or_default()
+            .await_approval
             .fetch_add(1, Ordering::Relaxed)
             + 1
     }
@@ -256,6 +283,102 @@ impl From<InventoryError> for ExecutionError {
 }
 
 // =============================================================================
+// Signal-Related Types
+// =============================================================================
+
+/// Decision made by a manager via external signal
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApprovalDecision {
+    approved: bool,
+    approver: String,
+    comments: String,
+    timestamp: i64,
+}
+
+/// Outcome of an approval step (both approved and rejected are valid outcomes)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum ApprovalOutcome {
+    Approved { by: String, comment: String },
+    Rejected { by: String, reason: String },
+}
+
+impl From<ApprovalDecision> for ApprovalOutcome {
+    fn from(decision: ApprovalDecision) -> Self {
+        if decision.approved {
+            ApprovalOutcome::Approved {
+                by: decision.approver,
+                comment: decision.comments,
+            }
+        } else {
+            ApprovalOutcome::Rejected {
+                by: decision.approver,
+                reason: decision.comments,
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Simulated Approval Signal Source
+// =============================================================================
+
+/// Simulates manager approvals with automatic decisions after a delay.
+/// In a real application, this would be replaced with:
+/// - HTTP webhook endpoint receiving approval decisions
+/// - Redis pub/sub listening for approval messages
+/// - Database polling for approval records
+/// - Message queue consumer (Kafka, RabbitMQ, etc.)
+struct SimulatedApprovalSource {
+    signals: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+}
+
+impl SimulatedApprovalSource {
+    fn new() -> Self {
+        Self {
+            signals: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Simulate manager making an approval decision after a delay
+    async fn simulate_approval(&self, signal_name: &str, delay: Duration, approve: bool) {
+        tokio::time::sleep(delay).await;
+
+        let decision = ApprovalDecision {
+            approved: approve,
+            approver: "manager@company.com".to_string(),
+            comments: if approve {
+                "High-value order approved!".to_string()
+            } else {
+                "Requires additional verification".to_string()
+            },
+            timestamp: chrono::Utc::now().timestamp(),
+        };
+
+        let data = ergon::core::serialize_value(&decision).unwrap();
+        let mut signals = self.signals.write().await;
+        signals.insert(signal_name.to_string(), data);
+        println!(
+            "[{:.3}]   [SIGNAL] Manager decision received for '{}'",
+            timestamp(),
+            signal_name
+        );
+    }
+}
+
+#[async_trait]
+impl SignalSource for SimulatedApprovalSource {
+    async fn poll_for_signal(&self, signal_name: &str) -> Option<Vec<u8>> {
+        let signals = self.signals.read().await;
+        signals.get(signal_name).cloned()
+    }
+
+    async fn consume_signal(&self, signal_name: &str) {
+        let mut signals = self.signals.write().await;
+        signals.remove(signal_name);
+    }
+}
+
+// =============================================================================
 // Domain Types
 // =============================================================================
 
@@ -278,7 +401,7 @@ struct OrderSummary {
 }
 
 // =============================================================================
-// Parent Flow - Order Fulfillment (with DAG)
+// Parent Flow - Order Fulfillment (with DAG and Signals)
 // =============================================================================
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
@@ -291,10 +414,10 @@ struct OrderFulfillment {
 }
 
 impl OrderFulfillment {
-    /// Step 1: Validate Customer (runs in parallel)
+    /// Step 1: Validate Customer (runs in parallel with reserve_inventory)
     #[step]
     async fn validate_customer(self: Arc<Self>) -> Result<String, String> {
-        let count = OrderAttempts::inc_validate(&self.order_id); // Lock released immediately
+        let count = OrderAttempts::inc_validate(&self.order_id);
         VALIDATE_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
@@ -316,8 +439,8 @@ impl OrderFulfillment {
         Ok(self.customer_id.clone())
     }
 
-    /// Step 2: Check Fraud (runs in parallel with validate_customer)
-    #[step]
+    /// Step 2: Check Fraud (depends on validate_customer)
+    #[step(depends_on = "validate_customer")]
     async fn check_fraud(self: Arc<Self>) -> Result<bool, String> {
         let count = OrderAttempts::inc_fraud(&self.order_id);
         CHECK_FRAUD_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -340,10 +463,10 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 3: Reserve Inventory (runs in parallel, uses RetryableError)
+    /// Step 3: Reserve Inventory (runs in parallel with validation)
     #[step]
     async fn reserve_inventory(self: Arc<Self>) -> Result<bool, InventoryError> {
-        let count = OrderAttempts::inc_reserve(&self.order_id); // Lock released immediately
+        let count = OrderAttempts::inc_reserve(&self.order_id);
         RESERVE_INVENTORY_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
@@ -377,10 +500,69 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 4: Process Payment (depends on validate_customer, uses RetryableError)
-    #[step(depends_on = "validate_customer")]
-    async fn process_payment(self: Arc<Self>) -> Result<bool, PaymentError> {
-        let count = OrderAttempts::inc_payment(&self.order_id); // Lock released immediately
+    /// Step 4: Await Manager Approval (SIGNAL - depends on check_fraud)
+    ///
+    /// This step SUSPENDS the flow until a manager provides approval via external signal.
+    /// Key behaviors:
+    /// - Flow execution pauses here until signal arrives
+    /// - Signal result is cached (no re-suspension on retry)
+    /// - Both approval and rejection are valid outcomes (step succeeds)
+    /// - The flow decides what rejection means (permanent failure in this case)
+    #[step(depends_on = "check_fraud")]
+    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, ExecutionError> {
+        let count = OrderAttempts::inc_approval(&self.order_id);
+        AWAIT_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
+
+        println!(
+            "[{:.3}]   [{}] await_manager_approval (attempt #{})",
+            timestamp(),
+            &self.order_id,
+            count
+        );
+
+        // SUSPEND HERE if signal not cached - Flow pauses until signal arrives!
+        // On first attempt: suspends and waits for signal
+        // On retry: signal is cached, returns immediately
+        let decision: ApprovalDecision =
+            await_external_signal(&format!("order_approval_{}", self.order_id)).await?;
+
+        // Convert decision to outcome - BOTH approved and rejected are successful step outcomes
+        let outcome: ApprovalOutcome = decision.into();
+
+        // Log the outcome
+        match &outcome {
+            ApprovalOutcome::Approved { by, comment } => {
+                println!(
+                    "[{:.3}]      -> Manager APPROVED by {} - {}",
+                    timestamp(),
+                    by,
+                    comment
+                );
+            }
+            ApprovalOutcome::Rejected { by, reason } => {
+                println!(
+                    "[{:.3}]      -> Manager REJECTED by {} - {}",
+                    timestamp(),
+                    by,
+                    reason
+                );
+            }
+        }
+
+        // Step succeeds with the outcome (cached for replay)
+        Ok(outcome)
+    }
+
+    /// Step 5: Process Payment (depends on manager approval)
+    #[step(
+        depends_on = "await_manager_approval",
+        inputs(approval = "await_manager_approval")
+    )]
+    async fn process_payment(
+        self: Arc<Self>,
+        approval: ApprovalOutcome,
+    ) -> Result<bool, PaymentError> {
+        let count = OrderAttempts::inc_payment(&self.order_id);
         PROCESS_PAYMENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
@@ -389,6 +571,22 @@ impl OrderFulfillment {
             &self.order_id,
             count
         );
+
+        // Check if manager rejected - this becomes a permanent payment failure
+        match approval {
+            ApprovalOutcome::Rejected { by, reason } => {
+                println!(
+                    "[{:.3}]      -> Payment blocked: rejected by {} - {}",
+                    timestamp(),
+                    by,
+                    reason
+                );
+                return Err(PaymentError::FraudDetected); // Non-retryable
+            }
+            ApprovalOutcome::Approved { .. } => {
+                // Continue with payment processing
+            }
+        }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -405,14 +603,14 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 5: Generate Shipping Label (CHILD FLOW - depends on all parallel steps)
-    #[step(depends_on = ["validate_customer", "check_fraud", "reserve_inventory", "process_payment"])]
+    /// Step 6: Generate Shipping Label (CHILD FLOW - depends on payment and inventory)
+    #[step(depends_on = ["reserve_inventory", "process_payment"])]
     async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, String> {
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] generate_shipping_label (attempt #{}) - INVOKING CHILD FLOW",
+            "[{:.3}]   [{}] generate_shipping_label (attempt #{})",
             timestamp(),
             &self.order_id,
             count
@@ -436,7 +634,7 @@ impl OrderFulfillment {
         Ok(label)
     }
 
-    /// Step 6: Notify Customer (depends on label) - returns label for flow result
+    /// Step 7: Notify Customer (depends on label) - returns label for flow result
     #[step(
         depends_on = "generate_shipping_label",
         inputs(label = "generate_shipping_label")
@@ -487,9 +685,17 @@ impl OrderFulfillment {
             .reserve_inventory()
             .await
             .map_err(|e| e.to_string())?;
+
+        // SIGNAL STEP - Flow suspends here until manager approves
+        let approval = self
+            .clone()
+            .await_manager_approval()
+            .await
+            .map_err(|e| e.to_string())?;
+
         let _payment = self
             .clone()
-            .process_payment()
+            .process_payment(approval)
             .await
             .map_err(|e| e.to_string())?;
         let label = self.clone().generate_shipping_label().await?;
@@ -577,13 +783,21 @@ fn timestamp() -> f64 {
 }
 
 // =============================================================================
-// Main - Multi-Worker Stress Test
+// Main - Multi-Worker with Signals
 // =============================================================================
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let storage = Arc::new(SqliteExecutionLog::new("complex_dag.db").await?);
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║ Complex Multi-Worker DAG + Signals (Redis)                ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("Scenario: 3 concurrent orders, 4 workers, SEQUENTIAL execution with SIGNAL-based approvals\n");
+
+    let storage = Arc::new(RedisExecutionLog::new("redis://127.0.0.1/").await?);
     storage.reset().await?;
+
+    // Create signal source for manager approvals
+    let signal_source = Arc::new(SimulatedApprovalSource::new());
 
     let scheduler = Scheduler::new(storage.clone());
 
@@ -591,8 +805,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orders = vec![
         OrderFulfillment {
             order_id: "ORD-001".to_string(),
-            customer_id: "CUST-001".to_string(), // No validation retry
-            product_id: "PROD-001".to_string(),  // No inventory retry
+            customer_id: "CUST-001".to_string(),
+            product_id: "PROD-001".to_string(),
             amount: 299.99,
             quantity: 2,
         },
@@ -612,17 +826,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
+    // ============================================================
+    // PART 1: API Server / Scheduler Process
+    // ============================================================
+    // In production, this would be an HTTP endpoint that:
+    //   POST /api/orders -> schedules workflow -> returns 202 Accepted with task_id
+    //
+    // The scheduler does NOT wait for completion. It returns immediately.
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 1: Scheduling Orders (API Server)                    ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    let mut task_ids = Vec::new();
     for order in &orders {
         let task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
-        println!("   - {} scheduled (task_id: {})", order.order_id, task_id);
-    }
-    tokio::time::sleep(Duration::from_secs(1)).await;
+        println!("   ✓ {} scheduled (task_id: {})", order.order_id, task_id);
+        task_ids.push(task_id);
 
-    // Start 4 workers
+        // Simulate manager approving each order after a delay
+        // In a real application, this would be external (HTTP webhook, Redis pub/sub, etc.)
+        let signal_source_clone = signal_source.clone();
+        let order_id = order.order_id.clone();
+        tokio::spawn(async move {
+            signal_source_clone
+                .simulate_approval(
+                    &format!("order_approval_{}", order_id),
+                    Duration::from_secs(2), // Approve after 2 seconds
+                    true,                    // All orders approved
+                )
+                .await;
+        });
+    }
+
+    println!("\n   → In production: Return HTTP 202 Accepted");
+    println!("   → Response body: {{\"task_ids\": [{:?}, ...]}}", task_ids[0]);
+    println!("   → Client polls GET /api/tasks/:id for status\n");
+
+    // ============================================================
+    // PART 2: Worker Service (Separate Process)
+    // ============================================================
+    // In production, workers run in separate pods/containers/services.
+    // They continuously poll the shared storage for work.
+    //
+    // Workers are completely decoupled from the scheduler.
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 2: Starting Workers (Separate Service)               ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let workers: Vec<_> = (1..=4)
         .map(|i| {
             let storage = storage.clone();
+            let signal_source = signal_source.clone();
             let worker_name = match i {
                 1 => "validation-worker",
                 2 => "payment-worker",
@@ -641,52 +899,115 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .register(|flow: Arc<LabelGenerator>| flow.generate())
                     .await;
 
-                let handle = worker.start().await;
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                handle.shutdown().await;
+                // IMPORTANT: Enable signal processing with .with_signals()
+                // This allows the worker to deliver signals to suspended flows
+                worker.with_signals(signal_source).start().await
             })
         })
         .collect();
 
-    // Wait for all workers
-    for worker in workers {
-        worker.await?;
+    println!("   ✓ 4 workers started and polling for work\n");
+
+    // ============================================================
+    // PART 3: Client Status Monitoring (Demo Only)
+    // ============================================================
+    // In production, the CLIENT would poll a status API endpoint:
+    //   GET /api/tasks/:id -> returns {status: "pending|running|complete|failed"}
+    //
+    // This demonstrates that workflows actually execute, but in production
+    // the scheduler process would NOT do this polling.
+    // ============================================================
+
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+    println!("   → Simulating client polling GET /api/tasks/:id...\n");
+
+    let timeout_duration = Duration::from_secs(30);
+    let wait_result = tokio::time::timeout(timeout_duration, async {
+        loop {
+            let mut all_complete = true;
+            for &task_id in &task_ids {
+                // This simulates: GET /api/tasks/{task_id}
+                if let Some(scheduled) = storage.get_scheduled_flow(task_id).await? {
+                    if !matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
+                        all_complete = false;
+                        break;
+                    }
+                }
+            }
+            if all_complete {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await;
+
+    match wait_result {
+        Ok(_) => println!("\nAll flows completed successfully!\n"),
+        Err(_) => {
+            println!("\n[WARN] Timeout waiting for flows to complete\n");
+            let incomplete = storage.get_incomplete_flows().await?;
+            println!("Incomplete flows: {}", incomplete.len());
+            for inv in &incomplete {
+                println!("  - {} ({})", inv.id(), inv.class_name());
+            }
+        }
     }
 
+    // Shutdown all workers
+    for handle in workers {
+        handle.await?.shutdown().await;
+    }
+
+    // Print summary
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║                       Summary                              ║");
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+
+    println!("Step Execution Counts:");
     println!(
-        "  validate_customer:   {}",
+        "  validate_customer:    {}",
         VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed)
     );
     println!(
-        "  check_fraud:         {}",
+        "  check_fraud:          {}",
         CHECK_FRAUD_COUNT.load(Ordering::Relaxed)
     );
     println!(
-        "  reserve_inventory:   {}",
+        "  reserve_inventory:    {}",
         RESERVE_INVENTORY_COUNT.load(Ordering::Relaxed)
     );
     println!(
-        "  process_payment:     {}",
+        "  await_manager_approval: {} (SIGNAL steps)",
+        AWAIT_APPROVAL_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "  process_payment:      {}",
         PROCESS_PAYMENT_COUNT.load(Ordering::Relaxed)
     );
     println!(
-        "  generate_label:      {} (child flow invocations)",
+        "  generate_label:       {} (child flow invocations)",
         GENERATE_LABEL_COUNT.load(Ordering::Relaxed)
     );
     println!(
-        "  notify_customer:     {}",
+        "  notify_customer:      {}",
         NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed)
     );
 
+    println!("\nPer-Order Step Attempts:");
     for i in 1..=3 {
         let order_id = format!("ORD-{:03}", i);
         if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
             println!(
-                "  {}: validate={}, fraud={}, inventory={}, payment={}, label={}, notify={}",
+                "  {}: validate={}, fraud={}, inventory={}, approval={}, payment={}, label={}, notify={}",
                 order_id,
                 attempts.validate_customer.load(Ordering::Relaxed),
                 attempts.check_fraud.load(Ordering::Relaxed),
                 attempts.reserve_inventory.load(Ordering::Relaxed),
+                attempts.await_approval.load(Ordering::Relaxed),
                 attempts.process_payment.load(Ordering::Relaxed),
                 attempts.generate_label.load(Ordering::Relaxed),
                 attempts.notify_customer.load(Ordering::Relaxed)
