@@ -98,6 +98,18 @@ impl ExecutionLog for InMemoryExecutionLog {
         );
 
         let key = (id, step);
+
+        // Check if invocation already exists and skip if Complete or WaitingForSignal
+        // This prevents overwriting cached results or signal state during replay
+        if let Some(existing) = self.invocations.get(&key) {
+            if existing.status() == InvocationStatus::Complete {
+                return Ok(());
+            }
+            if existing.status() == InvocationStatus::WaitingForSignal {
+                return Ok(());
+            }
+        }
+
         self.invocations.insert(key, invocation);
         Ok(())
     }

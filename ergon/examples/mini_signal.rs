@@ -17,13 +17,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ergon::executor::{await_external_signal, SignalSource, Worker};
 use ergon::prelude::*;
-use ergon::storage::InMemoryExecutionLog;
+use ergon::storage::SqliteExecutionLog;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let storage = Arc::new(InMemoryExecutionLog::default());
+    let db_path = "/tmp/ergon_mini_signal.db";
+    let _ = std::fs::remove_file(db_path);
+
+    let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
     let scheduler = Scheduler::new(storage.clone());
     let signals = Arc::new(SimpleSignals::new());
 
@@ -50,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     handle.shutdown().await;
+    storage.close().await?;
     Ok(())
 }
 
