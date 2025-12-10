@@ -1075,6 +1075,8 @@ impl ExecutionLog for SqliteExecutionLog {
 mod tests {
     use super::*;
     use crate::core::{hash_params, serialize_value};
+    use crate::{ScheduledFlow, TaskStatus};
+    use chrono::Utc;
 
     #[tokio::test]
     async fn test_create_and_log_invocation() {
@@ -1151,11 +1153,70 @@ mod tests {
         let _ = std::fs::remove_file(temp_file);
         let log = SqliteExecutionLog::new(temp_file).await.unwrap();
 
+        let task_id1 = Uuid::new_v4();
+        let task_id2 = Uuid::new_v4();
+        let task_id3 = Uuid::new_v4();
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
         let id3 = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
+        let now = Utc::now();
+
+        // Enqueue flows into flow_queue table
+        log.enqueue_flow(ScheduledFlow {
+            task_id: task_id1,
+            flow_id: id1,
+            flow_type: "Flow1".to_string(),
+            flow_data: params.clone(),
+            status: TaskStatus::Pending,
+            locked_by: None,
+            created_at: now,
+            updated_at: now,
+            retry_count: 0,
+            error_message: None,
+            scheduled_for: None,
+            parent_flow_id: None,
+            signal_token: None,
+        })
+        .await
+        .unwrap();
+
+        log.enqueue_flow(ScheduledFlow {
+            task_id: task_id2,
+            flow_id: id2,
+            flow_type: "Flow2".to_string(),
+            flow_data: params.clone(),
+            status: TaskStatus::Pending,
+            locked_by: None,
+            created_at: now,
+            updated_at: now,
+            retry_count: 0,
+            error_message: None,
+            scheduled_for: None,
+            parent_flow_id: None,
+            signal_token: None,
+        })
+        .await
+        .unwrap();
+
+        log.enqueue_flow(ScheduledFlow {
+            task_id: task_id3,
+            flow_id: id3,
+            flow_type: "Flow3".to_string(),
+            flow_data: params.clone(),
+            status: TaskStatus::Complete,
+            locked_by: None,
+            created_at: now,
+            updated_at: now,
+            retry_count: 0,
+            error_message: None,
+            scheduled_for: None,
+            parent_flow_id: None,
+            signal_token: None,
+        })
+        .await
+        .unwrap();
 
         log.log_invocation_start(InvocationStartParams {
             id: id1,
