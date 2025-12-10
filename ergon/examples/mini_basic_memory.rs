@@ -78,4 +78,3 @@ impl Order {
 // Output:
 // Validated ORD-001
 // Charged $99.99
-

@@ -279,7 +279,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_number: "1234567890123456".into(),
     };
     let task_id = scheduler.schedule(order1, Uuid::new_v4()).await?;
-    println!("   ✓ ORD-001 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    println!(
+        "   ✓ ORD-001 scheduled (task_id: {})",
+        &task_id.to_string()[..8]
+    );
     task_ids.push(task_id);
 
     // Test 2: Invalid card
@@ -289,7 +292,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_number: "123".into(), // Too short
     };
     let task_id = scheduler.schedule(order2, Uuid::new_v4()).await?;
-    println!("   ✓ ORD-002 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    println!(
+        "   ✓ ORD-002 scheduled (task_id: {})",
+        &task_id.to_string()[..8]
+    );
     task_ids.push(task_id);
 
     // Test 3: Fraud detection
@@ -299,7 +305,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_number: "1234567890123456".into(),
     };
     let task_id = scheduler.schedule(order3, Uuid::new_v4()).await?;
-    println!("   ✓ ORD-003 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    println!(
+        "   ✓ ORD-003 scheduled (task_id: {})",
+        &task_id.to_string()[..8]
+    );
     task_ids.push(task_id);
 
     // Test 4: Insufficient funds
@@ -309,7 +318,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_number: "1234567890123456".into(),
     };
     let task_id = scheduler.schedule(order4, Uuid::new_v4()).await?;
-    println!("   ✓ ORD-004 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    println!(
+        "   ✓ ORD-004 scheduled (task_id: {})",
+        &task_id.to_string()[..8]
+    );
     task_ids.push(task_id);
 
     // Test 5: Network error
@@ -319,7 +331,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_number: "4000123456789012".into(), // 4000 prefix triggers network error
     };
     let task_id = scheduler.schedule(order5, Uuid::new_v4()).await?;
-    println!("   ✓ ORD-005 scheduled (task_id: {})", &task_id.to_string()[..8]);
+    println!(
+        "   ✓ ORD-005 scheduled (task_id: {})",
+        &task_id.to_string()[..8]
+    );
     task_ids.push(task_id);
 
     println!("\n   → In production: Return HTTP 202 Accepted with task_ids\n");

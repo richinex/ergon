@@ -259,7 +259,10 @@ impl DocumentApprovalFlow {
         LEGAL_REVIEW_COUNT.fetch_add(1, Ordering::Relaxed);
 
         if !decision.approved {
-            println!("       [REJECTED] Legal rejected by {} - {}", decision.approver, decision.comments);
+            println!(
+                "       [REJECTED] Legal rejected by {} - {}",
+                decision.approver, decision.comments
+            );
             return Err(format!("Legal rejected: {}", decision.comments));
         }
 
@@ -343,7 +346,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   ✓ DOC-002 scheduled (task_id: {})", task_id_2);
 
     println!("\n   → In production: Return HTTP 202 Accepted");
-    println!("   → Response body: {{\"task_ids\": [\"{}\", ...]}}", &task_id_1.to_string()[..8]);
+    println!(
+        "   → Response body: {{\"task_ids\": [\"{}\", ...]}}",
+        &task_id_1.to_string()[..8]
+    );
     println!("   → Client polls GET /api/tasks/:id for status\n");
 
     // ============================================================

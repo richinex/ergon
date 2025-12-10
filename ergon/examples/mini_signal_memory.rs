@@ -28,7 +28,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signals = Arc::new(SimpleSignals::new());
 
     let task_id = scheduler
-        .schedule(Document { id: "DOC-001".into() }, Uuid::new_v4())
+        .schedule(
+            Document {
+                id: "DOC-001".into(),
+            },
+            Uuid::new_v4(),
+        )
         .await?;
 
     let worker = Worker::new(storage.clone(), "worker").with_signals(signals.clone());

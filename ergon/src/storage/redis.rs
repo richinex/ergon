@@ -650,7 +650,7 @@ impl ExecutionLog for RedisExecutionLog {
             let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                 .cursor_arg(cursor)
                 .arg("MATCH")
-                .arg("ergon:flow:*")  // ← Changed from ergon:invocations:*
+                .arg("ergon:flow:*") // ← Changed from ergon:invocations:*
                 .arg("COUNT")
                 .arg(100)
                 .query_async(&mut *conn)
@@ -721,16 +721,19 @@ impl ExecutionLog for RedisExecutionLog {
                     let mut invocation_data = HashMap::new();
                     invocation_data.insert("id".to_string(), flow_id.to_string().into_bytes());
                     invocation_data.insert("step".to_string(), "0".to_string().into_bytes());
-                    invocation_data.insert("timestamp".to_string(), created_at.to_string().into_bytes());
+                    invocation_data
+                        .insert("timestamp".to_string(), created_at.to_string().into_bytes());
                     invocation_data.insert("class_name".to_string(), flow_type.into_bytes());
-                    invocation_data.insert("method_name".to_string(), "flow".to_string().into_bytes());
+                    invocation_data
+                        .insert("method_name".to_string(), "flow".to_string().into_bytes());
                     invocation_data.insert("status".to_string(), status_str.into_bytes());
                     invocation_data.insert("attempts".to_string(), "0".to_string().into_bytes());
                     invocation_data.insert("parameters".to_string(), Vec::new());
                     invocation_data.insert("params_hash".to_string(), "0".to_string().into_bytes());
                     invocation_data.insert("delay_ms".to_string(), "0".to_string().into_bytes());
                     invocation_data.insert("retry_policy".to_string(), "".to_string().into_bytes());
-                    invocation_data.insert("is_retryable".to_string(), "true".to_string().into_bytes());
+                    invocation_data
+                        .insert("is_retryable".to_string(), "true".to_string().into_bytes());
 
                     let invocation = self.parse_invocation(invocation_data)?;
                     incomplete_flows.push(invocation);

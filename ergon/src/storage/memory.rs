@@ -273,9 +273,9 @@ impl ExecutionLog for InMemoryExecutionLog {
 
         // Send to channel (mimics Redis Stream XADD)
         // UnboundedSender::send never fails unless receiver is dropped
-        self.pending_tx.send(task_id).map_err(|_| {
-            StorageError::Connection("pending channel closed".to_string())
-        })?;
+        self.pending_tx
+            .send(task_id)
+            .map_err(|_| StorageError::Connection("pending channel closed".to_string()))?;
 
         Ok(task_id)
     }
@@ -286,14 +286,12 @@ impl ExecutionLog for InMemoryExecutionLog {
         let mut rx = self.pending_rx.lock().await;
 
         // Try to receive with a short timeout to avoid blocking forever
-        let task_id = match tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            rx.recv()
-        ).await {
-            Ok(Some(id)) => id,
-            Ok(None) => return Ok(None), // Channel closed
-            Err(_) => return Ok(None),   // Timeout - no pending flows
-        };
+        let task_id =
+            match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(id)) => id,
+                Ok(None) => return Ok(None), // Channel closed
+                Err(_) => return Ok(None),   // Timeout - no pending flows
+            };
 
         // Release lock immediately after receiving
         drop(rx);
@@ -531,9 +529,9 @@ impl ExecutionLog for InMemoryExecutionLog {
 
                 // Re-enqueue to channel (mimics Redis re-adding to stream)
                 // This is the critical fix for signals!
-                self.pending_tx.send(task_id).map_err(|_| {
-                    StorageError::Connection("pending channel closed".to_string())
-                })?;
+                self.pending_tx
+                    .send(task_id)
+                    .map_err(|_| StorageError::Connection("pending channel closed".to_string()))?;
 
                 // Wake up one waiting worker since we just made a flow available
                 if let Some(ref notify) = self.work_notify {

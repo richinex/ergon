@@ -67,12 +67,15 @@ impl SqliteExecutionLog {
     /// Creates a new SQLite execution log with custom pool configuration.
     pub async fn with_config(db_path: impl AsRef<Path>, config: PoolConfig) -> Result<Self> {
         // Configure SQLite connection options for optimal concurrent access
-        let connect_options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.as_ref().to_string_lossy()))
-            .map_err(|e| StorageError::Connection(e.to_string()))?
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(Duration::from_secs(5))
-            .create_if_missing(true);
+        let connect_options = SqliteConnectOptions::from_str(&format!(
+            "sqlite://{}",
+            db_path.as_ref().to_string_lossy()
+        ))
+        .map_err(|e| StorageError::Connection(e.to_string()))?
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5))
+        .create_if_missing(true);
 
         let pool = Self::build_pool(connect_options, &config).await?;
 
@@ -85,7 +88,6 @@ impl SqliteExecutionLog {
 
         Ok(log)
     }
-
 
     /// Builds the connection pool with the given configuration.
     async fn build_pool(
@@ -225,7 +227,6 @@ impl SqliteExecutionLog {
 
         Ok(())
     }
-
 
     fn row_to_scheduled_flow(row: &sqlx::sqlite::SqliteRow) -> Result<super::ScheduledFlow> {
         let task_id_str: String = row.try_get("task_id")?;

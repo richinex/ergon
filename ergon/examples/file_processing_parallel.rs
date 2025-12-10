@@ -322,12 +322,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output_file: output.to_string(),
         };
         let task_id = scheduler.schedule(processor, Uuid::new_v4()).await?;
-        println!("   ✓ {} scheduled (task_id: {})", input, &task_id.to_string()[..8]);
+        println!(
+            "   ✓ {} scheduled (task_id: {})",
+            input,
+            &task_id.to_string()[..8]
+        );
         task_ids.push(task_id);
     }
 
     println!("\n   → In production: Return HTTP 202 Accepted");
-    println!("   → Response body: {{\"task_ids\": [{:?}, ...]}}", &task_ids[0].to_string()[..8]);
+    println!(
+        "   → Response body: {{\"task_ids\": [{:?}, ...]}}",
+        &task_ids[0].to_string()[..8]
+    );
     println!("   → Client polls GET /api/tasks/:id for status\n");
 
     // ============================================================
@@ -405,7 +412,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Summary ===\n");
 
     println!("Step Execution Counts:");
-    println!("  read_csv:         {}", READ_CSV_COUNT.load(Ordering::Relaxed));
+    println!(
+        "  read_csv:         {}",
+        READ_CSV_COUNT.load(Ordering::Relaxed)
+    );
     println!(
         "  validate_clean:   {}",
         VALIDATE_COUNT.load(Ordering::Relaxed)

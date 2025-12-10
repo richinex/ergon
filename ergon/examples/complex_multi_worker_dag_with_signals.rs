@@ -864,14 +864,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .simulate_approval(
                     &format!("order_approval_{}", order_id),
                     Duration::from_secs(2), // Approve after 2 seconds
-                    true,                    // All orders approved
+                    true,                   // All orders approved
                 )
                 .await;
         });
     }
 
     println!("\n   → In production: Return HTTP 202 Accepted");
-    println!("   → Response body: {{\"task_ids\": [{:?}, ...]}}", task_ids[0]);
+    println!(
+        "   → Response body: {{\"task_ids\": [{:?}, ...]}}",
+        task_ids[0]
+    );
     println!("   → Client polls GET /api/tasks/:id for status\n");
 
     // ============================================================

@@ -217,10 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|v| v.to_string())
             .unwrap_or("ERROR".into())
     );
-    println!(
-        "Status:   {}",
-        if correct { "CORRECT" } else { "WRONG" }
-    );
+    println!("Status:   {}", if correct { "CORRECT" } else { "WRONG" });
     println!("Parallel: {:?}", elapsed);
 
     Ok(())
