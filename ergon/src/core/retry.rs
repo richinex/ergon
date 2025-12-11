@@ -493,6 +493,110 @@ pub mod kind {
     pub use super::{DefaultKind, RetryableKind};
 }
 
+// =============================================================================
+// RETRY EXECUTION (moved from executor/retry_helper.rs)
+// =============================================================================
+
+use std::future::Future;
+
+/// Executes a fallible operation with retry logic.
+///
+/// This function executes the policy definitions above. It:
+/// 1. Attempts to execute the operation
+/// 2. On success, returns the result
+/// 3. On failure:
+///    - Checks if the error is retryable (using RetryableError trait)
+///    - Checks if we have attempts remaining (using RetryPolicy)
+///    - If both conditions are met, delays and retries
+///    - Otherwise, returns the error
+///
+/// # Type Parameters
+///
+/// * `F` - The async operation to execute
+/// * `T` - The success type
+/// * `E` - The error type (must implement RetryableError)
+///
+/// # Arguments
+///
+/// * `retry_policy` - Optional retry policy (None means no retries)
+/// * `operation` - The async operation to execute (receives current attempt number)
+///
+/// # Example
+///
+/// ```ignore
+/// use ergon::RetryPolicy;
+///
+/// let result = retry_with_policy(
+///     Some(RetryPolicy::STANDARD),
+///     |_attempt| async { risky_operation().await }
+/// ).await;
+/// ```
+pub async fn retry_with_policy<F, Fut, T, E>(
+    retry_policy: Option<RetryPolicy>,
+    mut operation: F,
+) -> Result<T, E>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: RetryableError + std::fmt::Debug,
+{
+    // If no retry policy, execute once
+    let Some(policy) = retry_policy else {
+        return operation(1).await;
+    };
+
+    let mut attempt = 1;
+
+    loop {
+        match operation(attempt).await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                // Check if we should retry this error
+                let should_retry = error.is_retryable();
+
+                // Check if we have attempts remaining
+                let has_attempts_remaining = attempt < policy.max_attempts;
+
+                if should_retry && has_attempts_remaining {
+                    // Calculate delay for next attempt
+                    if let Some(delay) = policy.delay_for_attempt(attempt) {
+                        tracing::debug!(
+                            "Operation failed with retryable error (attempt {}/{}): {:?}. Retrying after {:?}",
+                            attempt,
+                            policy.max_attempts,
+                            error,
+                            delay
+                        );
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                    } else {
+                        // No delay means we've exhausted retries
+                        tracing::warn!(
+                            "Operation failed and exhausted retry attempts ({}/{}): {:?}",
+                            attempt,
+                            policy.max_attempts,
+                            error
+                        );
+                        return Err(error);
+                    }
+                } else {
+                    if !should_retry {
+                        tracing::debug!("Operation failed with non-retryable error: {:?}", error);
+                    } else {
+                        tracing::warn!(
+                            "Operation failed and exhausted retry attempts ({}/{}): {:?}",
+                            attempt,
+                            policy.max_attempts,
+                            error
+                        );
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

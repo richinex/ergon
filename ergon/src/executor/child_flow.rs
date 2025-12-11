@@ -50,6 +50,10 @@ pub struct SignalPayload {
     pub success: bool,
     /// The serialized data: either the result (if success=true) or error message (if success=false)
     pub data: Vec<u8>,
+    /// Whether the error is retryable (only meaningful when success=false)
+    /// None for success or backward compatibility
+    #[serde(default)]
+    pub is_retryable: Option<bool>,
 }
 
 /// A pending child flow invocation.
@@ -163,7 +167,11 @@ where
                         return Ok(crate::core::deserialize_value(&payload.data)?);
                     } else {
                         let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                        return Err(ExecutionError::Failed(error_msg));
+                        // Preserve child's retryability: if child was non-retryable, parent should be too
+                        return Err(match payload.is_retryable {
+                            Some(false) => ExecutionError::NonRetryable(error_msg),
+                            _ => ExecutionError::Failed(error_msg),
+                        });
                     }
                 }
             }
@@ -182,7 +190,11 @@ where
                         return Ok(crate::core::deserialize_value(&payload.data)?);
                     } else {
                         let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                        return Err(ExecutionError::Failed(error_msg));
+                        // Preserve child's retryability: if child was non-retryable, parent should be too
+                        return Err(match payload.is_retryable {
+                            Some(false) => ExecutionError::NonRetryable(error_msg),
+                            _ => ExecutionError::Failed(error_msg),
+                        });
                     }
                 }
                 // Otherwise continue to suspend below
@@ -246,7 +258,11 @@ where
                 return Ok(crate::core::deserialize_value(&payload.data)?);
             } else {
                 let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                return Err(ExecutionError::Failed(error_msg));
+                // Preserve child's retryability: if child was non-retryable, parent should be too
+                return Err(match payload.is_retryable {
+                    Some(false) => ExecutionError::NonRetryable(error_msg),
+                    _ => ExecutionError::Failed(error_msg),
+                });
             }
         }
 

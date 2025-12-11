@@ -11,8 +11,103 @@
 use super::context::EXECUTION_CONTEXT;
 use super::error::{ExecutionError, Result, SuspendReason};
 use crate::core::InvocationStatus;
+use crate::storage::ExecutionLog;
 use chrono::{Duration as ChronoDuration, Utc};
+use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, info, warn};
+
+// ============================================================================
+// Timer Typestates (moved from worker.rs)
+// ============================================================================
+
+/// Typestate: Worker without timer processing
+pub struct WithoutTimers;
+
+/// Typestate: Worker with timer processing enabled
+pub struct WithTimers {
+    pub timer_poll_interval: Duration,
+}
+
+// ============================================================================
+// Timer Processing Trait
+// ============================================================================
+
+/// Trait that defines timer processing behavior based on type state.
+///
+/// This trait uses the typestate pattern to provide different behaviors
+/// for workers with and without timer processing enabled.
+#[async_trait::async_trait]
+pub trait TimerProcessing: Send + Sync {
+    async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
+}
+
+#[async_trait::async_trait]
+impl TimerProcessing for WithoutTimers {
+    async fn process_timers<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str) {
+        // No-op: timer processing disabled
+    }
+}
+
+#[async_trait::async_trait]
+impl TimerProcessing for WithTimers {
+    async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str) {
+        // Fetch expired timers and process them
+        match storage.get_expired_timers(Utc::now()).await {
+            Ok(timers) => {
+                if !timers.is_empty() {
+                    debug!("Processing {} expired timers", timers.len());
+                }
+
+                for timer in timers {
+                    // Try to claim the timer (optimistic concurrency)
+                    match storage.claim_timer(timer.flow_id, timer.step).await {
+                        Ok(true) => {
+                            // Successfully claimed - resume the flow
+                            info!(
+                                "Timer fired: flow={} step={} name={:?}",
+                                timer.flow_id, timer.step, timer.timer_name
+                            );
+
+                            // Resume the flow by re-enqueuing it
+                            match storage.resume_flow(timer.flow_id).await {
+                                Ok(true) => debug!("Resumed flow after timer: {}", timer.flow_id),
+                                Ok(false) => debug!(
+                                    "Flow {} not in SUSPENDED state after timer (may have already resumed)",
+                                    timer.flow_id
+                                ),
+                                Err(e) => warn!(
+                                    "Failed to resume flow after timer: flow={} step={} error={}",
+                                    timer.flow_id, timer.step, e
+                                ),
+                            }
+                        }
+                        Ok(false) => {
+                            // Another worker already claimed it
+                            debug!(
+                                "Timer already fired by another worker: flow={} step={}",
+                                timer.flow_id, timer.step
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to claim timer (will retry): flow={} step={} error={}",
+                                timer.flow_id, timer.step, e
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to fetch expired timers: {}", e);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Timer Scheduling API
+// ============================================================================
 
 /// Schedules a durable timer that pauses workflow execution.
 ///

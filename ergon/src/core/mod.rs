@@ -62,7 +62,7 @@ mod serialization;
 pub use error::{Error, Result};
 pub use flow_type::{FlowType, InvokableFlow};
 pub use invocation::{CallType, Invocation, InvocationStatus};
-pub use retry::{DefaultKind, RetryPolicy, RetryableError, RetryableKind};
+pub use retry::{retry_with_policy, DefaultKind, RetryPolicy, RetryableError, RetryableKind};
 pub use serialization::{deserialize_value, hash_params, serialize_value};
 
 // Re-export kind module for macro use

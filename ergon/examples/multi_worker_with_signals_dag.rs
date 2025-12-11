@@ -3,7 +3,7 @@
 //! This example demonstrates the full power of Ergon by combining:
 //! 1. **Multiple Workers** (4 workers) processing concurrently
 //! 2. **Multiple Parent Flows** (3 orders) executing in parallel
-//! 3. **Sequential Steps** with suspension/resumption on signals
+//! 3. **DAG-Based Parallel Steps** with suspension/resumption on signals
 //! 4. **External Signals** for human-in-the-loop approval workflows
 //! 5. **Child Flow Invocation** from workflow steps
 //! 6. **Error Handling** with retryable vs permanent errors
@@ -11,15 +11,22 @@
 //!
 //! ## Scenario: E-Commerce Order Fulfillment with Manager Approval
 //!
-//! Each order goes through a SEQUENTIAL workflow with a signal-based approval step:
+//! Each order goes through a DAG workflow with parallel execution and signal-based approval:
 //!
 //! ```text
-//! validate_customer → check_fraud → reserve_inventory → await_manager_approval (SIGNAL) →
-//!     process_payment → generate_label (CHILD FLOW) → notify_customer
+//!                     ┌──> check_fraud ─────────────> await_manager_approval ──┐
+//!                     │                                                          │
+//! validate_customer ──┼──> reserve_inventory ─────────────────────────────────┤
+//!                     │                                                          ├──> process_payment ──┐
+//!                     └──> verify_shipping_address ──────────────────────────────┘                      │
+//!                                                                                                        │
+//!                                                                                                        ├──> generate_label (CHILD FLOW) ──> notify_customer
+//!                                                                                                        │
+//!                     calculate_tax ─────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! **Key behaviors:**
-//! - All steps run SEQUENTIALLY (not parallel)
+//! - Steps run in PARALLEL when dependencies allow (DAG parallelism)
 //! - await_manager_approval SUSPENDS the flow until signal arrives
 //! - generate_label spawns a CHILD FLOW (separate task)
 //! - On retry, cached results avoid re-suspension (appears as attempt #2)
@@ -73,6 +80,12 @@ static NOTIFY_CUSTOMER_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Per-order attempt tracking for retry logic
 static ORDER_ATTEMPTS: LazyLock<DashMap<String, OrderAttempts>> = LazyLock::new(DashMap::new);
+
+// Per-order timing tracking
+static ORDER_TIMINGS: LazyLock<DashMap<String, f64>> = LazyLock::new(DashMap::new);
+
+// Step timestamp tracking for parallelism analysis
+static STEP_TIMESTAMPS: LazyLock<DashMap<String, f64>> = LazyLock::new(DashMap::new);
 
 /// Per-order attempt counters (each order tracks its own retry attempts)
 #[derive(Default)]
@@ -420,11 +433,11 @@ impl OrderFulfillment {
         let count = OrderAttempts::inc_validate(&self.order_id);
         VALIDATE_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
+        let ts = timestamp();
+        STEP_TIMESTAMPS.insert(format!("{}:validate_customer", self.order_id), ts);
         println!(
-            "[{:.3}]   [{}] validate_customer (execution #{})",
-            timestamp(),
-            &self.order_id,
-            count
+            "[{:.3}]   [{}] validate_customer START (execution #{})",
+            ts, &self.order_id, count
         );
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -446,7 +459,7 @@ impl OrderFulfillment {
         CHECK_FRAUD_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] check_fraud (execution #{})",
+            "[{:.3}]   [{}] check_fraud START (execution #{})",
             timestamp(),
             &self.order_id,
             count
@@ -464,13 +477,13 @@ impl OrderFulfillment {
     }
 
     /// Step 3: Reserve Inventory (runs in parallel with validation)
-    #[step]
+    #[step(depends_on = "validate_customer")]
     async fn reserve_inventory(self: Arc<Self>) -> Result<bool, InventoryError> {
         let count = OrderAttempts::inc_reserve(&self.order_id);
         RESERVE_INVENTORY_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] reserve_inventory (execution #{})",
+            "[{:.3}]   [{}] reserve_inventory START (execution #{})",
             timestamp(),
             &self.order_id,
             count
@@ -516,7 +529,7 @@ impl OrderFulfillment {
         AWAIT_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] await_manager_approval (execution #{})",
+            "[{:.3}]   [{}] await_manager_approval START (execution #{})",
             timestamp(),
             &self.order_id,
             count
@@ -555,23 +568,52 @@ impl OrderFulfillment {
         Ok(outcome)
     }
 
-    /// Step 5: Process Payment (depends on manager approval)
+    /// Step 4a: Verify Shipping Address (runs in parallel after validate_customer)
+    #[step(depends_on = "validate_customer")]
+    async fn verify_shipping_address(self: Arc<Self>) -> Result<String, String> {
+        println!(
+            "[{:.3}]   [{}] verify_shipping_address START",
+            timestamp(),
+            &self.order_id
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        println!("[{:.3}]      -> Address verified", timestamp());
+        Ok(format!("ADDR-{}", self.customer_id))
+    }
+
+    /// Step 4b: Calculate Tax (runs in parallel, no dependencies)
+    #[step]
+    async fn calculate_tax(self: Arc<Self>) -> Result<f64, String> {
+        println!(
+            "[{:.3}]   [{}] calculate_tax START",
+            timestamp(),
+            &self.order_id
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let tax = self.amount * 0.08;
+        println!("[{:.3}]      -> Tax calculated: ${:.2}", timestamp(), tax);
+        Ok(tax)
+    }
+
+    /// Step 5: Process Payment (depends on manager approval, inventory, address, tax)
     #[step(
-        depends_on = "await_manager_approval",
-        inputs(approval = "await_manager_approval")
+        depends_on = ["await_manager_approval", "reserve_inventory", "verify_shipping_address", "calculate_tax"],
+        inputs(approval = "await_manager_approval", tax = "calculate_tax")
     )]
     async fn process_payment(
         self: Arc<Self>,
         approval: ApprovalOutcome,
+        tax: f64,
     ) -> Result<bool, PaymentError> {
         let count = OrderAttempts::inc_payment(&self.order_id);
         PROCESS_PAYMENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] process_payment (execution #{})",
+            "[{:.3}]   [{}] process_payment START (execution #{}, tax=${:.2})",
             timestamp(),
             &self.order_id,
-            count
+            count,
+            tax
         );
 
         // Check if manager rejected - this becomes a permanent payment failure
@@ -605,20 +647,20 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 6: Generate Shipping Label (CHILD FLOW - depends on payment and inventory)
+    /// Step 6: Generate Shipping Label (CHILD FLOW - depends on payment)
     ///
     /// This step demonstrates REPLAY-BASED RESUMPTION for child flows.
     ///
     /// Key behaviors:
     /// - **Execution #1**: Spawns child flow, suspends until child completes
     /// - **Execution #2**: Replays from beginning, retrieves cached child result
-    #[step(depends_on = ["reserve_inventory", "process_payment"])]
+    #[step(depends_on = "process_payment")]
     async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, String> {
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] generate_shipping_label (execution #{})",
+            "[{:.3}]   [{}] generate_shipping_label START (execution #{})",
             timestamp(),
             &self.order_id,
             count
@@ -657,7 +699,7 @@ impl OrderFulfillment {
         NOTIFY_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] notify_customer (execution #{})",
+            "[{:.3}]   [{}] notify_customer START (execution #{})",
             timestamp(),
             &self.order_id,
             count
@@ -673,49 +715,36 @@ impl OrderFulfillment {
         Ok(label)
     }
 
-    /// Main SEQUENTIAL flow (NO DAG)
+    /// Main DAG-PARALLEL flow with signals
     #[flow]
     async fn fulfill_order(self: Arc<Self>) -> Result<OrderSummary, String> {
-        let flow_id = ergon::EXECUTION_CONTEXT
-            .try_with(|ctx| ctx.id)
-            .expect("Must be called within flow");
-
         println!(
-            "\n[{:.3}] ORDER[{}] flow_id={}: Starting fulfillment (SEQUENTIAL - NO DAG)",
+            "\n[{:.3}] ORDER[{}] Starting DAG-PARALLEL fulfillment",
             timestamp(),
-            self.order_id,
-            &flow_id.to_string()[..8]
+            self.order_id
         );
+        let start = std::time::Instant::now();
 
-        // Run steps SEQUENTIALLY (no DAG parallelism)
-        let _customer = self.clone().validate_customer().await?;
-        let _fraud = self.clone().check_fraud().await?;
-        let _inventory = self
-            .clone()
-            .reserve_inventory()
-            .await
-            .map_err(|e| e.to_string())?;
+        // Execute the DAG - steps run in parallel when dependencies allow!
+        let label = dag! {
+            self.register_validate_customer();
+            self.register_check_fraud();
+            self.register_reserve_inventory();
+            self.register_verify_shipping_address();
+            self.register_calculate_tax();
+            self.register_await_manager_approval();
+            self.register_process_payment();
+            self.register_generate_shipping_label();
+            self.register_notify_customer()
+        }?;
 
-        // SIGNAL STEP - Flow suspends here until manager approves
-        let approval = self
-            .clone()
-            .await_manager_approval()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let _payment = self
-            .clone()
-            .process_payment(approval)
-            .await
-            .map_err(|e| e.to_string())?;
-        let label = self.clone().generate_shipping_label().await?;
-        let label = self.clone().notify_customer(label).await?;
-
+        let duration = start.elapsed();
+        ORDER_TIMINGS.insert(self.order_id.clone(), duration.as_secs_f64());
         println!(
-            "[{:.3}] ORDER[{}] flow_id={}: Fulfillment complete\n",
+            "[{:.3}] ORDER[{}] DAG fulfillment complete in {:.3}s\n",
             timestamp(),
             self.order_id,
-            &flow_id.to_string()[..8]
+            duration.as_secs_f64()
         );
 
         Ok(OrderSummary {
@@ -798,10 +827,12 @@ fn timestamp() -> f64 {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let total_start = std::time::Instant::now();
+
     println!("\n╔════════════════════════════════════════════════════════════╗");
     println!("║ Complex Multi-Worker DAG + Signals (SQLite)               ║");
     println!("╚════════════════════════════════════════════════════════════╝\n");
-    println!("Scenario: 3 concurrent orders, 4 workers, SEQUENTIAL execution with SIGNAL-based approvals\n");
+    println!("Scenario: 3 concurrent orders, 4 workers, DAG-PARALLEL execution with SIGNAL-based approvals\n");
 
     let storage = Arc::new(SqliteExecutionLog::new("complex_dag_signals.db").await?);
     storage.reset().await?;
@@ -1028,6 +1059,179 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let total_duration = total_start.elapsed();
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║                    Execution Timing                        ║");
+    println!("╚════════════════════════════════════════════════════════════╝");
+    println!("\nPer-Order Fulfillment Time:");
+    for i in 1..=3 {
+        let order_id = format!("ORD-{:03}", i);
+        if let Some(timing) = ORDER_TIMINGS.get(&order_id) {
+            println!("  {}: {:.3}s", order_id, *timing);
+        }
+    }
+    println!(
+        "\n  Total DAG-PARALLEL execution: {:.3}s\n",
+        total_duration.as_secs_f64()
+    );
+
     storage.close().await?;
     Ok(())
 }
+
+// ➜  ergon git:(main) ✗ cargo run --example multi_worker_with_signals_dag
+//     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+//      Running `target/debug/examples/multi_worker_with_signals_dag`
+
+// ╔════════════════════════════════════════════════════════════╗
+// ║ Complex Multi-Worker DAG + Signals (SQLite)               ║
+// ╚════════════════════════════════════════════════════════════╝
+
+// Scenario: 3 concurrent orders, 4 workers, DAG-PARALLEL execution with SIGNAL-based approvals
+
+// ╔════════════════════════════════════════════════════════════╗
+// ║ PART 1: Scheduling Orders (API Server)                    ║
+// ╚════════════════════════════════════════════════════════════╝
+
+//    ✓ ORD-001 scheduled (task_id: a48f89d6-9488-4750-90db-11cad104f645)
+//    ✓ ORD-002 scheduled (task_id: 8c3648d4-87c4-4c46-a354-c8a7c956ff38)
+//    ✓ ORD-003 scheduled (task_id: ce4ecf77-e68b-4f46-844a-4f9f06c4084c)
+
+//    → In production: Return HTTP 202 Accepted
+//    → Response body: {"task_ids": [a48f89d6-9488-4750-90db-11cad104f645, ...]}
+//    → Client polls GET /api/tasks/:id for status
+
+// ╔════════════════════════════════════════════════════════════╗
+// ║ PART 2: Starting Workers (Separate Service)               ║
+// ╚════════════════════════════════════════════════════════════╝
+
+//    ✓ 4 workers started and polling for work
+
+// ╔════════════════════════════════════════════════════════════╗
+// ║ PART 3: Monitoring Status (Client Would Poll API)         ║
+// ╚════════════════════════════════════════════════════════════╝
+
+//    → Simulating client polling GET /api/tasks/:id...
+
+// [1765440154.748] ORDER[ORD-002] Starting DAG-PARALLEL fulfillment
+
+// [1765440154.749] ORDER[ORD-001] Starting DAG-PARALLEL fulfillment
+
+// [1765440154.750] ORDER[ORD-003] Starting DAG-PARALLEL fulfillment
+// [1765440154.751]   [ORD-002] calculate_tax START
+// [1765440154.752]   [ORD-003] validate_customer START (execution #1)
+// [1765440154.752]   [ORD-001] validate_customer START (execution #1)
+// [1765440154.753]   [ORD-003] calculate_tax START
+// [1765440154.754]   [ORD-002] validate_customer START (execution #1)
+// [1765440154.757]   [ORD-001] calculate_tax START
+// [1765440154.852]      -> Tax calculated: $12.00
+// [1765440154.854]      -> Customer validated
+// [1765440154.854]      -> Tax calculated: $40.00
+// [1765440154.854]      -> Customer validated
+// [1765440154.855]      -> Customer validated
+// [1765440154.855]   [ORD-003] reserve_inventory START (execution #1)
+// [1765440154.856]   [ORD-002] reserve_inventory START (execution #1)
+// [1765440154.856]   [ORD-002] verify_shipping_address START
+// [1765440154.856]   [ORD-003] check_fraud START (execution #1)
+// [1765440154.857]   [ORD-002] check_fraud START (execution #1)
+// [1765440154.859]      -> Tax calculated: $24.00
+// [1765440154.859]   [ORD-003] verify_shipping_address START
+// [1765440154.860]   [ORD-001] check_fraud START (execution #1)
+// [1765440154.861]   [ORD-001] verify_shipping_address START
+// [1765440154.863]   [ORD-001] reserve_inventory START (execution #1)
+// [1765440154.957]      -> Address verified
+// [1765440154.959]      -> Address verified
+// [1765440154.962]      -> Address verified
+// [1765440154.977]      -> Inventory reserved
+// [1765440154.977]      -> Inventory reserved
+// [1765440154.985]      -> Inventory reserved
+// [1765440155.008]      -> No fraud detected
+// [1765440155.008]      -> No fraud detected
+// [1765440155.011]   [ORD-003] await_manager_approval START (execution #1)
+// [1765440155.011]      -> No fraud detected
+// [1765440155.012]   [ORD-002] await_manager_approval START (execution #1)
+// [1765440155.013]   [ORD-001] await_manager_approval START (execution #1)
+// [1765440156.744]   [SIGNAL] Manager decision received for 'order_approval_ORD-001'
+// [1765440156.745]   [SIGNAL] Manager decision received for 'order_approval_ORD-002'
+// [1765440156.745]   [SIGNAL] Manager decision received for 'order_approval_ORD-003'
+
+// [1765440156.859] ORDER[ORD-003] Starting DAG-PARALLEL fulfillment
+
+// [1765440156.860] ORDER[ORD-001] Starting DAG-PARALLEL fulfillment
+// [1765440156.860]   [ORD-003] await_manager_approval START (execution #2)
+// [1765440156.861]      -> Manager APPROVED by manager@company.com - High-value order approved!
+// [1765440156.861]   [ORD-001] await_manager_approval START (execution #2)
+// [1765440156.862]      -> Manager APPROVED by manager@company.com - High-value order approved!
+// [1765440156.862]   [ORD-001] process_payment START (execution #1, tax=$24.00)
+// [1765440156.863]   [ORD-003] process_payment START (execution #1, tax=$40.00)
+
+// [1765440156.864] ORDER[ORD-002] Starting DAG-PARALLEL fulfillment
+// [1765440156.865]   [ORD-002] await_manager_approval START (execution #2)
+// [1765440156.865]      -> Manager APPROVED by manager@company.com - High-value order approved!
+// [1765440156.866]   [ORD-002] process_payment START (execution #1, tax=$12.00)
+// [1765440157.063]      -> Payment authorized
+// [1765440157.064]      -> Payment authorized
+// [1765440157.066]   [ORD-001] generate_shipping_label START (execution #1)
+// [1765440157.066]   [ORD-003] generate_shipping_label START (execution #1)
+// [1765440157.067]      -> Payment authorized
+// [1765440157.069]     CHILD[97841a96]: Generating label for order ORD-001
+// [1765440157.070]     CHILD[e8f1eeea]: Generating label for order ORD-003
+// [1765440157.072]   [ORD-002] generate_shipping_label START (execution #1)
+// [1765440157.074]     CHILD[3c176d47]: Generating label for order ORD-002
+// [1765440157.271]     CHILD[97841a96]: Label complete: TRACK-3AAA032B
+// [1765440157.271]     CHILD[e8f1eeea]: Label complete: TRACK-7265930B
+
+// [1765440157.274] ORDER[ORD-001] Starting DAG-PARALLEL fulfillment
+
+// [1765440157.274] ORDER[ORD-003] Starting DAG-PARALLEL fulfillment
+// [1765440157.275]     CHILD[3c176d47]: Label complete: TRACK-A3A17CD6
+// [1765440157.276]   [ORD-003] generate_shipping_label START (execution #2)
+// [1765440157.276]   [ORD-001] generate_shipping_label START (execution #2)
+// [1765440157.277]      -> Label generated: TRACK-3AAA032B
+// [1765440157.279]   [ORD-001] notify_customer START (execution #1)
+
+// [1765440157.279] ORDER[ORD-002] Starting DAG-PARALLEL fulfillment
+// [1765440157.280]      -> Label generated: TRACK-7265930B
+// [1765440157.281]   [ORD-002] generate_shipping_label START (execution #2)
+// [1765440157.282]   [ORD-003] notify_customer START (execution #1)
+// [1765440157.284]      -> Label generated: TRACK-A3A17CD6
+// [1765440157.286]   [ORD-002] notify_customer START (execution #1)
+// [1765440157.380]      -> Customer notified (tracking: TRACK-3AAA032B)
+// [1765440157.382] ORDER[ORD-001] DAG fulfillment complete in 0.108s
+
+// [1765440157.383]      -> Customer notified (tracking: TRACK-7265930B)
+// [1765440157.383] ORDER[ORD-003] DAG fulfillment complete in 0.109s
+
+// [1765440157.388]      -> Customer notified (tracking: TRACK-A3A17CD6)
+// [1765440157.388] ORDER[ORD-002] DAG fulfillment complete in 0.109s
+
+// All flows completed successfully!
+
+// ╔════════════════════════════════════════════════════════════╗
+// ║                       Summary                              ║
+// ╚════════════════════════════════════════════════════════════╝
+
+// Step Execution Counts:
+//   validate_customer:    3
+//   check_fraud:          3
+//   reserve_inventory:    3
+//   await_manager_approval: 6 (SIGNAL steps)
+//   process_payment:      3
+//   generate_label:       6 (child flow invocations)
+//   notify_customer:      3
+
+// Per-Order Step Attempts:
+//   ORD-001: validate=1, fraud=1, inventory=1, approval=2, payment=1, label=2, notify=1
+//   ORD-002: validate=1, fraud=1, inventory=1, approval=2, payment=1, label=2, notify=1
+//   ORD-003: validate=1, fraud=1, inventory=1, approval=2, payment=1, label=2, notify=1
+
+// ╔════════════════════════════════════════════════════════════╗
+// ║                    Execution Timing                        ║
+// ╚════════════════════════════════════════════════════════════╝
+
+// Per-Order Fulfillment Time:
+//   ORD-001: 0.108s
+//   ORD-002: 0.109s
+//   ORD-003: 0.109s
+
+//   Total DAG-PARALLEL execution: 3.020s

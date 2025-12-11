@@ -86,18 +86,17 @@ pub mod storage;
 
 // Re-export commonly used types for convenience
 pub use core::{
-    deserialize_value, hash_params, serialize_value, CallType, Error as CoreError, Invocation,
-    InvocationStatus, Result as CoreResult, RetryableError,
+    deserialize_value, hash_params, retry_with_policy, serialize_value, CallType,
+    Error as CoreError, Invocation, InvocationStatus, Result as CoreResult, RetryableError,
 };
 
 // Re-export the kind module for macro use (autoref specialization)
 pub use core::kind;
 
 pub use executor::{
-    await_external_signal, idempotency_key, idempotency_key_parts, retry_with_policy, ArcStepExt,
-    DeferredRegistry, ExecutionContext, ExecutionError, Executor, Registry,
-    Result as ExecutionResult, Scheduler, StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE,
-    EXECUTION_CONTEXT,
+    await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt, DeferredRegistry,
+    ExecutionContext, ExecutionError, Executor, Registry, Result as ExecutionResult, Scheduler,
+    StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE, EXECUTION_CONTEXT,
 };
 
 pub use graph::{Graph, GraphError, GraphResult, StepId, StepNode};

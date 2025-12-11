@@ -17,9 +17,111 @@
 use super::context::EXECUTION_CONTEXT;
 use super::error::{ExecutionError, Result, SuspendReason};
 use crate::core::{deserialize_value, InvocationStatus};
+use crate::storage::ExecutionLog;
 use serde::de::DeserializeOwned;
-use tracing::debug;
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::{debug, warn};
 use uuid::Uuid;
+
+// ============================================================================
+// Signal Typestates (moved from worker.rs)
+// ============================================================================
+
+/// Typestate: Worker without signal processing
+pub struct WithoutSignals;
+
+/// Typestate: Worker with signal processing enabled
+pub struct WithSignals<Src> {
+    pub signal_source: Arc<Src>,
+    pub signal_poll_interval: Duration,
+}
+
+// ============================================================================
+// Signal Processing Trait
+// ============================================================================
+
+/// Trait that defines signal processing behavior based on type state.
+///
+/// This trait uses the typestate pattern to provide different behaviors
+/// for workers with and without signal processing enabled.
+#[async_trait::async_trait]
+pub trait SignalProcessing: Send + Sync {
+    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
+}
+
+#[async_trait::async_trait]
+impl SignalProcessing for WithoutSignals {
+    async fn process_signals<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str) {
+        // No-op: signal processing disabled
+    }
+}
+
+#[async_trait::async_trait]
+impl<Src> SignalProcessing for WithSignals<Src>
+where
+    Src: SignalSource + 'static,
+{
+    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str) {
+        // Get all flows waiting for signals
+        let waiting_signals = match storage.get_waiting_signals().await {
+            Ok(signals) => signals,
+            Err(e) => {
+                warn!("Failed to fetch waiting signals: {}", e);
+                return;
+            }
+        };
+
+        if !waiting_signals.is_empty() {
+            debug!("Processing {} waiting signals", waiting_signals.len());
+        }
+
+        for signal_info in waiting_signals {
+            let Some(signal_name) = &signal_info.signal_name else {
+                continue;
+            };
+
+            // Check if signal source has the signal
+            if let Some(signal_data) = self.signal_source.poll_for_signal(signal_name).await {
+                // Store signal params
+                match storage
+                    .store_signal_params(signal_info.flow_id, signal_info.step, &signal_data)
+                    .await
+                {
+                    Ok(_) => {
+                        // Consume signal so we don't re-process
+                        self.signal_source.consume_signal(signal_name).await;
+
+                        // Try to resume flow
+                        match storage.resume_flow(signal_info.flow_id).await {
+                            Ok(true) => {
+                                debug!(
+                                    "Signal '{}' delivered to flow {}",
+                                    signal_name, signal_info.flow_id
+                                );
+                            }
+                            Ok(false) => {
+                                debug!(
+                                    "Signal '{}' stored for flow {} (will resume when suspended)",
+                                    signal_name, signal_info.flow_id
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to resume flow {} after signal '{}': {}",
+                                    signal_info.flow_id, signal_name, e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to store signal params for '{}': {}", signal_name, e);
+                    }
+                }
+            }
+        }
+    }
+}
 
 // ============================================================================
 // Signal Source Trait
@@ -210,9 +312,28 @@ where
     )))
 }
 
-/// Helper function to signal a parent flow with a typed result.
+/// Level 1 API: Explicitly signals a parent flow from within a child flow.
 ///
-/// This encapsulates the low-level operations needed for parent-child flow communication:
+/// Use this when you manually schedule child flows and need explicit control
+/// over when and how to signal the parent. For simpler cases, consider using
+/// the Level 3 `invoke()` API which handles parent signaling automatically.
+///
+/// # API Levels Comparison
+///
+/// - **Level 1 (this function)**: Manual scheduling + explicit signaling
+///   - Parent schedules child with `Scheduler::schedule()`
+///   - Child calls `signal_parent_flow()` explicitly
+///   - More control, more boilerplate
+///
+/// - **Level 3 (`invoke()` API)**: Automatic scheduling + automatic signaling
+///   - Parent calls `self.invoke(child).result().await?`
+///   - Child just returns `Ok(result)` - worker handles signaling
+///   - Less boilerplate, more convenience
+///
+/// # How It Works
+///
+/// This function encapsulates the low-level operations needed for parent-child
+/// flow communication:
 /// - Finding the parent's waiting step by method name
 /// - Serializing the result
 /// - Storing signal parameters
@@ -251,6 +372,7 @@ where
 ///         self: Arc<Self>,
 ///         result: InventoryResult,
 ///     ) -> Result<(), ExecutionError> {
+///         // Level 1 API: Explicitly signal parent
 ///         signal_parent_flow(
 ///             self.parent_flow_id,
 ///             "await_inventory_check",
