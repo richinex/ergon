@@ -1080,9 +1080,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_log_invocation() {
-        let temp_file = "/tmp/test_sqlite_invocation.db";
-        let _ = std::fs::remove_file(temp_file);
-        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
+        let log = SqliteExecutionLog::new(":memory:").await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1110,15 +1108,11 @@ mod tests {
         assert_eq!(invocation.attempts(), 1);
         // Verify the hash was computed internally by storage
         assert_eq!(invocation.params_hash(), expected_hash);
-
-        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_log_completion() {
-        let temp_file = "/tmp/test_sqlite_completion.db";
-        let _ = std::fs::remove_file(temp_file);
-        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
+        let log = SqliteExecutionLog::new(":memory:").await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1143,15 +1137,11 @@ mod tests {
 
         assert_eq!(invocation.status(), InvocationStatus::Complete);
         assert!(invocation.return_value().is_some());
-
-        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_get_incomplete_flows() {
-        let temp_file = "/tmp/test_sqlite_incomplete.db";
-        let _ = std::fs::remove_file(temp_file);
-        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
+        let log = SqliteExecutionLog::new(":memory:").await.unwrap();
 
         let task_id1 = Uuid::new_v4();
         let task_id2 = Uuid::new_v4();
@@ -1262,15 +1252,11 @@ mod tests {
         assert!(incomplete.iter().any(|i| i.id() == id1));
         assert!(incomplete.iter().any(|i| i.id() == id2));
         assert!(!incomplete.iter().any(|i| i.id() == id3));
-
-        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_retry_increments_attempts() {
-        let temp_file = "/tmp/test_sqlite_retry.db";
-        let _ = std::fs::remove_file(temp_file);
-        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
+        let log = SqliteExecutionLog::new(":memory:").await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1306,15 +1292,11 @@ mod tests {
 
         let inv2 = log.get_invocation(id, 0).await.unwrap().unwrap();
         assert_eq!(inv2.attempts(), 2);
-
-        std::fs::remove_file(temp_file).unwrap();
     }
 
     #[tokio::test]
     async fn test_get_latest_invocation() {
-        let temp_file = "/tmp/test_sqlite_latest.db";
-        let _ = std::fs::remove_file(temp_file);
-        let log = SqliteExecutionLog::new(temp_file).await.unwrap();
+        let log = SqliteExecutionLog::new(":memory:").await.unwrap();
         let id = Uuid::new_v4();
 
         let params = serialize_value(&vec!["test".to_string()]).unwrap();
@@ -1336,7 +1318,5 @@ mod tests {
 
         let latest = log.get_latest_invocation(id).await.unwrap().unwrap();
         assert_eq!(latest.step(), 4);
-
-        std::fs::remove_file(temp_file).unwrap();
     }
 }
