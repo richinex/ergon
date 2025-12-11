@@ -42,6 +42,56 @@ static LEGAL_REVIEW_COUNT: AtomicU32 = AtomicU32::new(0);
 static PUBLISH_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ============================================================================
+// Custom Error Type
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DocumentError {
+    /// Document was rejected by manager (permanent business decision)
+    ManagerRejection { by: String, reason: String },
+    /// Document was rejected by legal team (permanent business decision)
+    LegalRejection { by: String, reason: String },
+    /// Infrastructure or framework error (retryable)
+    Infrastructure(String),
+}
+
+impl std::fmt::Display for DocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DocumentError::ManagerRejection { by, reason } => {
+                write!(f, "Document rejected by {} - {}", by, reason)
+            }
+            DocumentError::LegalRejection { by, reason } => {
+                write!(f, "Legal rejected by {} - {}", by, reason)
+            }
+            DocumentError::Infrastructure(msg) => {
+                write!(f, "Infrastructure error: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for DocumentError {}
+
+impl From<DocumentError> for String {
+    fn from(err: DocumentError) -> Self {
+        err.to_string()
+    }
+}
+
+impl RetryableError for DocumentError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            // Business rejections are permanent
+            DocumentError::ManagerRejection { .. } => false,
+            DocumentError::LegalRejection { .. } => false,
+            // Infrastructure errors are retryable
+            DocumentError::Infrastructure(_) => true,
+        }
+    }
+}
+
+// ============================================================================
 // Domain Types
 // ============================================================================
 
@@ -158,23 +208,16 @@ struct DocumentApprovalFlow {
 
 impl DocumentApprovalFlow {
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<String, ExecutionError> {
+    async fn process(self: Arc<Self>) -> Result<String, DocumentError> {
         println!("\n[FLOW] Processing document: {}", self.submission.title);
         println!("       Author: {}", self.submission.author);
 
         // Step 1: Validate document
-        self.clone()
-            .validate_document()
-            .await
-            .map_err(ExecutionError::Failed)?;
+        self.clone().validate_document().await?;
 
         // Step 2: Wait for manager approval (SUSPENDS HERE!)
         // Step returns OUTCOME (success), not error
-        let manager_outcome = self
-            .clone()
-            .await_manager_approval()
-            .await
-            .map_err(ExecutionError::Failed)?;
+        let manager_outcome = self.clone().await_manager_approval().await?;
 
         // Flow decides what rejection MEANS (permanent failure)
         match manager_outcome {
@@ -182,26 +225,17 @@ impl DocumentApprovalFlow {
                 // Continue to next step
             }
             ApprovalOutcome::Rejected { by, reason } => {
-                // Manager rejection is a permanent business decision - use NonRetryable
+                // Manager rejection is a permanent business decision
                 println!("       [COMPLETE] Document rejected (permanent)");
-                return Err(ExecutionError::NonRetryable(format!(
-                    "Document rejected by {} - {}",
-                    by, reason
-                )));
+                return Err(DocumentError::ManagerRejection { by, reason });
             }
         }
 
         // Step 3: Wait for legal review (SUSPENDS AGAIN!)
-        self.clone()
-            .await_legal_review()
-            .await
-            .map_err(ExecutionError::Failed)?;
+        self.clone().await_legal_review().await?;
 
         // Step 4: Publish document
-        self.clone()
-            .publish_document()
-            .await
-            .map_err(ExecutionError::Failed)?;
+        self.clone().publish_document().await?;
 
         Ok(format!(
             "Document '{}' approved and published",
@@ -210,7 +244,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn validate_document(self: Arc<Self>) -> Result<(), String> {
+    async fn validate_document(self: Arc<Self>) -> Result<(), DocumentError> {
         VALIDATE_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Validating document format...");
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -219,12 +253,12 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, String> {
-        // This SUSPENDS the flow until signal arrives!
+    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, DocumentError> {
+        // This may suspend the flow until signal arrives (or return immediately if cached)
         let decision: ApprovalDecision =
             await_external_signal(&format!("manager_approval_{}", self.submission.document_id))
                 .await
-                .map_err(|e| format!("Failed to wait for approval: {}", e))?;
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         // Count and log AFTER signal received (only once per flow, not on replay)
         MANAGER_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -248,12 +282,12 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_legal_review(self: Arc<Self>) -> Result<(), String> {
-        // Another suspension point!
+    async fn await_legal_review(self: Arc<Self>) -> Result<(), DocumentError> {
+        // Another suspension point (or immediate return if cached)
         let decision: ApprovalDecision =
             await_external_signal(&format!("legal_review_{}", self.submission.document_id))
                 .await
-                .map_err(|e| format!("Failed to wait for legal review: {}", e))?;
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         // Count and log AFTER signal received (only once per flow, not on replay)
         LEGAL_REVIEW_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -263,7 +297,10 @@ impl DocumentApprovalFlow {
                 "       [REJECTED] Legal rejected by {} - {}",
                 decision.approver, decision.comments
             );
-            return Err(format!("Legal rejected: {}", decision.comments));
+            return Err(DocumentError::LegalRejection {
+                by: decision.approver,
+                reason: decision.comments,
+            });
         }
 
         println!(
@@ -274,7 +311,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn publish_document(self: Arc<Self>) -> Result<(), String> {
+    async fn publish_document(self: Arc<Self>) -> Result<(), DocumentError> {
         PUBLISH_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Publishing document...");
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -432,7 +469,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Simulate manager rejecting DOC-002 after 1 second
     // Key insight: Rejection is an OUTCOME (step succeeds), not an error
     // The step returns Ok(ApprovalOutcome::Rejected) and is CACHED
-    // The flow then returns NonRetryable error (permanent failure)
+    // The flow then returns DocumentError::ManagerRejection (permanent failure)
     // Result: Flow fails immediately with no retries (signal consumed only once)
     let signal_source_clone = signal_source.clone();
     let doc_id = doc2.document_id.clone();
@@ -446,7 +483,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
     });
 
-    // Wait for flow to fail with NonRetryable error
+    // Wait for flow to fail with permanent error
     // Expected time: ~1-2 seconds (no retries, signal consumed once)
     // We wait up to 10 seconds to be safe
     let start = std::time::Instant::now();
@@ -464,11 +501,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match storage.get_scheduled_flow(task_id_2).await? {
             Some(scheduled) => {
                 if matches!(scheduled.status, TaskStatus::Failed) {
-                    println!("\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent (NonRetryable)");
+                    println!(
+                        "\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent"
+                    );
                     println!("           Signal step succeeded and was cached (no re-suspension on retry)");
                     break;
                 } else if matches!(scheduled.status, TaskStatus::Complete) {
-                    println!("\n[ERROR] Test 2 completed unexpectedly (should have failed with NonRetryable)");
+                    println!("\n[ERROR] Test 2 completed unexpectedly (should have failed)");
                     break;
                 }
             }

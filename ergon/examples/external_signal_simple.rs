@@ -1,12 +1,12 @@
 //! Simple External Signal Example
 //!
-//! This example demonstrates using external signals with ExecutionError directly.
-//! This is the simplest way to use signals - steps return `Result<T, ExecutionError>`.
+//! This example demonstrates using external signals with custom error types.
+//! Users define their own error types and convert ExecutionError at framework boundaries.
 //!
 //! ## Key Points
 //!
-//! - Steps use `Result<T, ExecutionError>` (no custom errors)
-//! - `await_external_signal()` returns `ExecutionError` which flows through naturally
+//! - Steps use custom error types (DocumentError)
+//! - `await_external_signal()` returns `ExecutionError` which is converted at the boundary
 //! - Worker automatically handles signal delivery via `.with_signals()`
 //! - Signal outcomes (approved/rejected) are modeled as DATA, not errors
 //!
@@ -24,6 +24,56 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+// ============================================================================
+// Custom Error Type
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DocumentError {
+    /// Document was rejected by manager (permanent business decision)
+    ManagerRejection { by: String, reason: String },
+    /// Document was rejected by legal team (permanent business decision)
+    LegalRejection { by: String, reason: String },
+    /// Infrastructure or framework error (retryable)
+    Infrastructure(String),
+}
+
+impl std::fmt::Display for DocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DocumentError::ManagerRejection { by, reason } => {
+                write!(f, "Document rejected by {} - {}", by, reason)
+            }
+            DocumentError::LegalRejection { by, reason } => {
+                write!(f, "Legal rejected by {} - {}", by, reason)
+            }
+            DocumentError::Infrastructure(msg) => {
+                write!(f, "Infrastructure error: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for DocumentError {}
+
+impl From<DocumentError> for String {
+    fn from(err: DocumentError) -> Self {
+        err.to_string()
+    }
+}
+
+impl RetryableError for DocumentError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            // Business rejections are permanent
+            DocumentError::ManagerRejection { .. } => false,
+            DocumentError::LegalRejection { .. } => false,
+            // Infrastructure errors are retryable
+            DocumentError::Infrastructure(_) => true,
+        }
+    }
+}
 
 // ============================================================================
 // Domain Types
@@ -142,7 +192,7 @@ struct DocumentApprovalFlow {
 
 impl DocumentApprovalFlow {
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<String, ExecutionError> {
+    async fn process(self: Arc<Self>) -> Result<String, DocumentError> {
         println!("\n[FLOW] Processing document: {}", self.submission.title);
         println!("       Author: {}", self.submission.author);
 
@@ -159,12 +209,9 @@ impl DocumentApprovalFlow {
                 // Continue to next step
             }
             ApprovalOutcome::Rejected { by, reason } => {
-                // Manager rejection is a permanent business decision - use NonRetryable
+                // Manager rejection is a permanent business decision
                 println!("       [COMPLETE] Document rejected (permanent)");
-                return Err(ExecutionError::NonRetryable(format!(
-                    "Document rejected by {} - {}",
-                    by, reason
-                )));
+                return Err(DocumentError::ManagerRejection { by, reason });
             }
         }
 
@@ -181,7 +228,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn validate_document(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn validate_document(self: Arc<Self>) -> Result<(), DocumentError> {
         println!("       [STEP] Validating document format...");
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("       [OK] Validation passed");
@@ -189,14 +236,15 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, ExecutionError> {
-        println!("       [SUSPEND] Waiting for manager approval...");
+    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, DocumentError> {
+        println!("       [STEP] Awaiting manager approval...");
 
-        // This SUSPENDS the flow until signal arrives!
-        // await_external_signal returns ExecutionError, which we pass through directly
+        // This may suspend the flow until signal arrives (or return immediately if cached)
+        // await_external_signal returns ExecutionError, convert at the boundary
         let decision: ApprovalDecision =
             await_external_signal(&format!("manager_approval_{}", self.submission.document_id))
-                .await?;
+                .await
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         // Convert to outcome - BOTH approved and rejected are successful outcomes
         let outcome: ApprovalOutcome = decision.into();
@@ -216,18 +264,20 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_legal_review(self: Arc<Self>) -> Result<(), ExecutionError> {
-        println!("       [SUSPEND] Waiting for legal review...");
+    async fn await_legal_review(self: Arc<Self>) -> Result<(), DocumentError> {
+        println!("       [STEP] Awaiting legal review...");
 
-        // Another suspension point!
+        // Another suspension point (or immediate return if cached)
         let decision: ApprovalDecision =
-            await_external_signal(&format!("legal_review_{}", self.submission.document_id)).await?;
+            await_external_signal(&format!("legal_review_{}", self.submission.document_id))
+                .await
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         if !decision.approved {
-            return Err(ExecutionError::Failed(format!(
-                "Legal rejected: {}",
-                decision.comments
-            )));
+            return Err(DocumentError::LegalRejection {
+                by: decision.approver,
+                reason: decision.comments,
+            });
         }
 
         println!(
@@ -238,7 +288,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn publish_document(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn publish_document(self: Arc<Self>) -> Result<(), DocumentError> {
         println!("       [STEP] Publishing document...");
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("       [OK] Document published");
@@ -359,7 +409,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Simulate manager rejecting after 1 second
     // Key insight: Rejection is an OUTCOME (step succeeds), not an error
     // The step returns Ok(ApprovalOutcome::Rejected) and is CACHED
-    // The flow then returns NonRetryable error (permanent failure)
+    // The flow then returns DocumentError::ManagerRejection (permanent failure)
     // Result: Flow fails immediately with no retries (signal consumed only once)
     let signal_source_clone = signal_source.clone();
     let doc_id = doc2.document_id.clone();
@@ -373,7 +423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
     });
 
-    // Wait for flow to fail with NonRetryable error
+    // Wait for flow to fail with permanent error
     // Expected time: ~1-2 seconds (no retries, signal consumed once)
     // We wait up to 10 seconds to be safe
     let start = std::time::Instant::now();
@@ -391,11 +441,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match storage.get_scheduled_flow(task_id_2).await? {
             Some(scheduled) => {
                 if matches!(scheduled.status, TaskStatus::Failed) {
-                    println!("\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent (NonRetryable)");
+                    println!(
+                        "\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent"
+                    );
                     println!("           Signal step succeeded and was cached (no re-suspension on retry)");
                     break;
                 } else if matches!(scheduled.status, TaskStatus::Complete) {
-                    println!("\n[ERROR] Test 2 completed unexpectedly (should have failed with NonRetryable)");
+                    println!("\n[ERROR] Test 2 completed unexpectedly (should have failed)");
                     break;
                 }
             }
@@ -429,3 +481,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.close().await?;
     Ok(())
 }
+
+// Output
+// ergon git:(modularize-worker) ✗ cargo run --example external_signal_simple
+//    Compiling ergon v0.1.0 (/home/richinex/Documents/devs/rust_projects/ergon/ergon)
+//     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.34s
+//      Running `target/debug/examples/external_signal_simple`
+
+// ╔═══════════════════════════════════════════════════════════╗
+// ║     Simple External Signal Example                       ║
+// ╚═══════════════════════════════════════════════════════════╝
+
+// === Test 1: Approved Document ===
+
+// [FLOW] Processing document: Q4 Financial Report
+//        Author: john.doe@company.com
+//        [STEP] Validating document format...
+//        [OK] Validation passed
+//        [SUSPEND] Waiting for manager approval...
+//   [INPUT] User decision received for 'manager_approval_DOC-001'
+//   [INPUT] User decision received for 'legal_review_DOC-001'
+
+// [FLOW] Processing document: Q4 Financial Report
+//        Author: john.doe@company.com
+//        [SUSPEND] Waiting for manager approval...
+//        [OK] Manager approved by manager@company.com - Looks good, approved!
+//        [SUSPEND] Waiting for legal review...
+
+// [FLOW] Processing document: Q4 Financial Report
+//        Author: john.doe@company.com
+//        [SUSPEND] Waiting for legal review...
+//        [OK] Legal approved by manager@company.com - Looks good, approved!
+//        [STEP] Publishing document...
+//        [OK] Document published
+
+// === Test 2: Rejected by Manager ===
+
+//   [INPUT] User decision received for 'manager_approval_DOC-002'
+
+// [FLOW] Processing document: Policy Update Draft
+//        Author: jane.smith@company.com
+//        [STEP] Validating document format...
+//        [OK] Validation passed
+//        [SUSPEND] Waiting for manager approval...
+
+// [FLOW] Processing document: Policy Update Draft
+//        Author: jane.smith@company.com
+//        [SUSPEND] Waiting for manager approval...
+//        [REJECTED] Manager rejected by manager@company.com - Needs revision
+//        [COMPLETE] Document rejected (permanent)
+
+// [COMPLETE] Test 2 failed as expected: Manager rejection is permanent
+//            Signal step succeeded and was cached (no re-suspension on retry)
+
+// ╔═══════════════════════════════════════════════════════════╗
+// ║  Example Complete - Flows suspended and resumed via      ║
+// ║  external signals using abstracted signal sources!       ║
+// ╚═══════════════════════════════════════════════════════════╝
+
+// [INFO] To implement a real signal source:
+//    1. Implement the ergon::executor::SignalSource trait
+//    2. Replace SimulatedUserInputSource with your implementation
+//    3. Add it to Worker with .with_signals(your_source)
+//    4. Examples:
+//       - StdinSignalSource: Read from terminal input
+//       - HttpSignalSource: Poll HTTP endpoint or webhook
+//       - RedisSignalSource: Use Redis pub/sub
+//       - KafkaSignalSource: Consume from Kafka topic
+
+//    The Worker automatically handles signal delivery - no manual polling needed!

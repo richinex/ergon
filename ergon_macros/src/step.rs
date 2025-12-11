@@ -380,14 +380,15 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         } else {
             // Default or RetryableError: Check if error should be cached
             quote! {
-                // Don't log completion if step is suspending for a signal
-                // await_external_signal sets suspend_reason before returning its error
-                // This prevents caching the suspension error as a "completed" step
+                // Suspension detection (should be unreachable with Poll::Pending architecture)
+                // With the new design, pending().await never returns, so this check
+                // should never find a suspend_reason. If it does, it's a bug.
                 if __ctx.has_suspend_reason() {
-                    // Suspension: don't cache, return suspension error
-                    return Err(ergon::ExecutionError::Suspended(
-                        format!("Step {} suspended", #method_name_str)
-                    ));
+                    panic!(
+                        "BUG: Step {} has suspend_reason but code path was reached. \
+                         Suspension should use pending().await which never returns.",
+                        #method_name_str
+                    );
                 }
 
                 match &__result {

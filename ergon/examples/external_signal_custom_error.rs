@@ -16,7 +16,7 @@
 //!
 //! ### Custom Errors with Signals
 //! - Define custom error types with `RetryableError` trait
-//! - Implement `From<ExecutionError> for YourError` to convert framework errors
+//! - Convert ExecutionError at framework boundaries using `.map_err()`
 //! - The step macro now checks `suspend_reason` BEFORE caching, so suspension works correctly
 //! - Use `is_retryable()` to control retry behavior for business logic errors
 //!
@@ -27,11 +27,11 @@
 //!
 //! ## How It Works
 //!
-//! 1. `await_external_signal()` returns `ExecutionError::Failed("Flow suspended")`
-//! 2. Convert to `LoanError::SignalError` using `From<ExecutionError>`
-//! 3. Step macro checks `has_suspend_reason()` BEFORE checking `is_retryable()`
-//! 4. Suspension is detected and handled correctly regardless of `is_retryable()` value
-//! 5. Other errors follow normal retry logic based on `is_retryable()`
+//! 1. `await_external_signal()` suspends via `Poll::Pending` (never returns)
+//! 2. Worker detects suspension via timeout and `take_suspend_reason()`
+//! 3. Suspension is completely invisible to user code - no error returned
+//! 4. Business errors (LoanError) are handled normally via `.map_err()` conversions
+//! 5. Errors follow normal retry logic based on `is_retryable()`
 //!
 //! ## Run with
 //! ```bash
@@ -56,14 +56,16 @@ use uuid::Uuid;
 use ergon::core::RetryableError;
 
 /// Custom error type for loan processing
+///
+/// Note: Suspension (waiting for signals/timers) is NOT an error - it's handled
+/// via Poll::Pending and is completely invisible to user code. This enum only
+/// contains actual business/infrastructure errors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum LoanError {
     /// Infrastructure errors (network, database, etc.) - retryable
     Infrastructure(String),
     /// Business logic errors (low credit score, etc.) - non-retryable
     BusinessRejection(String),
-    /// Signal-related errors - handled by suspension mechanism
-    SignalError(String),
 }
 
 impl std::fmt::Display for LoanError {
@@ -71,7 +73,6 @@ impl std::fmt::Display for LoanError {
         match self {
             LoanError::Infrastructure(msg) => write!(f, "Infrastructure error: {}", msg),
             LoanError::BusinessRejection(msg) => write!(f, "Business rejection: {}", msg),
-            LoanError::SignalError(msg) => write!(f, "Signal error: {}", msg),
         }
     }
 }
@@ -83,24 +84,6 @@ impl RetryableError for LoanError {
         match self {
             LoanError::Infrastructure(_) => true, // Infrastructure errors should retry
             LoanError::BusinessRejection(_) => false, // Business decisions are permanent
-            LoanError::SignalError(_) => true,    // Signal errors are handled by suspension
-        }
-    }
-}
-
-impl From<ExecutionError> for LoanError {
-    fn from(e: ExecutionError) -> Self {
-        // Convert ExecutionError to LoanError
-        // The step macro now checks suspend_reason before caching, so we can safely convert
-        match e {
-            ExecutionError::Core(msg) => LoanError::Infrastructure(msg),
-            ExecutionError::Failed(msg) => LoanError::Infrastructure(msg),
-            ExecutionError::Suspended(msg) => LoanError::SignalError(msg),
-            ExecutionError::Incompatible(msg) => {
-                LoanError::Infrastructure(format!("Non-determinism: {}", msg))
-            }
-            ExecutionError::NonRetryable(msg) => LoanError::BusinessRejection(msg),
-            _ => LoanError::Infrastructure("Unknown error".to_string()),
         }
     }
 }
@@ -280,12 +263,11 @@ impl LoanApplicationFlow {
 
         let signal_name = format!("loan_approval_{}", self.application.application_id);
 
-        // Await external signal (suspends flow until signal arrives)
-        // With the updated step macro, suspension is detected via suspend_reason
-        // So we can safely convert ExecutionError to LoanError using From
+        // Await external signal (suspends flow via Poll::Pending until signal arrives)
+        // Convert framework errors (ExecutionError) to our domain error (LoanError)
         let decision: ManagerDecisionSignal = await_external_signal(&signal_name)
             .await
-            .map_err(LoanError::from)?;
+            .map_err(|e| LoanError::Infrastructure(e.to_string()))?;
 
         // Convert signal to outcome - BOTH approved and rejected are successful outcomes!
         let outcome = if decision.approved {
@@ -374,7 +356,7 @@ impl LoanApplicationFlow {
     }
 
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<String, ExecutionError> {
+    async fn process(self: Arc<Self>) -> Result<String, LoanError> {
         println!(
             "\n[FLOW] Processing loan application: {}",
             self.application.application_id
@@ -386,33 +368,14 @@ impl LoanApplicationFlow {
         );
 
         // Step 1: Validate application
-        self.clone()
-            .validate_application()
-            .await
-            .map_err(|e| match e {
-                LoanError::BusinessRejection(msg) => ExecutionError::NonRetryable(msg),
-                LoanError::Infrastructure(msg) => ExecutionError::Failed(msg),
-                LoanError::SignalError(msg) => ExecutionError::Failed(msg),
-            })?;
+        self.clone().validate_application().await?;
 
         // Step 2: Credit check
-        self.clone().check_credit().await.map_err(|e| match e {
-            LoanError::BusinessRejection(msg) => ExecutionError::NonRetryable(msg),
-            LoanError::Infrastructure(msg) => ExecutionError::Failed(msg),
-            LoanError::SignalError(msg) => ExecutionError::Failed(msg),
-        })?;
+        self.clone().check_credit().await?;
 
         // Step 3: Wait for manager approval (SUSPENDS HERE!)
         // Step returns OUTCOME (success), not error
-        let decision = self
-            .clone()
-            .await_manager_approval()
-            .await
-            .map_err(|e| match e {
-                LoanError::BusinessRejection(msg) => ExecutionError::NonRetryable(msg),
-                LoanError::Infrastructure(msg) => ExecutionError::Failed(msg),
-                LoanError::SignalError(msg) => ExecutionError::Failed(msg),
-            })?;
+        let decision = self.clone().await_manager_approval().await?;
 
         // Flow decides what each outcome MEANS
         match decision.clone() {
@@ -422,7 +385,7 @@ impl LoanApplicationFlow {
                     .clone()
                     .finalize_loan(decision)
                     .await
-                    .map_err(ExecutionError::Failed)?;
+                    .map_err(LoanError::Infrastructure)?;
                 println!("[FLOW] Loan approved and finalized: {}\n", loan_id);
                 Ok(loan_id)
             }
@@ -431,9 +394,9 @@ impl LoanApplicationFlow {
                 rejected_by,
             } => {
                 // Manager rejection is a permanent business decision
-                // Use NonRetryable for permanent failures
+                // LoanError::BusinessRejection is non-retryable via is_retryable()
                 println!("[FLOW] Loan rejected (permanent)\n");
-                Err(ExecutionError::NonRetryable(format!(
+                Err(LoanError::BusinessRejection(format!(
                     "Loan rejected by {}: {}",
                     rejected_by, reason
                 )))
@@ -441,7 +404,7 @@ impl LoanApplicationFlow {
             LoanDecision::RequiresAdditionalReview { reason, reviewer } => {
                 // Additional review needed - could implement another signal wait here
                 println!("[FLOW] Additional review required\n");
-                Err(ExecutionError::NonRetryable(format!(
+                Err(LoanError::BusinessRejection(format!(
                     "Additional review required by {}: {}",
                     reviewer, reason
                 )))
@@ -570,7 +533,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
     });
 
-    // Wait for failure with NonRetryable error
+    // Wait for failure with permanent error
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(20) {
@@ -586,7 +549,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match storage.get_scheduled_flow(task_id_2).await? {
             Some(scheduled) => {
                 if matches!(scheduled.status, TaskStatus::Failed) {
-                    println!("\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent (NonRetryable)");
+                    println!(
+                        "\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent"
+                    );
                     println!("           Signal step succeeded and was cached (no re-suspension on retry)");
                     break;
                 }

@@ -11,6 +11,7 @@ use super::context::{ExecutionContext, CALL_TYPE, EXECUTION_CONTEXT};
 use super::error::{ExecutionError, FlowOutcome, Result};
 use crate::core::{serialize_value, CallType, InvocationStatus};
 use crate::storage::ExecutionLog;
+use std::future::Future;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -92,19 +93,46 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
         F: FnOnce(&T) -> std::pin::Pin<Box<dyn std::future::Future<Output = R> + Send + '_>>,
         R: Send + 'static,
     {
-        let context = Arc::new(ExecutionContext::new(self.id, self.storage.clone()));
-        let result = EXECUTION_CONTEXT
-            .scope(
-                Arc::clone(&context),
-                CALL_TYPE.scope(CallType::Run, async { f(&self.flow).await }),
-            )
-            .await;
+        use std::future::poll_fn;
+        use std::pin::pin;
+        use std::task::Poll;
 
-        // Check if flow suspended (taken from context before scope ends)
-        match context.take_suspend_reason() {
-            Some(reason) => FlowOutcome::Suspended(reason),
-            None => FlowOutcome::Completed(result),
-        }
+        let context = Arc::new(ExecutionContext::new(self.id, self.storage.clone()));
+
+        // Create the flow future with execution context
+        let flow_future = EXECUTION_CONTEXT.scope(
+            Arc::clone(&context),
+            CALL_TYPE.scope(CallType::Run, async { f(&self.flow).await }),
+        );
+
+        // Pin the future for polling
+        let mut fut = pin!(flow_future);
+
+        // Manually poll the future to detect suspension instantly
+        // No timeouts - works for any duration of legitimate work
+        poll_fn(|cx| {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    // Flow completed - check if it set suspend_reason just before completing
+                    // (shouldn't happen, but handle it defensively)
+                    match context.take_suspend_reason() {
+                        Some(reason) => Poll::Ready(FlowOutcome::Suspended(reason)),
+                        None => Poll::Ready(FlowOutcome::Completed(result)),
+                    }
+                }
+                Poll::Pending => {
+                    // Flow yielded - check if it's suspension or legitimate async work
+                    if let Some(reason) = context.take_suspend_reason() {
+                        // Suspension detected instantly! (no timeout delay)
+                        Poll::Ready(FlowOutcome::Suspended(reason))
+                    } else {
+                        // Legitimate async work (I/O, spawned tasks, etc.) - keep waiting
+                        Poll::Pending
+                    }
+                }
+            }
+        })
+        .await
     }
 
     /// Executes a synchronous flow function that returns a value.

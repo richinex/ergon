@@ -185,7 +185,7 @@ impl DocumentApprovalFlow {
 
     #[step]
     async fn await_manager_approval(self: Arc<Self>) -> Result<(), String> {
-        println!("       [SUSPEND] Waiting for manager approval...");
+        println!("       [STEP] Awaiting manager approval...");
         println!(
             "       [HINT] Enter: manager_approval_{} true manager@company.com Looks good",
             self.submission.document_id
@@ -209,7 +209,7 @@ impl DocumentApprovalFlow {
 
     #[step]
     async fn await_legal_review(self: Arc<Self>) -> Result<(), String> {
-        println!("       [SUSPEND] Waiting for legal review...");
+        println!("       [STEP] Awaiting legal review...");
         println!(
             "       [HINT] Enter: legal_review_{} true legal@company.com Approved",
             self.submission.document_id

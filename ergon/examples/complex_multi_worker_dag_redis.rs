@@ -177,81 +177,72 @@ impl OrderAttempts {
 // Custom Error Types with RetryableError
 // =============================================================================
 
+/// Comprehensive order fulfillment error type
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum PaymentError {
-    // Transient - WILL retry
-    NetworkTimeout,
-    GatewayUnavailable,
+enum OrderError {
+    // Payment errors - transient
+    PaymentNetworkTimeout,
+    PaymentGatewayUnavailable,
 
-    // Permanent - will NOT retry
+    // Payment errors - permanent
     InsufficientFunds,
     CardDeclined,
     FraudDetected,
-}
 
-impl std::fmt::Display for PaymentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PaymentError::NetworkTimeout => write!(f, "Network timeout"),
-            PaymentError::GatewayUnavailable => write!(f, "Payment gateway unavailable"),
-            PaymentError::InsufficientFunds => write!(f, "Insufficient funds"),
-            PaymentError::CardDeclined => write!(f, "Card declined"),
-            PaymentError::FraudDetected => write!(f, "Fraud detected"),
-        }
-    }
-}
-
-impl RetryableError for PaymentError {
-    fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            PaymentError::NetworkTimeout | PaymentError::GatewayUnavailable
-        )
-    }
-}
-
-impl From<PaymentError> for ExecutionError {
-    fn from(e: PaymentError) -> Self {
-        ExecutionError::Failed(e.to_string())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum InventoryError {
-    // Transient
-    DatabaseTimeout,
+    // Inventory errors - transient
+    InventoryDatabaseTimeout,
     WarehouseSystemDown,
 
-    // Permanent
+    // Inventory errors - permanent
     OutOfStock { product: String, requested: u32 },
     InvalidProductId,
+
+    // Generic errors
+    Failed(String),
 }
 
-impl std::fmt::Display for InventoryError {
+impl std::fmt::Display for OrderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InventoryError::DatabaseTimeout => write!(f, "Database timeout"),
-            InventoryError::WarehouseSystemDown => write!(f, "Warehouse system down"),
-            InventoryError::OutOfStock { product, requested } => {
+            OrderError::PaymentNetworkTimeout => write!(f, "Network timeout"),
+            OrderError::PaymentGatewayUnavailable => write!(f, "Payment gateway unavailable"),
+            OrderError::InsufficientFunds => write!(f, "Insufficient funds"),
+            OrderError::CardDeclined => write!(f, "Card declined"),
+            OrderError::FraudDetected => write!(f, "Fraud detected"),
+            OrderError::InventoryDatabaseTimeout => write!(f, "Database timeout"),
+            OrderError::WarehouseSystemDown => write!(f, "Warehouse system down"),
+            OrderError::OutOfStock { product, requested } => {
                 write!(f, "Out of stock: {} (requested: {})", product, requested)
             }
-            InventoryError::InvalidProductId => write!(f, "Invalid product ID"),
+            OrderError::InvalidProductId => write!(f, "Invalid product ID"),
+            OrderError::Failed(msg) => write!(f, "{}", msg),
         }
     }
 }
 
-impl RetryableError for InventoryError {
-    fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            InventoryError::DatabaseTimeout | InventoryError::WarehouseSystemDown
-        )
+impl std::error::Error for OrderError {}
+
+impl From<OrderError> for String {
+    fn from(err: OrderError) -> Self {
+        err.to_string()
     }
 }
 
-impl From<InventoryError> for ExecutionError {
-    fn from(e: InventoryError) -> Self {
-        ExecutionError::Failed(e.to_string())
+impl From<String> for OrderError {
+    fn from(s: String) -> Self {
+        OrderError::Failed(s)
+    }
+}
+
+impl RetryableError for OrderError {
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            OrderError::PaymentNetworkTimeout
+                | OrderError::PaymentGatewayUnavailable
+                | OrderError::InventoryDatabaseTimeout
+                | OrderError::WarehouseSystemDown
+        )
     }
 }
 

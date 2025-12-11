@@ -1159,8 +1159,9 @@ impl<
             worker_id, flow_task_id, error_msg
         );
 
-        // Mark NonRetryable errors as non-retryable in storage
-        if matches!(error, ExecutionError::NonRetryable(_)) {
+        // Mark non-retryable errors in storage using is_retryable() trait method
+        use crate::core::RetryableError;
+        if !error.is_retryable() {
             if let Err(e) = storage.update_is_retryable(flow.flow_id, 0, false).await {
                 warn!(
                     "Worker {} failed to mark error as non-retryable: {}",

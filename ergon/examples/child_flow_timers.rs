@@ -112,31 +112,6 @@ impl RetryableError for CreditCheckError {
     }
 }
 
-impl From<ExecutionError> for CreditCheckError {
-    fn from(e: ExecutionError) -> Self {
-        match e {
-            // Timer suspension or timeout
-            ExecutionError::Suspended(_) => CreditCheckError::CreditBureauTimeout,
-            // Framework errors map to retryable infrastructure issues
-            ExecutionError::Core(_) | ExecutionError::Failed(_) => {
-                CreditCheckError::ProcessingDelay
-            }
-            // Non-retryable errors
-            ExecutionError::NonRetryable(msg) => {
-                if msg.contains("SSN") {
-                    CreditCheckError::InvalidSSN { ssn: msg }
-                } else {
-                    CreditCheckError::CreditScoreTooLow {
-                        score: 0,
-                        minimum_required: 600,
-                    }
-                }
-            }
-            _ => CreditCheckError::ProcessingDelay,
-        }
-    }
-}
-
 /// Income verification errors
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum IncomeVerificationError {
@@ -210,38 +185,6 @@ impl RetryableError for IncomeVerificationError {
     }
 }
 
-impl From<ExecutionError> for IncomeVerificationError {
-    fn from(e: ExecutionError) -> Self {
-        match e {
-            // Timer suspension or timeout
-            ExecutionError::Suspended(_) => IncomeVerificationError::ProcessingTimeout,
-            // Framework errors map to retryable infrastructure issues
-            ExecutionError::Core(_) | ExecutionError::Failed(_) => {
-                IncomeVerificationError::VerificationServiceDown
-            }
-            // Non-retryable errors
-            ExecutionError::NonRetryable(msg) => {
-                if msg.contains("income") {
-                    IncomeVerificationError::InsufficientIncome {
-                        annual_income: 0.0,
-                        minimum_required: 50000.0,
-                    }
-                } else if msg.contains("employment") {
-                    IncomeVerificationError::EmploymentVerificationFailed {
-                        employer: "Unknown".to_string(),
-                    }
-                } else {
-                    IncomeVerificationError::DocumentExpired {
-                        document_type: "Unknown".to_string(),
-                        expiry_date: "Unknown".to_string(),
-                    }
-                }
-            }
-            _ => IncomeVerificationError::VerificationServiceDown,
-        }
-    }
-}
-
 /// Fraud check errors
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum FraudCheckError {
@@ -288,33 +231,6 @@ impl RetryableError for FraudCheckError {
             // Permanent errors
             FraudCheckError::FraudDetected { .. } => false,
             FraudCheckError::SuspiciousActivity { .. } => false,
-        }
-    }
-}
-
-impl From<ExecutionError> for FraudCheckError {
-    fn from(e: ExecutionError) -> Self {
-        match e {
-            // Timer suspension or timeout
-            ExecutionError::Suspended(_) => FraudCheckError::FraudServiceTimeout,
-            // Framework errors map to retryable infrastructure issues
-            ExecutionError::Core(_) | ExecutionError::Failed(_) => {
-                FraudCheckError::FraudServiceUnavailable
-            }
-            // Non-retryable errors
-            ExecutionError::NonRetryable(msg) => {
-                if msg.contains("fraud") || msg.contains("suspicious") {
-                    FraudCheckError::FraudDetected {
-                        risk_score: 100,
-                        reason: msg,
-                    }
-                } else {
-                    FraudCheckError::SuspiciousActivity {
-                        activity_type: msg,
-                    }
-                }
-            }
-            _ => FraudCheckError::FraudServiceUnavailable,
         }
     }
 }
@@ -623,11 +539,7 @@ impl CreditCheck {
                     });
                 }
                 "invalid_ssn" => {
-                    println!(
-                        "[{}]   CREDIT[{}]: ✗ Invalid SSN",
-                        format_time(),
-                        flow_id
-                    );
+                    println!("[{}]   CREDIT[{}]: ✗ Invalid SSN", format_time(), flow_id);
                     return Err(CreditCheckError::InvalidSSN {
                         ssn: "***-**-1234".to_string(),
                     });
@@ -686,7 +598,7 @@ impl CreditCheck {
         // ✨ Timer: Simulate credit bureau processing time
         schedule_timer_named(Duration::from_secs(3), "credit-bureau-query")
             .await
-            .map_err(CreditCheckError::from)?;
+            .map_err(|_| CreditCheckError::ProcessingDelay)?;
 
         println!(
             "[{}]     -> Bureau query complete (attempt #{})",
@@ -807,7 +719,7 @@ impl IncomeVerification {
         // ✨ Timer: Simulate employment verification time
         schedule_timer_named(Duration::from_secs(2), "employment-check")
             .await
-            .map_err(IncomeVerificationError::from)?;
+            .map_err(|_| IncomeVerificationError::VerificationServiceDown)?;
 
         println!("[{}]     -> Employment check complete", format_time());
         Ok(())
@@ -913,7 +825,7 @@ impl FraudCheck {
         // ✨ Timer: Simulate fraud analysis time
         schedule_timer_named(Duration::from_secs(4), "fraud-analysis")
             .await
-            .map_err(FraudCheckError::from)?;
+            .map_err(|_| FraudCheckError::FraudServiceUnavailable)?;
 
         println!("[{}]     -> Fraud analysis complete", format_time());
         Ok(())

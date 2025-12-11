@@ -167,11 +167,9 @@ where
                         return Ok(crate::core::deserialize_value(&payload.data)?);
                     } else {
                         let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                        // Preserve child's retryability: if child was non-retryable, parent should be too
-                        return Err(match payload.is_retryable {
-                            Some(false) => ExecutionError::NonRetryable(error_msg),
-                            _ => ExecutionError::Failed(error_msg),
-                        });
+                        // Return child error as Failed - retryability is determined by
+                        // ExecutionError::is_retryable() or user's custom error From impl
+                        return Err(ExecutionError::Failed(error_msg));
                     }
                 }
             }
@@ -190,11 +188,9 @@ where
                         return Ok(crate::core::deserialize_value(&payload.data)?);
                     } else {
                         let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                        // Preserve child's retryability: if child was non-retryable, parent should be too
-                        return Err(match payload.is_retryable {
-                            Some(false) => ExecutionError::NonRetryable(error_msg),
-                            _ => ExecutionError::Failed(error_msg),
-                        });
+                        // Return child error as Failed - retryability is determined by
+                        // ExecutionError::is_retryable() or user's custom error From impl
+                        return Err(ExecutionError::Failed(error_msg));
                     }
                 }
                 // Otherwise continue to suspend below
@@ -258,11 +254,9 @@ where
                 return Ok(crate::core::deserialize_value(&payload.data)?);
             } else {
                 let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                // Preserve child's retryability: if child was non-retryable, parent should be too
-                return Err(match payload.is_retryable {
-                    Some(false) => ExecutionError::NonRetryable(error_msg),
-                    _ => ExecutionError::Failed(error_msg),
-                });
+                // Return child error as Failed - retryability is determined by
+                // ExecutionError::is_retryable() or user's custom error From impl
+                return Err(ExecutionError::Failed(error_msg));
             }
         }
 
@@ -273,9 +267,11 @@ where
             signal_name: signal_name.clone(),
         };
         ctx.set_suspend_reason(reason);
-        Err(ExecutionError::Failed(
-            "Flow suspended for signal".to_string(),
-        ))
+
+        // Suspension is control flow, not an error. Return Poll::Pending.
+        // Worker will poll this future, get Poll::Pending, and check ctx.take_suspend_reason()
+        // to determine the suspension reason. This makes suspension invisible to user code.
+        std::future::pending::<Result<R>>().await
     }
 }
 

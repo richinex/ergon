@@ -26,12 +26,6 @@ pub enum ExecutionError {
     #[error("execution failed: {0}")]
     Failed(String),
 
-    /// Flow execution failed with a non-retryable error (permanent failure).
-    /// Use this for business logic errors, validation failures, or other
-    /// permanent errors that should not be retried automatically.
-    #[error("non-retryable error: {0}")]
-    NonRetryable(String),
-
     /// The flow structure is incompatible with the stored state.
     #[error("flow incompatible: {0}")]
     Incompatible(String),
@@ -43,12 +37,6 @@ pub enum ExecutionError {
     /// An external signal timed out while waiting.
     #[error("signal timeout: {message}")]
     SignalTimeout { message: String },
-
-    /// Flow suspended, waiting for external event (timer or signal).
-    /// This is not an error - it's a normal control flow mechanism.
-    /// The actual suspension reason is stored in the execution context.
-    #[error("flow suspended: {0}")]
-    Suspended(String),
 }
 
 // Manual From implementations to convert nested errors to strings
@@ -98,6 +86,29 @@ pub enum FlowOutcome<R> {
 impl From<String> for ExecutionError {
     fn from(s: String) -> Self {
         ExecutionError::Failed(s)
+    }
+}
+
+/// ExecutionError implements RetryableError to distinguish between
+/// transient infrastructure errors (retryable) and permanent framework errors (non-retryable).
+///
+/// After removing suspension-as-error, ExecutionError only contains:
+/// - Infrastructure errors (Storage, Core, Failed, SignalTimeout): transient, should retry
+/// - Framework permanent errors (Incompatible, TaskPanic, Graph): permanent, should NOT retry
+impl crate::core::RetryableError for ExecutionError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            // Infrastructure errors - transient, should retry
+            ExecutionError::Storage(_) => true,
+            ExecutionError::Core(_) => true,
+            ExecutionError::Failed(_) => true,
+            ExecutionError::SignalTimeout { .. } => true,
+
+            // Framework permanent errors - should NOT retry
+            ExecutionError::Incompatible(_) => false,
+            ExecutionError::TaskPanic(_) => false,
+            ExecutionError::Graph(_) => false,
+        }
     }
 }
 

@@ -408,6 +408,17 @@ impl ExecutionContext {
             .unwrap_or(false)
     }
 
+    /// Gets a copy of the suspension reason without clearing it.
+    ///
+    /// Returns Some(reason) if suspended, None otherwise.
+    /// If the mutex is poisoned, returns None.
+    pub fn get_suspend_reason(&self) -> Option<SuspendReason> {
+        self.suspend_reason
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
     /// Takes and clears the suspension reason.
     ///
     /// This is called by the worker after flow execution to check if the flow

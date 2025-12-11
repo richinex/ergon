@@ -51,9 +51,7 @@ pub use signal::{
     await_external_signal, signal_parent_flow, SignalProcessing, SignalSource, StepFuture,
     WithSignals, WithoutSignals,
 };
-pub use timer::{
-    schedule_timer, schedule_timer_named, TimerProcessing, WithTimers, WithoutTimers,
-};
+pub use timer::{schedule_timer, schedule_timer_named, TimerProcessing, WithTimers, WithoutTimers};
 pub use worker::{Registry, WithStructuredTracing, WithoutStructuredTracing, Worker, WorkerHandle};
 
 // Re-export from other modules for convenience

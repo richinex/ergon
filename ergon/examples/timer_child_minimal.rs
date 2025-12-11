@@ -46,16 +46,6 @@ impl RetryableError for TaskError {
     }
 }
 
-impl From<ExecutionError> for TaskError {
-    fn from(e: ExecutionError) -> Self {
-        match e {
-            ExecutionError::Suspended(_) => TaskError::Timeout,
-            ExecutionError::NonRetryable(msg) => TaskError::Failed(msg),
-            _ => TaskError::Timeout,
-        }
-    }
-}
-
 // =============================================================================
 // Child Flow with Timer
 // =============================================================================
@@ -99,7 +89,7 @@ impl ChildTask {
         println!("  [CHILD] Waiting 2 seconds...");
         schedule_timer_named(Duration::from_secs(2), "child-wait")
             .await
-            .map_err(TaskError::from)?;
+            .map_err(|_| TaskError::Timeout)?;
         println!("  [CHILD] Wait complete!");
         Ok(())
     }
@@ -117,7 +107,7 @@ struct ParentTask {
 
 impl ParentTask {
     #[flow]
-    async fn run(self: Arc<Self>) -> Result<String, ExecutionError> {
+    async fn run(self: Arc<Self>) -> Result<String, TaskError> {
         println!("\n[PARENT] {} - Starting...", self.test_name);
 
         let result = self
@@ -125,18 +115,11 @@ impl ParentTask {
                 should_fail: self.child_should_fail,
             })
             .result()
-            .await;
+            .await
+            .map_err(|e| TaskError::Failed(e.to_string()))?;
 
-        match result {
-            Ok(msg) => {
-                println!("[PARENT] {} - Child succeeded: {}", self.test_name, msg);
-                Ok(format!("Parent: child succeeded with {}", msg))
-            }
-            Err(e) => {
-                println!("[PARENT] {} - Child failed: {}", self.test_name, e);
-                Err(e) // Return ExecutionError as-is to preserve retryability
-            }
-        }
+        println!("[PARENT] {} - Child succeeded: {}", self.test_name, result);
+        Ok(format!("Parent: child succeeded with {}", result))
     }
 }
 
@@ -157,12 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_timer_interval(Duration::from_millis(50))
         .with_poll_interval(Duration::from_millis(50));
 
-    worker
-        .register(|flow: Arc<ParentTask>| flow.run())
-        .await;
-    worker
-        .register(|flow: Arc<ChildTask>| flow.execute())
-        .await;
+    worker.register(|flow: Arc<ParentTask>| flow.run()).await;
+    worker.register(|flow: Arc<ChildTask>| flow.execute()).await;
 
     let worker = worker.start().await;
     tokio::time::sleep(Duration::from_millis(100)).await;

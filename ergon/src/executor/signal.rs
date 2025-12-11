@@ -274,19 +274,18 @@ where
             }
 
             // Signal not arrived yet - suspend the flow
-            // Set suspension in context (authoritative - survives error type conversion)
+            // Set suspension in context for worker to detect
             let reason = SuspendReason::Signal {
                 flow_id: ctx.id,
                 step: current_step,
                 signal_name: signal_name.to_string(),
             };
             ctx.set_suspend_reason(reason);
-            // Return Suspended error to indicate flow is waiting for signal
-            // This is not a failure - it's normal control flow for external events
-            return Err(ExecutionError::Suspended(format!(
-                "Waiting for signal: {}",
-                signal_name
-            )));
+
+            // Suspension is control flow, not an error. Return Poll::Pending.
+            // Worker will poll this future, get Poll::Pending, and check ctx.take_suspend_reason()
+            // to determine the suspension reason. This makes suspension invisible to user code.
+            return std::future::pending::<Result<T>>().await;
         }
     }
 
@@ -297,19 +296,18 @@ where
         .map_err(ExecutionError::from)?;
 
     // Suspend the flow - it will be resumed when the signal arrives
-    // Set suspension in context (authoritative - survives error type conversion)
+    // Set suspension in context for worker to detect
     let reason = SuspendReason::Signal {
         flow_id: ctx.id,
         step: current_step,
         signal_name: signal_name.to_string(),
     };
     ctx.set_suspend_reason(reason);
-    // Return Suspended error to indicate flow is waiting for signal
-    // This is not a failure - it's normal control flow for external events
-    Err(ExecutionError::Suspended(format!(
-        "Waiting for signal: {}",
-        signal_name
-    )))
+
+    // Suspension is control flow, not an error. Return Poll::Pending.
+    // Worker will poll this future, get Poll::Pending, and check ctx.take_suspend_reason()
+    // to determine the suspension reason. This makes suspension invisible to user code.
+    std::future::pending::<Result<T>>().await
 }
 
 /// Level 1 API: Explicitly signals a parent flow from within a child flow.

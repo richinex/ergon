@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 /// Completes a child flow and signals its parent (Level 3 API internal).
 ///
-/// When `success = false`, the error is signaled to the parent. If the error
-/// was NonRetryable in the child, it will be NonRetryable in the parent too.
+/// When `success = false`, the error is signaled to the parent. The parent
+/// receives the child's error via ExecutionError and can handle it appropriately.
 ///
 /// This is called by the worker when a child flow scheduled via invoke()
 /// finishes execution. It handles:
@@ -274,7 +274,8 @@ pub(super) async fn handle_suspended_flow<S: ExecutionLog>(
                 if let Ok(Some(_)) = storage.get_signal_params(flow_id, inv.step()).await {
                     debug!(
                         "Found pending signal for suspended flow {} step {}, resuming immediately",
-                        flow_id, inv.step()
+                        flow_id,
+                        inv.step()
                     );
                     match storage.resume_flow(flow_id).await {
                         Ok(true) => debug!("Resumed flow {} with pending signal", flow_id),
@@ -337,8 +338,9 @@ pub(super) async fn handle_flow_error<S: ExecutionLog>(
         worker_id, flow_task_id, error_msg
     );
 
-    // Mark NonRetryable errors as non-retryable in storage
-    if matches!(error, ExecutionError::NonRetryable(_)) {
+    // Mark non-retryable errors in storage using is_retryable() trait method
+    use crate::core::RetryableError;
+    if !error.is_retryable() {
         if let Err(e) = storage.update_is_retryable(flow.flow_id, 0, false).await {
             warn!(
                 "Worker {} failed to mark error as non-retryable: {}",

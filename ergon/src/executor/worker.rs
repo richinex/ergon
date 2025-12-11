@@ -1241,8 +1241,8 @@ impl WorkerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::TaskStatus;
     use crate::executor::Scheduler;
+    use crate::storage::TaskStatus;
     use ergon_macros::FlowType;
     use serde::{Deserialize, Serialize};
 
