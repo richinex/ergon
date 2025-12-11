@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{await_external_signal, ExecutionError, InvokeChild, SignalSource, Worker};
+use ergon::executor::{await_external_signal, InvokeChild, SignalSource, Worker};
 use ergon::prelude::*;
 use ergon::storage::RedisExecutionLog;
 use serde::{Deserialize, Serialize};
@@ -204,81 +204,83 @@ impl OrderAttempts {
 // Custom Error Types with RetryableError
 // =============================================================================
 
+/// Comprehensive order fulfillment error type
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum PaymentError {
-    // Transient - WILL retry
-    NetworkTimeout,
-    GatewayUnavailable,
+enum OrderError {
+    // Payment errors - transient
+    PaymentNetworkTimeout,
+    PaymentGatewayUnavailable,
 
-    // Permanent - will NOT retry
+    // Payment errors - permanent
     InsufficientFunds,
     CardDeclined,
     FraudDetected,
-}
 
-impl std::fmt::Display for PaymentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PaymentError::NetworkTimeout => write!(f, "Network timeout"),
-            PaymentError::GatewayUnavailable => write!(f, "Payment gateway unavailable"),
-            PaymentError::InsufficientFunds => write!(f, "Insufficient funds"),
-            PaymentError::CardDeclined => write!(f, "Card declined"),
-            PaymentError::FraudDetected => write!(f, "Fraud detected"),
-        }
-    }
-}
-
-impl RetryableError for PaymentError {
-    fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            PaymentError::NetworkTimeout | PaymentError::GatewayUnavailable
-        )
-    }
-}
-
-impl From<PaymentError> for ExecutionError {
-    fn from(e: PaymentError) -> Self {
-        ExecutionError::Failed(e.to_string())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum InventoryError {
-    // Transient
-    DatabaseTimeout,
+    // Inventory errors - transient
+    InventoryDatabaseTimeout,
     WarehouseSystemDown,
 
-    // Permanent
+    // Inventory errors - permanent
     OutOfStock { product: String, requested: u32 },
     InvalidProductId,
+
+    // Approval errors - permanent
+    ManagerRejected { by: String, reason: String },
+
+    // Infrastructure errors - transient
+    Infrastructure(String),
+
+    // Generic errors
+    Failed(String),
 }
 
-impl std::fmt::Display for InventoryError {
+impl std::fmt::Display for OrderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InventoryError::DatabaseTimeout => write!(f, "Database timeout"),
-            InventoryError::WarehouseSystemDown => write!(f, "Warehouse system down"),
-            InventoryError::OutOfStock { product, requested } => {
+            OrderError::PaymentNetworkTimeout => write!(f, "Network timeout"),
+            OrderError::PaymentGatewayUnavailable => write!(f, "Payment gateway unavailable"),
+            OrderError::InsufficientFunds => write!(f, "Insufficient funds"),
+            OrderError::CardDeclined => write!(f, "Card declined"),
+            OrderError::FraudDetected => write!(f, "Fraud detected"),
+            OrderError::InventoryDatabaseTimeout => write!(f, "Database timeout"),
+            OrderError::WarehouseSystemDown => write!(f, "Warehouse system down"),
+            OrderError::OutOfStock { product, requested } => {
                 write!(f, "Out of stock: {} (requested: {})", product, requested)
             }
-            InventoryError::InvalidProductId => write!(f, "Invalid product ID"),
+            OrderError::InvalidProductId => write!(f, "Invalid product ID"),
+            OrderError::ManagerRejected { by, reason } => {
+                write!(f, "Manager rejected by {}: {}", by, reason)
+            }
+            OrderError::Infrastructure(msg) => write!(f, "Infrastructure error: {}", msg),
+            OrderError::Failed(msg) => write!(f, "{}", msg),
         }
     }
 }
 
-impl RetryableError for InventoryError {
-    fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            InventoryError::DatabaseTimeout | InventoryError::WarehouseSystemDown
-        )
+impl std::error::Error for OrderError {}
+
+impl From<OrderError> for String {
+    fn from(err: OrderError) -> Self {
+        err.to_string()
     }
 }
 
-impl From<InventoryError> for ExecutionError {
-    fn from(e: InventoryError) -> Self {
-        ExecutionError::Failed(e.to_string())
+impl From<String> for OrderError {
+    fn from(s: String) -> Self {
+        OrderError::Failed(s)
+    }
+}
+
+impl RetryableError for OrderError {
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            OrderError::PaymentNetworkTimeout
+                | OrderError::PaymentGatewayUnavailable
+                | OrderError::InventoryDatabaseTimeout
+                | OrderError::WarehouseSystemDown
+                | OrderError::Infrastructure(_)
+        )
     }
 }
 
@@ -465,7 +467,7 @@ impl OrderFulfillment {
 
     /// Step 3: Reserve Inventory (runs in parallel with validation)
     #[step]
-    async fn reserve_inventory(self: Arc<Self>) -> Result<bool, InventoryError> {
+    async fn reserve_inventory(self: Arc<Self>) -> Result<bool, OrderError> {
         let count = OrderAttempts::inc_reserve(&self.order_id);
         RESERVE_INVENTORY_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -484,13 +486,13 @@ impl OrderFulfillment {
                 "[{:.3}]      -> Warehouse system timeout (retryable)",
                 timestamp()
             );
-            return Err(InventoryError::WarehouseSystemDown);
+            return Err(OrderError::WarehouseSystemDown);
         }
 
         // Check stock
         if self.product_id == "PROD-OOS" {
             println!("[{:.3}]      -> Out of stock (permanent)", timestamp());
-            return Err(InventoryError::OutOfStock {
+            return Err(OrderError::OutOfStock {
                 product: self.product_id.clone(),
                 requested: self.quantity,
             });
@@ -509,7 +511,7 @@ impl OrderFulfillment {
     /// - Both approval and rejection are valid outcomes (step succeeds)
     /// - The flow decides what rejection means (permanent failure in this case)
     #[step(depends_on = "check_fraud")]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, ExecutionError> {
+    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, OrderError> {
         let count = OrderAttempts::inc_approval(&self.order_id);
         AWAIT_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -524,7 +526,9 @@ impl OrderFulfillment {
         // On first attempt: suspends and waits for signal
         // On retry: signal is cached, returns immediately
         let decision: ApprovalDecision =
-            await_external_signal(&format!("order_approval_{}", self.order_id)).await?;
+            await_external_signal(&format!("order_approval_{}", self.order_id))
+                .await
+                .map_err(|e| OrderError::Infrastructure(e.to_string()))?;
 
         // Convert decision to outcome - BOTH approved and rejected are successful step outcomes
         let outcome: ApprovalOutcome = decision.into();
@@ -561,7 +565,7 @@ impl OrderFulfillment {
     async fn process_payment(
         self: Arc<Self>,
         approval: ApprovalOutcome,
-    ) -> Result<bool, PaymentError> {
+    ) -> Result<bool, OrderError> {
         let count = OrderAttempts::inc_payment(&self.order_id);
         PROCESS_PAYMENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -581,7 +585,7 @@ impl OrderFulfillment {
                     by,
                     reason
                 );
-                return Err(PaymentError::FraudDetected); // Non-retryable
+                return Err(OrderError::ManagerRejected { by, reason }); // Non-retryable
             }
             ApprovalOutcome::Approved { .. } => {
                 // Continue with payment processing
@@ -596,7 +600,7 @@ impl OrderFulfillment {
                 "[{:.3}]      -> Insufficient funds (permanent)",
                 timestamp()
             );
-            return Err(PaymentError::InsufficientFunds);
+            return Err(OrderError::InsufficientFunds);
         }
 
         println!("[{:.3}]      -> Payment authorized", timestamp());

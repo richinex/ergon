@@ -41,6 +41,53 @@ use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
+// ============================================================================
+// Custom Error Type
+// ============================================================================
+
+/// Approval workflow error type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ApprovalError {
+    // Cancellation - permanent
+    Cancelled(String),
+
+    // Infrastructure errors - transient
+    Infrastructure(String),
+
+    // Generic errors
+    Failed(String),
+}
+
+impl std::fmt::Display for ApprovalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApprovalError::Cancelled(msg) => write!(f, "Workflow cancelled: {}", msg),
+            ApprovalError::Infrastructure(msg) => write!(f, "Infrastructure error: {}", msg),
+            ApprovalError::Failed(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ApprovalError {}
+
+impl From<ApprovalError> for String {
+    fn from(err: ApprovalError) -> Self {
+        err.to_string()
+    }
+}
+
+impl From<String> for ApprovalError {
+    fn from(s: String) -> Self {
+        ApprovalError::Failed(s)
+    }
+}
+
+impl RetryableError for ApprovalError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, ApprovalError::Infrastructure(_))
+    }
+}
+
 #[derive(Debug)]
 enum Backend {
     Sqlite,
@@ -63,7 +110,7 @@ struct ApprovalWorkflow {
 
 impl ApprovalWorkflow {
     #[flow]
-    async fn run(self: Arc<Self>) -> Result<String, ExecutionError> {
+    async fn run(self: Arc<Self>) -> Result<String, ApprovalError> {
         println!("[{}] {} - Starting workflow", format_time(), self.name);
 
         // Step 1: Initial processing
@@ -80,13 +127,15 @@ impl ApprovalWorkflow {
     }
 
     #[step]
-    async fn initial_processing(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn initial_processing(self: Arc<Self>) -> Result<(), ApprovalError> {
         println!(
             "[{}] {} - Performing initial processing...",
             format_time(),
             self.name
         );
-        schedule_timer(Duration::from_millis(100)).await?;
+        schedule_timer(Duration::from_millis(100))
+            .await
+            .map_err(|e| ApprovalError::Infrastructure(e.to_string()))?;
         println!(
             "[{}] {} - Initial processing complete",
             format_time(),
@@ -96,7 +145,7 @@ impl ApprovalWorkflow {
     }
 
     #[step]
-    async fn wait_for_approval(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn wait_for_approval(self: Arc<Self>) -> Result<(), ApprovalError> {
         println!(
             "[{}] {} - Waiting for approval signal...",
             format_time(),
@@ -104,16 +153,15 @@ impl ApprovalWorkflow {
         );
 
         // This will suspend the flow until signal is received
-        let approval: String = await_external_signal("approval").await?;
+        let approval: String = await_external_signal("approval")
+            .await
+            .map_err(|e| ApprovalError::Infrastructure(e.to_string()))?;
 
         // Check if it's a cancellation
         if approval.starts_with("CANCEL:") {
             let reason = approval.strip_prefix("CANCEL:").unwrap_or("cancelled");
             println!("[{}] {} - CANCELLED: {}", format_time(), self.name, reason);
-            return Err(ExecutionError::Failed(format!(
-                "Workflow cancelled: {}",
-                reason
-            )));
+            return Err(ApprovalError::Cancelled(reason.to_string()));
         }
 
         println!(
@@ -126,13 +174,15 @@ impl ApprovalWorkflow {
     }
 
     #[step]
-    async fn final_processing(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn final_processing(self: Arc<Self>) -> Result<(), ApprovalError> {
         println!(
             "[{}] {} - Performing final processing...",
             format_time(),
             self.name
         );
-        schedule_timer(Duration::from_millis(100)).await?;
+        schedule_timer(Duration::from_millis(100))
+            .await
+            .map_err(|e| ApprovalError::Infrastructure(e.to_string()))?;
         println!(
             "[{}] {} - Final processing complete",
             format_time(),

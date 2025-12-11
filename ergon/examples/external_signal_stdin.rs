@@ -66,6 +66,59 @@ struct DocumentSubmission {
 }
 
 // ============================================================================
+// Custom Error Type
+// ============================================================================
+
+/// Document approval workflow error type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DocumentError {
+    // Approval errors - permanent
+    ManagerRejected(String),
+    LegalRejected(String),
+
+    // Validation errors - permanent
+    ValidationFailed(String),
+
+    // Infrastructure errors - transient
+    Infrastructure(String),
+
+    // Generic errors
+    Failed(String),
+}
+
+impl std::fmt::Display for DocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DocumentError::ManagerRejected(msg) => write!(f, "Manager rejected: {}", msg),
+            DocumentError::LegalRejected(msg) => write!(f, "Legal rejected: {}", msg),
+            DocumentError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+            DocumentError::Infrastructure(msg) => write!(f, "Infrastructure error: {}", msg),
+            DocumentError::Failed(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for DocumentError {}
+
+impl From<DocumentError> for String {
+    fn from(err: DocumentError) -> Self {
+        err.to_string()
+    }
+}
+
+impl From<String> for DocumentError {
+    fn from(s: String) -> Self {
+        DocumentError::Failed(s)
+    }
+}
+
+impl RetryableError for DocumentError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, DocumentError::Infrastructure(_))
+    }
+}
+
+// ============================================================================
 // Signal Source Abstraction
 // ============================================================================
 // We use ergon::executor::SignalSource trait for signal source abstraction
@@ -95,8 +148,9 @@ impl StdinSignalSource {
             println!("\n[STDIN] Waiting for approval signals...");
             println!("[STDIN] Format: signal_name approved approver comments");
             println!(
-                "[STDIN] Example: manager_approval_DOC-001 true manager@company.com Looks good\n"
+                "[STDIN] Example: manager_approval_DOC-001 true manager@company.com Looks good"
             );
+            println!("[STDIN] Type signals below (or Ctrl+C to exit):\n");
 
             loop {
                 line.clear();
@@ -160,7 +214,7 @@ struct DocumentApprovalFlow {
 
 impl DocumentApprovalFlow {
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<String, String> {
+    async fn process(self: Arc<Self>) -> Result<String, DocumentError> {
         println!("\n[FLOW] Processing document: {}", self.submission.title);
         println!("       Author: {}", self.submission.author);
 
@@ -176,7 +230,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn validate_document(self: Arc<Self>) -> Result<(), String> {
+    async fn validate_document(self: Arc<Self>) -> Result<(), DocumentError> {
         println!("       [STEP] Validating document format...");
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("       [OK] Validation passed");
@@ -184,20 +238,22 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<(), String> {
+    async fn await_manager_approval(self: Arc<Self>) -> Result<(), DocumentError> {
         println!("       [STEP] Awaiting manager approval...");
         println!(
             "       [HINT] Enter: manager_approval_{} true manager@company.com Looks good",
             self.submission.document_id
         );
+        print!("       > ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
 
         let decision: ApprovalDecision =
             await_external_signal(&format!("manager_approval_{}", self.submission.document_id))
                 .await
-                .map_err(|e| format!("Failed to wait for approval: {}", e))?;
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         if !decision.approved {
-            return Err(format!("Manager rejected: {}", decision.comments));
+            return Err(DocumentError::ManagerRejected(decision.comments));
         }
 
         println!(
@@ -208,20 +264,22 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_legal_review(self: Arc<Self>) -> Result<(), String> {
+    async fn await_legal_review(self: Arc<Self>) -> Result<(), DocumentError> {
         println!("       [STEP] Awaiting legal review...");
         println!(
             "       [HINT] Enter: legal_review_{} true legal@company.com Approved",
             self.submission.document_id
         );
+        print!("       > ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
 
         let decision: ApprovalDecision =
             await_external_signal(&format!("legal_review_{}", self.submission.document_id))
                 .await
-                .map_err(|e| format!("Failed to wait for legal review: {}", e))?;
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         if !decision.approved {
-            return Err(format!("Legal rejected: {}", decision.comments));
+            return Err(DocumentError::LegalRejected(decision.comments));
         }
 
         println!(
@@ -232,7 +290,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn publish_document(self: Arc<Self>) -> Result<(), String> {
+    async fn publish_document(self: Arc<Self>) -> Result<(), DocumentError> {
         println!("       [STEP] Publishing document...");
         tokio::time::sleep(Duration::from_millis(100)).await;
         println!("       [OK] Document published");

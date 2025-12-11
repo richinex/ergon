@@ -46,6 +46,53 @@ use ergon::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
+// ============================================================================
+// Custom Error Type
+// ============================================================================
+
+/// Approval workflow error type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ApprovalError {
+    // Cancellation - permanent
+    Cancelled(String),
+
+    // Infrastructure errors - transient
+    Infrastructure(String),
+
+    // Generic errors
+    Failed(String),
+}
+
+impl std::fmt::Display for ApprovalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApprovalError::Cancelled(msg) => write!(f, "Workflow cancelled: {}", msg),
+            ApprovalError::Infrastructure(msg) => write!(f, "Infrastructure error: {}", msg),
+            ApprovalError::Failed(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ApprovalError {}
+
+impl From<ApprovalError> for String {
+    fn from(err: ApprovalError) -> Self {
+        err.to_string()
+    }
+}
+
+impl From<String> for ApprovalError {
+    fn from(s: String) -> Self {
+        ApprovalError::Failed(s)
+    }
+}
+
+impl RetryableError for ApprovalError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, ApprovalError::Infrastructure(_))
+    }
+}
+
 #[cfg(not(feature = "redis"))]
 fn main() {
     eprintln!("Error: This example requires the 'redis' feature");
@@ -79,7 +126,7 @@ struct DistributedApprovalFlow {
 
 impl DistributedApprovalFlow {
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<String, ExecutionError> {
+    async fn process(self: Arc<Self>) -> Result<String, ApprovalError> {
         println!(
             "[{}] {} - Starting (priority: {})",
             format_time(),
@@ -101,13 +148,15 @@ impl DistributedApprovalFlow {
     }
 
     #[step]
-    async fn pre_approval(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn pre_approval(self: Arc<Self>) -> Result<(), ApprovalError> {
         println!(
             "[{}] {} - Pre-approval processing...",
             format_time(),
             self.name
         );
-        schedule_timer(Duration::from_millis(200)).await?;
+        schedule_timer(Duration::from_millis(200))
+            .await
+            .map_err(|e| ApprovalError::Infrastructure(e.to_string()))?;
         println!(
             "[{}] {} - Pre-approval complete, ready for approval",
             format_time(),
@@ -117,23 +166,22 @@ impl DistributedApprovalFlow {
     }
 
     #[step]
-    async fn await_approval(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn await_approval(self: Arc<Self>) -> Result<(), ApprovalError> {
         println!(
             "[{}] {} - WAITING FOR APPROVAL SIGNAL...",
             format_time(),
             self.name
         );
 
-        let decision: String = await_external_signal("approval").await?;
+        let decision: String = await_external_signal("approval")
+            .await
+            .map_err(|e| ApprovalError::Infrastructure(e.to_string()))?;
 
         // Check if it's a cancellation
         if decision.starts_with("CANCEL:") {
             let reason = decision.strip_prefix("CANCEL:").unwrap_or("cancelled");
             println!("[{}] {} - CANCELLED: {}", format_time(), self.name, reason);
-            return Err(ExecutionError::Failed(format!(
-                "Workflow cancelled: {}",
-                reason
-            )));
+            return Err(ApprovalError::Cancelled(reason.to_string()));
         }
 
         println!(
@@ -146,13 +194,15 @@ impl DistributedApprovalFlow {
     }
 
     #[step]
-    async fn post_approval(self: Arc<Self>) -> Result<(), ExecutionError> {
+    async fn post_approval(self: Arc<Self>) -> Result<(), ApprovalError> {
         println!(
             "[{}] {} - Post-approval processing...",
             format_time(),
             self.name
         );
-        schedule_timer(Duration::from_millis(200)).await?;
+        schedule_timer(Duration::from_millis(200))
+            .await
+            .map_err(|e| ApprovalError::Infrastructure(e.to_string()))?;
         println!("[{}] {} - Post-approval complete", format_time(), self.name);
         Ok(())
     }

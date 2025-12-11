@@ -45,7 +45,7 @@
 use chrono::Utc;
 use dashmap::DashMap;
 use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{ExecutionError, InvokeChild, Worker};
+use ergon::executor::{InvokeChild, Worker};
 use ergon::prelude::*;
 use ergon::storage::RedisExecutionLog;
 use serde::{Deserialize, Serialize};
@@ -333,7 +333,7 @@ impl OrderFulfillment {
 
     /// Step 3: Reserve Inventory (runs in parallel, uses RetryableError)
     #[step]
-    async fn reserve_inventory(self: Arc<Self>) -> Result<bool, InventoryError> {
+    async fn reserve_inventory(self: Arc<Self>) -> Result<bool, OrderError> {
         let count = OrderAttempts::inc_reserve(&self.order_id); // Lock released immediately
         RESERVE_INVENTORY_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -352,13 +352,13 @@ impl OrderFulfillment {
                 "[{:.3}]      -> Warehouse system timeout (retryable)",
                 timestamp()
             );
-            return Err(InventoryError::WarehouseSystemDown);
+            return Err(OrderError::WarehouseSystemDown);
         }
 
         // Check stock
         if self.product_id == "PROD-OOS" {
             println!("[{:.3}]      -> Out of stock (permanent)", timestamp());
-            return Err(InventoryError::OutOfStock {
+            return Err(OrderError::OutOfStock {
                 product: self.product_id.clone(),
                 requested: self.quantity,
             });
@@ -370,7 +370,7 @@ impl OrderFulfillment {
 
     /// Step 4: Process Payment (depends on validate_customer, uses RetryableError)
     #[step(depends_on = "validate_customer")]
-    async fn process_payment(self: Arc<Self>) -> Result<bool, PaymentError> {
+    async fn process_payment(self: Arc<Self>) -> Result<bool, OrderError> {
         let count = OrderAttempts::inc_payment(&self.order_id); // Lock released immediately
         PROCESS_PAYMENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -389,7 +389,7 @@ impl OrderFulfillment {
                 "[{:.3}]      -> Insufficient funds (permanent)",
                 timestamp()
             );
-            return Err(PaymentError::InsufficientFunds);
+            return Err(OrderError::InsufficientFunds);
         }
 
         println!("[{:.3}]      -> Payment authorized", timestamp());
