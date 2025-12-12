@@ -349,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║     External Signal Abstraction Example                  ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
-    let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
+    let storage = Arc::new(SqliteExecutionLog::new("data/sig_abstraction.db").await?);
     let signal_source = Arc::new(SimulatedUserInputSource::new());
 
     // ============================================================

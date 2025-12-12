@@ -371,8 +371,14 @@ pub trait ExecutionLog: Send + Sync {
     /// # Default Implementation
     ///
     /// Returns `StorageError::Unsupported` by default.
-    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
-        let _ = (flow_id, step, params);
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+        params: &[u8],
+    ) -> Result<()> {
+        let _ = (flow_id, step, signal_name, params);
         Err(StorageError::Unsupported(
             "signals not implemented for this storage backend".to_string(),
         ))
@@ -386,8 +392,13 @@ pub trait ExecutionLog: Send + Sync {
     /// # Default Implementation
     ///
     /// Returns None by default.
-    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
-        let _ = (flow_id, step);
+    async fn get_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let _ = (flow_id, step, signal_name);
         Ok(None)
     }
 
@@ -399,8 +410,13 @@ pub trait ExecutionLog: Send + Sync {
     /// # Default Implementation
     ///
     /// Returns Ok by default (no-op).
-    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
-        let _ = (flow_id, step);
+    async fn remove_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<()> {
+        let _ = (flow_id, step, signal_name);
         Ok(())
     }
 
@@ -643,16 +659,36 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self).log_signal(flow_id, step, signal_name).await
     }
 
-    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
-        (**self).store_signal_params(flow_id, step, params).await
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+        params: &[u8],
+    ) -> Result<()> {
+        (**self)
+            .store_signal_params(flow_id, step, signal_name, params)
+            .await
     }
 
-    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
-        (**self).get_signal_params(flow_id, step).await
+    async fn get_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        (**self).get_signal_params(flow_id, step, signal_name).await
     }
 
-    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
-        (**self).remove_signal_params(flow_id, step).await
+    async fn remove_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<()> {
+        (**self)
+            .remove_signal_params(flow_id, step, signal_name)
+            .await
     }
 
     async fn get_waiting_signals(&self) -> Result<Vec<SignalInfo>> {

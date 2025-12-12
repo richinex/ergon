@@ -116,12 +116,8 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
                     // Flow completed - check if it set suspend_reason just before completing
                     // (shouldn't happen, but handle it defensively)
                     match context.take_suspend_reason() {
-                        Some(reason) => {
-                            Poll::Ready(FlowOutcome::Suspended(reason))
-                        }
-                        None => {
-                            Poll::Ready(FlowOutcome::Completed(result))
-                        }
+                        Some(reason) => Poll::Ready(FlowOutcome::Suspended(reason)),
+                        None => Poll::Ready(FlowOutcome::Completed(result)),
                     }
                 }
                 Poll::Pending => {
@@ -258,20 +254,20 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
             .await
             .map_err(ExecutionError::from)?;
 
-        let step = if let Some(inv) = latest {
+        let (step, signal_name) = if let Some(inv) = latest {
             if inv.status() != InvocationStatus::WaitingForSignal {
                 return Err(ExecutionError::Failed(
                     "No waiting step to resume".to_string(),
                 ));
             }
-            inv.step()
+            (inv.step(), inv.timer_name().unwrap_or("").to_string())
         } else {
             return Err(ExecutionError::Failed("No invocation found".to_string()));
         };
 
         // Persist to storage for crash recovery
         self.storage
-            .store_signal_params(self.id, step, &params_bytes)
+            .store_signal_params(self.id, step, &signal_name, &params_bytes)
             .await
             .map_err(ExecutionError::from)?;
 

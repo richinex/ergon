@@ -628,49 +628,19 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 6: Generate Shipping Label (CHILD FLOW - depends on payment)
-    ///
-    /// This step demonstrates REPLAY-BASED RESUMPTION for child flows.
-    ///
-    /// Key behaviors:
-    /// - **Execution #1**: Spawns child flow, may suspend until child completes
-    /// - **Execution #2**: Replays from beginning, retrieves cached child result
+    /// Step 6: Ready for shipping (marker step after payment complete)
     #[step(depends_on = "process_payment")]
-    async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, String> {
-        let count = OrderAttempts::inc_label(&self.order_id);
-        GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
-
+    async fn ready_for_shipping(self: Arc<Self>) -> Result<(), String> {
         println!(
-            "[{:.3}]   [{}] generate_shipping_label START (execution #{})",
+            "[{:.3}]   [{}] ready_for_shipping - payment complete",
             timestamp(),
-            &self.order_id,
-            count
+            &self.order_id
         );
-
-        // REPLAY-BASED RESUMPTION:
-        // Execution #1: Child flow spawns and parent may suspend
-        // Execution #2: Child result retrieved from cache
-        let label = self
-            .invoke(LabelGenerator {
-                order_id: self.order_id.clone(),
-                customer_id: self.customer_id.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| e.to_string())?;
-        println!(
-            "[{:.3}]      -> Label generated: {}",
-            timestamp(),
-            label.tracking_number
-        );
-        Ok(label)
+        Ok(())
     }
 
-    /// Step 7: Notify Customer (depends on label) - returns label for flow result
-    #[step(
-        depends_on = "generate_shipping_label",
-        inputs(label = "generate_shipping_label")
-    )]
+    /// Step 7: Notify Customer (takes label from flow-level child invocation)
+    #[step(depends_on = "ready_for_shipping")]
     async fn notify_customer(
         self: Arc<Self>,
         label: ShippingLabel,
@@ -706,7 +676,7 @@ impl OrderFulfillment {
         let start = std::time::Instant::now();
 
         // Execute the DAG - steps run in parallel when dependencies allow!
-        let label = dag! {
+        dag! {
             self.register_validate_customer();
             self.register_check_fraud();
             self.register_reserve_inventory();
@@ -714,9 +684,35 @@ impl OrderFulfillment {
             self.register_calculate_tax();
             self.register_await_manager_approval();
             self.register_process_payment();
-            self.register_generate_shipping_label();
-            self.register_notify_customer()
+            self.register_ready_for_shipping()
         }?;
+
+        // Child flow invocation happens at flow level (not in a step - steps must be atomic!)
+        let count = OrderAttempts::inc_label(&self.order_id);
+        GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
+        println!(
+            "[{:.3}]   [{}] generate_shipping_label (execution #{})",
+            timestamp(),
+            &self.order_id,
+            count
+        );
+
+        let label = self
+            .invoke(LabelGenerator {
+                order_id: self.order_id.clone(),
+                customer_id: self.customer_id.clone(),
+            })
+            .result()
+            .await?;
+
+        println!(
+            "[{:.3}]      -> Label generated: {}",
+            timestamp(),
+            label.tracking_number
+        );
+
+        // Now notify customer with the label
+        let label = self.clone().notify_customer(label).await?;
 
         let duration = start.elapsed();
         ORDER_TIMINGS.insert(self.order_id.clone(), duration.as_secs_f64());

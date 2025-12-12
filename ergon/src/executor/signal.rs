@@ -85,7 +85,12 @@ where
             if let Some(signal_data) = self.signal_source.poll_for_signal(signal_name).await {
                 // Store signal params
                 match storage
-                    .store_signal_params(signal_info.flow_id, signal_info.step, &signal_data)
+                    .store_signal_params(
+                        signal_info.flow_id,
+                        signal_info.step,
+                        signal_info.signal_name.as_deref().unwrap_or(""),
+                        &signal_data,
+                    )
                     .await
                 {
                     Ok(_) => {
@@ -260,7 +265,11 @@ where
 
         if inv.status() == InvocationStatus::WaitingForSignal {
             // We're waiting for this signal - check if it's arrived
-            if let Some(params) = ctx.storage.get_signal_params(ctx.id, current_step).await? {
+            if let Some(params) = ctx
+                .storage
+                .get_signal_params(ctx.id, current_step, signal_name)
+                .await?
+            {
                 // Signal arrived! Deserialize and return the data
                 let result: T = deserialize_value(&params)?;
                 // DO NOT mark invocation as complete here - let the step macro do it!
@@ -268,7 +277,7 @@ where
                 // and we don't want to cache it as Complete if it fails.
                 // Clean up signal params so they aren't re-delivered on retry
                 ctx.storage
-                    .remove_signal_params(ctx.id, current_step)
+                    .remove_signal_params(ctx.id, current_step, signal_name)
                     .await?;
                 return Ok(result);
             }
@@ -415,7 +424,12 @@ where
 
     // Store signal data
     storage
-        .store_signal_params(parent_flow_id, waiting_step.step(), &result_bytes)
+        .store_signal_params(
+            parent_flow_id,
+            waiting_step.step(),
+            waiting_step.timer_name().unwrap_or(""),
+            &result_bytes,
+        )
         .await?;
 
     // Resume parent flow - may return false if parent isn't suspended yet (race condition)

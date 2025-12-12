@@ -176,13 +176,18 @@ where
 
             // Check if we're already waiting and signal has arrived
             if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
-                if let Some(params) = storage.get_signal_params(parent_id, step).await? {
+                if let Some(params) = storage
+                    .get_signal_params(parent_id, step, &signal_name)
+                    .await?
+                {
                     let payload: SignalPayload = crate::core::deserialize_value(&params)?;
                     // Complete invocation and clean up
                     storage
                         .log_invocation_completion(parent_id, step, &params)
                         .await?;
-                    storage.remove_signal_params(parent_id, step).await?;
+                    storage
+                        .remove_signal_params(parent_id, step, &signal_name)
+                        .await?;
 
                     if payload.success {
                         return Ok(crate::core::deserialize_value(&payload.data)?);
@@ -242,13 +247,18 @@ where
         }
 
         // Check if signal already arrived (child might have been VERY fast)
-        if let Some(params) = storage.get_signal_params(parent_id, step).await? {
+        if let Some(params) = storage
+            .get_signal_params(parent_id, step, &signal_name)
+            .await?
+        {
             let payload: SignalPayload = crate::core::deserialize_value(&params)?;
             // Complete invocation and clean up
             storage
                 .log_invocation_completion(parent_id, step, &params)
                 .await?;
-            storage.remove_signal_params(parent_id, step).await?;
+            storage
+                .remove_signal_params(parent_id, step, &signal_name)
+                .await?;
 
             if payload.success {
                 return Ok(crate::core::deserialize_value(&payload.data)?);

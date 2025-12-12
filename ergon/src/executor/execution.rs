@@ -134,7 +134,12 @@ pub(super) async fn complete_child_flow<S: ExecutionLog>(
 
     // CRITICAL: Store signal params - must succeed for parent to resume
     if let Err(e) = storage
-        .store_signal_params(parent_id, waiting_step.step(), &signal_bytes)
+        .store_signal_params(
+            parent_id,
+            waiting_step.step(),
+            waiting_step.timer_name().unwrap_or(""),
+            &signal_bytes,
+        )
         .await
     {
         error!(
@@ -275,7 +280,10 @@ pub(super) async fn handle_suspended_flow<S: ExecutionLog>(
     if let Ok(invocations) = storage.get_invocations_for_flow(flow_id).await {
         for inv in invocations.iter() {
             if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
-                if let Ok(Some(_)) = storage.get_signal_params(flow_id, inv.step()).await {
+                if let Ok(Some(_)) = storage
+                    .get_signal_params(flow_id, inv.step(), inv.timer_name().unwrap_or(""))
+                    .await
+                {
                     debug!(
                         "Found pending signal for suspended flow {} step {}, resuming immediately",
                         flow_id,

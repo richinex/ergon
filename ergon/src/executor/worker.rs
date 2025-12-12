@@ -106,7 +106,12 @@ pub trait TimerProcessing: Send + Sync {
 /// for workers with and without signal processing enabled.
 #[async_trait::async_trait]
 pub trait SignalProcessing: Send + Sync {
-    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str, work_notify: &Arc<tokio::sync::Notify>);
+    async fn process_signals<S: ExecutionLog>(
+        &self,
+        storage: &Arc<S>,
+        worker_id: &str,
+        work_notify: &Arc<tokio::sync::Notify>,
+    );
 }
 
 // ============================================================================
@@ -206,7 +211,12 @@ impl TimerProcessing for WithTimers {
 
 #[async_trait::async_trait]
 impl SignalProcessing for WithoutSignals {
-    async fn process_signals<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str, _work_notify: &Arc<tokio::sync::Notify>) {
+    async fn process_signals<S: ExecutionLog>(
+        &self,
+        _storage: &Arc<S>,
+        _worker_id: &str,
+        _work_notify: &Arc<tokio::sync::Notify>,
+    ) {
         // No-op: signal processing disabled
     }
 }
@@ -216,7 +226,12 @@ impl<Src> SignalProcessing for WithSignals<Src>
 where
     Src: crate::executor::SignalSource + 'static,
 {
-    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str, _work_notify: &Arc<tokio::sync::Notify>) {
+    async fn process_signals<S: ExecutionLog>(
+        &self,
+        storage: &Arc<S>,
+        _worker_id: &str,
+        _work_notify: &Arc<tokio::sync::Notify>,
+    ) {
         // Get all flows waiting for signals
         let waiting_signals = match storage.get_waiting_signals().await {
             Ok(signals) => signals,
@@ -239,7 +254,12 @@ where
             if let Some(signal_data) = self.signal_source.poll_for_signal(signal_name).await {
                 // Store signal params
                 match storage
-                    .store_signal_params(signal_info.flow_id, signal_info.step, &signal_data)
+                    .store_signal_params(
+                        signal_info.flow_id,
+                        signal_info.step,
+                        signal_info.signal_name.as_deref().unwrap_or(""),
+                        &signal_data,
+                    )
                     .await
                 {
                     Ok(_) => {
@@ -503,7 +523,8 @@ impl<S: ExecutionLog + 'static> Registry<S> {
                                     Ok(exec_err) => *exec_err,
                                     Err(boxed) => {
                                         // User error - wrap in ExecutionError::User
-                                        let type_name = std::any::type_name_of_val(&*boxed).to_string();
+                                        let type_name =
+                                            std::any::type_name_of_val(&*boxed).to_string();
                                         let message = boxed.to_string();
 
                                         // Note: Defaulting to retryable=true because the flow macro

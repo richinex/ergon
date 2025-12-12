@@ -25,13 +25,19 @@ impl Order {
     }
 
     #[step]
-    async fn finalize_payment(self: Arc<Self>, result: PaymentResult) -> Result<PaymentResult, String> {
+    async fn finalize_payment(
+        self: Arc<Self>,
+        result: PaymentResult,
+    ) -> Result<PaymentResult, String> {
         println!("[{}] Step: processing payment result: {:?}", ts(), result);
         Ok(result)
     }
 
     #[step]
-    async fn finalize_shipment(self: Arc<Self>, result: ShipmentResult) -> Result<ShipmentResult, String> {
+    async fn finalize_shipment(
+        self: Arc<Self>,
+        result: ShipmentResult,
+    ) -> Result<ShipmentResult, String> {
         println!("[{}] Step: processing shipment result: {:?}", ts(), result);
         Ok(result)
     }
@@ -39,7 +45,10 @@ impl Order {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
         // Validate first
-        self.clone().validate().await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone()
+            .validate()
+            .await
+            .map_err(ExecutionError::Failed)?;
 
         // Invoke children at flow level
         println!("[{}] Flow: invoking Payment child", ts());
@@ -62,8 +71,14 @@ impl Order {
             .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
         // Process results in atomic steps
-        self.clone().finalize_payment(payment_result).await.map_err(|e| ExecutionError::Failed(e))?;
-        self.clone().finalize_shipment(shipment_result).await.map_err(|e| ExecutionError::Failed(e))
+        self.clone()
+            .finalize_payment(payment_result)
+            .await
+            .map_err(ExecutionError::Failed)?;
+        self.clone()
+            .finalize_shipment(shipment_result)
+            .await
+            .map_err(ExecutionError::Failed)
     }
 }
 

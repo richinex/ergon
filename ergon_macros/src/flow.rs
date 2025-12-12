@@ -229,6 +229,10 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                         }
                     ).await;
 
+                    // Set enclosing step so that flow-level signals/timers/child invocations
+                    // know they're being called from this flow (step 0)
+                    __ctx.set_enclosing_step(__step);
+
                     // Execute the user's DAG setup and execution block
                     let __result: #return_type = #wrapped_block;
 

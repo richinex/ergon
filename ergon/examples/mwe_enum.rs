@@ -51,7 +51,10 @@ impl Order {
     }
 
     #[step]
-    async fn process_shipment(self: Arc<Self>, result: ShippingResult) -> Result<ShippingResult, String> {
+    async fn process_shipment(
+        self: Arc<Self>,
+        result: ShippingResult,
+    ) -> Result<ShippingResult, String> {
         // Pattern match on the enum result
         match &result {
             ShippingResult::Success { tracking, eta_days } => {

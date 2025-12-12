@@ -27,8 +27,8 @@ pub struct InMemoryExecutionLog {
     invocations: dashmap::DashMap<(Uuid, i32), Invocation>,
     /// Concurrent storage for scheduled flows keyed by task_id
     flow_queue: dashmap::DashMap<Uuid, super::ScheduledFlow>,
-    /// Concurrent storage for signal parameters keyed by (flow_id, step)
-    signal_params: dashmap::DashMap<(Uuid, i32), Vec<u8>>,
+    /// Concurrent storage for signal parameters keyed by (flow_id, step, signal_name)
+    signal_params: dashmap::DashMap<(Uuid, i32, String), Vec<u8>>,
     /// Concurrent storage for step-child mappings keyed by (flow_id, parent_step)
     step_child_mappings: dashmap::DashMap<(Uuid, i32), i32>,
     /// Index mapping flow_id to task_id for fast lookup during resume_flow
@@ -447,19 +447,35 @@ impl ExecutionLog for InMemoryExecutionLog {
         }
     }
 
-    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
-        let key = (flow_id, step);
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+        params: &[u8],
+    ) -> Result<()> {
+        let key = (flow_id, step, signal_name.to_string());
         self.signal_params.insert(key, params.to_vec());
         Ok(())
     }
 
-    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
-        let key = (flow_id, step);
+    async fn get_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let key = (flow_id, step, signal_name.to_string());
         Ok(self.signal_params.get(&key).map(|v| v.clone()))
     }
 
-    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
-        let key = (flow_id, step);
+    async fn remove_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<()> {
+        let key = (flow_id, step, signal_name.to_string());
         self.signal_params.remove(&key);
         Ok(())
     }

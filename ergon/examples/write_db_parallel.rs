@@ -177,10 +177,7 @@ impl OrderProcessing {
     // Process child flow results in atomic steps
     #[step(depends_on = "reserve_inventory")]
     async fn process_shipment(self: Arc<Self>, result: String) -> Result<String, String> {
-        println!(
-            "[Step 3a] Processing shipment for order {}",
-            self.order_id
-        );
+        println!("[Step 3a] Processing shipment for order {}", self.order_id);
         println!("[Step 3a] ✅ Shipment created: {}", result);
         Ok(result)
     }
@@ -201,10 +198,7 @@ impl OrderProcessing {
 
     #[step(depends_on = "reserve_inventory")]
     async fn process_notification(self: Arc<Self>) -> Result<(), String> {
-        println!(
-            "[Step 4] Notification to {} complete",
-            self.customer_email
-        );
+        println!("[Step 4] Notification to {} complete", self.customer_email);
         println!("[Step 4] ✅ Notification sent");
         Ok(())
     }
@@ -212,8 +206,14 @@ impl OrderProcessing {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<(), ExecutionError> {
         // Sequential execution with child flows at flow level
-        self.clone().validate_payment().await.map_err(|e| ExecutionError::Failed(e))?;
-        self.clone().reserve_inventory().await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone()
+            .validate_payment()
+            .await
+            .map_err(ExecutionError::Failed)?;
+        self.clone()
+            .reserve_inventory()
+            .await
+            .map_err(ExecutionError::Failed)?;
 
         // Invoke child flows at flow level (sequential for atomic steps)
         println!("[Flow] Creating shipment for order {}", self.order_id);
@@ -245,9 +245,18 @@ impl OrderProcessing {
         .await?;
 
         // Process results in atomic steps
-        self.clone().process_shipment(shipment_result).await.map_err(|e| ExecutionError::Failed(e))?;
-        self.clone().process_revenue_analytics().await.map_err(|e| ExecutionError::Failed(e))?;
-        self.clone().process_inventory_analytics().await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone()
+            .process_shipment(shipment_result)
+            .await
+            .map_err(ExecutionError::Failed)?;
+        self.clone()
+            .process_revenue_analytics()
+            .await
+            .map_err(ExecutionError::Failed)?;
+        self.clone()
+            .process_inventory_analytics()
+            .await
+            .map_err(ExecutionError::Failed)?;
 
         // Invoke notification child flow
         println!("[Flow] Sending notification to {}", self.customer_email);
@@ -260,7 +269,10 @@ impl OrderProcessing {
         .await?;
 
         // Process notification in atomic step
-        self.clone().process_notification().await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone()
+            .process_notification()
+            .await
+            .map_err(ExecutionError::Failed)?;
         Ok(())
     }
 }

@@ -26,13 +26,19 @@ impl Order {
     }
 
     #[step]
-    async fn finalize_payment(self: Arc<Self>, payment: PaymentResult) -> Result<PaymentResult, String> {
+    async fn finalize_payment(
+        self: Arc<Self>,
+        payment: PaymentResult,
+    ) -> Result<PaymentResult, String> {
         println!("[{}] Step: finalized payment: {:?}", ts(), payment);
         Ok(payment)
     }
 
     #[step]
-    async fn finalize_shipment(self: Arc<Self>, shipment: ShipmentResult) -> Result<ShipmentResult, String> {
+    async fn finalize_shipment(
+        self: Arc<Self>,
+        shipment: ShipmentResult,
+    ) -> Result<ShipmentResult, String> {
         println!("[{}] Step: finalized shipment: {:?}", ts(), shipment);
         Ok(shipment)
     }
@@ -43,7 +49,10 @@ impl Order {
     async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
         println!("[{}] FLOW: Starting sequential execution", ts());
 
-        self.clone().validate().await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone()
+            .validate()
+            .await
+            .map_err(ExecutionError::Failed)?;
         println!("[{}] FLOW: Validate complete", ts());
 
         // Invoke payment child at flow level
@@ -56,7 +65,10 @@ impl Order {
             .await
             .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
-        self.clone().finalize_payment(payment).await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone()
+            .finalize_payment(payment)
+            .await
+            .map_err(ExecutionError::Failed)?;
         println!("[{}] FLOW: Payment complete", ts());
 
         // Invoke shipment child at flow level
@@ -68,7 +80,11 @@ impl Order {
             .await
             .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
-        let result = self.clone().finalize_shipment(shipment).await.map_err(|e| ExecutionError::Failed(e))?;
+        let result = self
+            .clone()
+            .finalize_shipment(shipment)
+            .await
+            .map_err(ExecutionError::Failed)?;
         println!("[{}] FLOW: Ship complete", ts());
 
         Ok(result)

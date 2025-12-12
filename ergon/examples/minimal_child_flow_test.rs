@@ -102,7 +102,10 @@ impl FlowType for ParentFlow {
 impl ParentFlow {
     /// Process child result atomically
     #[step]
-    async fn process_child_result(self: Arc<Self>, result: String) -> Result<String, ExecutionError> {
+    async fn process_child_result(
+        self: Arc<Self>,
+        result: String,
+    ) -> Result<String, ExecutionError> {
         let count = PARENT_STEP_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
         println!(

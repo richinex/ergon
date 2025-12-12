@@ -1459,9 +1459,16 @@ impl ExecutionLog for RedisExecutionLog {
 
     // ===== Signal Operations =====
 
-    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+        params: &[u8],
+    ) -> Result<()> {
         let mut conn = self.get_connection().await?;
-        let signal_key = Self::signal_key(flow_id, step);
+        // Include signal_name in key to support multiple signals at same step
+        let signal_key = format!("{}:{}", Self::signal_key(flow_id, step), signal_name);
 
         // Store signal params with TTL
         let _: () = redis::pipe()
@@ -1472,13 +1479,21 @@ impl ExecutionLog for RedisExecutionLog {
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        debug!("Stored signal params: flow_id={}, step={}", flow_id, step);
+        debug!(
+            "Stored signal params: flow_id={}, step={}, signal_name={}",
+            flow_id, step, signal_name
+        );
         Ok(())
     }
 
-    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
+    async fn get_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<Option<Vec<u8>>> {
         let mut conn = self.get_connection().await?;
-        let signal_key = Self::signal_key(flow_id, step);
+        let signal_key = format!("{}:{}", Self::signal_key(flow_id, step), signal_name);
 
         let params: Option<Vec<u8>> = conn
             .get(&signal_key)
@@ -1488,16 +1503,24 @@ impl ExecutionLog for RedisExecutionLog {
         Ok(params)
     }
 
-    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
+    async fn remove_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<()> {
         let mut conn = self.get_connection().await?;
-        let signal_key = Self::signal_key(flow_id, step);
+        let signal_key = format!("{}:{}", Self::signal_key(flow_id, step), signal_name);
 
         let _: () = conn
             .del(&signal_key)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        debug!("Removed signal params: flow_id={}, step={}", flow_id, step);
+        debug!(
+            "Removed signal params: flow_id={}, step={}, signal_name={}",
+            flow_id, step, signal_name
+        );
         Ok(())
     }
 

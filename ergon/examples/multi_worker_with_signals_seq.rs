@@ -613,50 +613,8 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 6: Generate Shipping Label (CHILD FLOW - depends on payment and inventory)
-    ///
-    /// This step demonstrates REPLAY-BASED RESUMPTION for child flows.
-    ///
-    /// Key behaviors:
-    /// - **Execution #1**: Spawns child flow, may suspend until child completes
-    /// - **Execution #2**: Replays from beginning, retrieves cached child result
-    #[step(depends_on = ["reserve_inventory", "process_payment"])]
-    async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, OrderError> {
-        let count = OrderAttempts::inc_label(&self.order_id);
-        GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
-
-        println!(
-            "[{:.3}]   [{}] generate_shipping_label (execution #{})",
-            timestamp(),
-            &self.order_id,
-            count
-        );
-
-        // REPLAY-BASED RESUMPTION:
-        // Execution #1: Child flow spawns and parent may suspend
-        // Execution #2: Child result retrieved from cache
-        let label = self
-            .invoke(LabelGenerator {
-                order_id: self.order_id.clone(),
-                customer_id: self.customer_id.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| OrderError::Failed(format!("Label generation failed: {}", e)))?;
-
-        println!(
-            "[{:.3}]      -> Label generated: {}",
-            timestamp(),
-            label.tracking_number
-        );
-        Ok(label)
-    }
-
-    /// Step 7: Notify Customer (depends on label) - returns label for flow result
-    #[step(
-        depends_on = "generate_shipping_label",
-        inputs(label = "generate_shipping_label")
-    )]
+    /// Step 6: Notify Customer (label comes from flow-level child invocation)
+    #[step]
     async fn notify_customer(
         self: Arc<Self>,
         label: ShippingLabel,
@@ -700,7 +658,32 @@ impl OrderFulfillment {
         let approval = self.clone().await_manager_approval().await?;
 
         let _payment = self.clone().process_payment(approval).await?;
-        let label = self.clone().generate_shipping_label().await?;
+
+        // Child flow invocation happens at flow level (not in a step - steps must be atomic!)
+        let count = OrderAttempts::inc_label(&self.order_id);
+        GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
+        println!(
+            "[{:.3}]   [{}] generate_shipping_label (execution #{})",
+            timestamp(),
+            &self.order_id,
+            count
+        );
+
+        let label = self
+            .invoke(LabelGenerator {
+                order_id: self.order_id.clone(),
+                customer_id: self.customer_id.clone(),
+            })
+            .result()
+            .await
+            .map_err(|e| OrderError::Failed(format!("Child flow failed: {}", e)))?;
+
+        println!(
+            "[{:.3}]      -> Label generated: {}",
+            timestamp(),
+            label.tracking_number
+        );
+
         let label = self.clone().notify_customer(label).await?;
 
         let duration = start.elapsed();

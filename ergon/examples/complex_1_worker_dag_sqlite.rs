@@ -398,7 +398,10 @@ impl OrderFulfillment {
 
     /// Step 5: Process shipping label result (depends on all parallel steps)
     #[step(depends_on = ["validate_customer", "check_fraud", "reserve_inventory", "process_payment"])]
-    async fn process_shipping_label(self: Arc<Self>, label: ShippingLabel) -> Result<ShippingLabel, String> {
+    async fn process_shipping_label(
+        self: Arc<Self>,
+        label: ShippingLabel,
+    ) -> Result<ShippingLabel, String> {
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
 

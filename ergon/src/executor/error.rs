@@ -47,7 +47,6 @@ pub enum ExecutionError {
     },
 }
 
-
 // Manual From implementations to convert nested errors to strings
 impl From<StorageError> for ExecutionError {
     fn from(e: StorageError) -> Self {

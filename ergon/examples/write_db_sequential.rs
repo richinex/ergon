@@ -177,7 +177,10 @@ impl OrderProcessing {
 
     #[step(depends_on = "reserve_inventory")]
     async fn process_shipment(self: Arc<Self>, result: String) -> Result<String, String> {
-        println!("[Step 3] Processing shipment result for order {}", self.order_id);
+        println!(
+            "[Step 3] Processing shipment result for order {}",
+            self.order_id
+        );
         println!("[Step 3] ✅ Shipment created: {}", result);
         Ok(result)
     }

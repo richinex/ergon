@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{await_external_signal, InvokeChild, SignalSource, Worker};
+use ergon::executor::{await_external_signal, SignalSource, Worker};
 use ergon::prelude::*;
 use ergon::storage::RedisExecutionLog;
 use ergon::TaskStatus;

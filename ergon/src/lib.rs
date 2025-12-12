@@ -95,9 +95,8 @@ pub use core::kind;
 
 pub use executor::{
     await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt, DeferredRegistry,
-    ExecutionContext, ExecutionError, Executor, Registry, Retryable,
-    Result as ExecutionResult, Scheduler, StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE,
-    EXECUTION_CONTEXT,
+    ExecutionContext, ExecutionError, Executor, Registry, Result as ExecutionResult, Retryable,
+    Scheduler, StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE, EXECUTION_CONTEXT,
 };
 
 pub use graph::{Graph, GraphError, GraphResult, StepId, StepNode};
@@ -151,13 +150,13 @@ pub mod prelude {
     // Core API - Used in every workflow application
     // ========================================================================
     pub use crate::executor::{
-        await_external_signal,   // Signal/suspend API
-        idempotency_key,         // Key generation utilities
+        await_external_signal, // Signal/suspend API
+        idempotency_key,       // Key generation utilities
         idempotency_key_parts,
-        ExecutionContext,        // Flow context (passed to every flow)
-        Scheduler,               // Schedule flows
-        Worker,                  // Process flows
-        WorkerHandle,            // Worker lifecycle management
+        ExecutionContext, // Flow context (passed to every flow)
+        Scheduler,        // Schedule flows
+        Worker,           // Process flows
+        WorkerHandle,     // Worker lifecycle management
     };
 
     // ========================================================================
@@ -168,14 +167,14 @@ pub mod prelude {
     // ========================================================================
     // Storage - Main abstraction and implementations
     // ========================================================================
-    pub use crate::storage::ExecutionLog;         // Core storage trait
+    pub use crate::storage::ExecutionLog; // Core storage trait
     pub use crate::storage::InMemoryExecutionLog; // In-memory implementation
 
     #[cfg(feature = "sqlite")]
-    pub use crate::storage::SqliteExecutionLog;   // SQLite implementation
+    pub use crate::storage::SqliteExecutionLog; // SQLite implementation
 
     #[cfg(feature = "redis")]
-    pub use crate::storage::RedisExecutionLog;    // Redis implementation
+    pub use crate::storage::RedisExecutionLog; // Redis implementation
 
     // ========================================================================
     // External types - Used throughout workflow code

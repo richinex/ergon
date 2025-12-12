@@ -196,9 +196,10 @@ impl SqliteExecutionLog {
             "CREATE TABLE IF NOT EXISTS signal_params (
                 flow_id TEXT NOT NULL,
                 step INTEGER NOT NULL,
+                signal_name TEXT NOT NULL,
                 params BLOB NOT NULL,
                 created_at INTEGER NOT NULL,
-                PRIMARY KEY (flow_id, step)
+                PRIMARY KEY (flow_id, step, signal_name)
             )",
         )
         .execute(&self.pool)
@@ -879,44 +880,70 @@ impl ExecutionLog for SqliteExecutionLog {
         Ok(())
     }
 
-    async fn store_signal_params(&self, flow_id: Uuid, step: i32, params: &[u8]) -> Result<()> {
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+        params: &[u8],
+    ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO signal_params (flow_id, step, params, created_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(flow_id, step)
+            "INSERT INTO signal_params (flow_id, step, signal_name, params, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(flow_id, step, signal_name)
              DO UPDATE SET params = excluded.params, created_at = excluded.created_at",
         )
         .bind(flow_id.to_string())
         .bind(step)
+        .bind(signal_name)
         .bind(params)
         .bind(Utc::now().timestamp_millis())
         .execute(&self.pool)
         .await?;
 
-        debug!("Stored signal params: flow_id={}, step={}", flow_id, step);
+        debug!(
+            "Stored signal params: flow_id={}, step={}, signal_name={}",
+            flow_id, step, signal_name
+        );
 
         Ok(())
     }
 
-    async fn get_signal_params(&self, flow_id: Uuid, step: i32) -> Result<Option<Vec<u8>>> {
-        let params: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT params FROM signal_params WHERE flow_id = ? AND step = ?")
-                .bind(flow_id.to_string())
-                .bind(step)
-                .fetch_optional(&self.pool)
-                .await?;
+    async fn get_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let params: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT params FROM signal_params WHERE flow_id = ? AND step = ? AND signal_name = ?",
+        )
+        .bind(flow_id.to_string())
+        .bind(step)
+        .bind(signal_name)
+        .fetch_optional(&self.pool)
+        .await?;
 
         Ok(params)
     }
 
-    async fn remove_signal_params(&self, flow_id: Uuid, step: i32) -> Result<()> {
-        sqlx::query("DELETE FROM signal_params WHERE flow_id = ? AND step = ?")
+    async fn remove_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM signal_params WHERE flow_id = ? AND step = ? AND signal_name = ?")
             .bind(flow_id.to_string())
             .bind(step)
+            .bind(signal_name)
             .execute(&self.pool)
             .await?;
 
-        debug!("Removed signal params: flow_id={}, step={}", flow_id, step);
+        debug!(
+            "Removed signal params: flow_id={}, step={}, signal_name={}",
+            flow_id, step, signal_name
+        );
 
         Ok(())
     }

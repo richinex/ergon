@@ -31,7 +31,11 @@ impl TestFlow {
             .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
         // Process in atomic step
-        let result = self.clone().process_signal(signal_data).await.map_err(|e| ExecutionError::Failed(e))?;
+        let result = self
+            .clone()
+            .process_signal(signal_data)
+            .await
+            .map_err(ExecutionError::Failed)?;
 
         eprintln!("[{}] FLOW: Complete", ts());
         Ok(result)
@@ -82,7 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("\n=== Test: await_external_signal Double Execution ===\n");
 
-    let flow = TestFlow { id: "TEST-001".into() };
+    let flow = TestFlow {
+        id: "TEST-001".into(),
+    };
     let task_id = scheduler.schedule(flow, Uuid::new_v4()).await?;
     eprintln!("[{}] Scheduled: {}\n", ts(), &task_id.to_string()[..8]);
 

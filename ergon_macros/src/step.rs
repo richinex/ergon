@@ -559,6 +559,9 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 };
                                 let __class_name = "Step";
 
+                                // Save the previous enclosing step so we can restore it after this step completes
+                                let __prev_enclosing_step = __ctx.get_enclosing_step();
+
                                 // Set enclosing step so invoke().result() and timers/signals know their parent
                                 __ctx.set_enclosing_step(__step);
 
@@ -567,6 +570,10 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     __step, __class_name, #method_name_str, &__params
                                 ).await {
                                     Ok(Some(__cached_result)) => {
+                                        // Restore enclosing step before returning cached result
+                                        if let Some(__prev) = __prev_enclosing_step {
+                                            __ctx.set_enclosing_step(__prev);
+                                        }
                                         return Ok(__cached_result);
                                     }
                                     Ok(None) => {
@@ -615,6 +622,11 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                                 // Execute the step logic via executor function
                                 let __result: #return_type = #executor_call.await;
+
+                                // Restore the previous enclosing step before returning
+                                if let Some(__prev) = __prev_enclosing_step {
+                                    __ctx.set_enclosing_step(__prev);
+                                }
 
                                 // Apply result handling logic with autoref specialization
                                 // This will log completion for Ok or permanent errors,
@@ -679,6 +691,10 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     };
                     let __class_name = "Step";
 
+                    // Save the previous enclosing step so we can restore it after this step completes
+                    // This prevents child steps from breaking flow-level signal tracking
+                    let __prev_enclosing_step = __ctx.get_enclosing_step();
+
                     // Set enclosing step so invoke().result() and timers/signals know their parent
                     __ctx.set_enclosing_step(__step);
 
@@ -689,20 +705,30 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // 3. Flow is being replayed - we need to skip re-executing the body
                     //    to avoid running side effects twice
                     if let Ok(Some(__child_step)) = __ctx.storage().get_child_step_for_parent(__ctx.flow_id(), __step).await {
-                        // Check if the child's signal arrived
-                        if let Ok(Some(_)) = __ctx.storage().get_signal_params(__ctx.flow_id(), __child_step).await {
-                            // Child completed! Check if this step has cached result
+                        // Get child invocation to check status and get signal name
+                        let __child_inv_opt = __ctx.storage().get_invocation(__ctx.flow_id(), __child_step).await.ok().flatten();
+                        if let Some(__child_inv) = __child_inv_opt {
+                            // Use timer_name as signal name (contains the signal token)
+                            let __signal_name = __child_inv.timer_name().unwrap_or("");
+                            // Check if the child's signal arrived
+                            if let Ok(Some(_)) = __ctx.storage().get_signal_params(__ctx.flow_id(), __child_step, __signal_name).await {
+                                // Child completed! Check if this step has cached result
                             match __ctx.get_cached_result::<#return_type, _>(
                                 __step, __class_name, #method_name_str, &__params
                             ).await {
                                 Ok(Some(__cached_result)) => {
                                     // Step was completed after child signaled, return cached result
+                                    // Restore enclosing step before returning
+                                    if let Some(__prev) = __prev_enclosing_step {
+                                        __ctx.set_enclosing_step(__prev);
+                                    }
                                     return Some(__cached_result);
                                 }
                                 Ok(None) | Err(_) => {
                                     // No cached result yet, continue to execute body
                                     // This happens when child signaled but step hasn't completed yet
                                 }
+                            }
                             }
                         }
                     }
@@ -720,6 +746,10 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 retry_policy: #retry_policy_expr,
                             }
                         ).await;
+                        // Restore enclosing step before returning
+                        if let Some(__prev) = __prev_enclosing_step {
+                            __ctx.set_enclosing_step(__prev);
+                        }
                         return None;
                     }
 
@@ -729,6 +759,10 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                             __step, __class_name, #method_name_str, &__params
                         ).await {
                             Ok(Some(__cached_result)) => {
+                                // Restore enclosing step before returning cached result
+                                if let Some(__prev) = __prev_enclosing_step {
+                                    __ctx.set_enclosing_step(__prev);
+                                }
                                 return Some(__cached_result);
                             }
                             Ok(None) => {
@@ -781,6 +815,12 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Log completion conditionally
                     // For Result types, check if error should be cached
                     #log_completion_code
+
+                    // Restore the previous enclosing step before returning
+                    // This ensures flow-level operations after this step use the correct context
+                    if let Some(__prev) = __prev_enclosing_step {
+                        __ctx.set_enclosing_step(__prev);
+                    }
 
                     // Return Some to indicate result should be used
                     // (Factory will check if it was actually logged)
