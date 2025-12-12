@@ -103,6 +103,34 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attrs = &input.attrs;
     let fn_name = &sig.ident;
 
+    // Check for .invoke() in step body
+    // Child flow invocations should be at flow level for atomic steps
+    // Note: await_external_signal is allowed in steps since it requires step-level caching
+    let block_str = quote! { #block }.to_string();
+    if block_str.contains(".invoke(") || block_str.contains("invoke(") {
+        return syn::Error::new_spanned(
+            block,
+            "#[step] functions must be atomic and cannot contain child flow invocations.\n\
+             Found `.invoke()` call in step body.\n\n\
+             Child flow invocations should be moved to the flow level for better atomicity.\n\n\
+             Solution: Move `.invoke()` calls to the #[flow] level:\n\n\
+             #[flow]\n\
+             async fn my_flow(self: Arc<Self>) -> Result<T, ExecutionError> {\n\
+                 // Invoke child flows at flow level\n\
+                 let result = self.invoke(ChildFlow { ... }).result().await?;\n\
+                 \n\
+                 // Pass result to atomic step\n\
+                 self.process(result).await\n\
+             }\n\n\
+             #[step]\n\
+             async fn process(self: Arc<Self>, data: ChildResult) -> Result<T, E> {\n\
+                 // Pure atomic work - no child invocations\n\
+             }",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     // Check if function is async
     if sig.asyncness.is_none() {
         return syn::Error::new_spanned(sig, "#[step] can only be applied to async functions")

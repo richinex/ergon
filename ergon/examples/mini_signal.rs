@@ -102,13 +102,7 @@ struct Document {
 
 impl Document {
     #[step]
-    async fn await_approval(self: Arc<Self>) -> Result<(), String> {
-        let token = format!("approval-{}", self.id);
-
-        let decision: Approval = await_external_signal(&token)
-            .await
-            .map_err(|e| e.to_string())?;
-
+    async fn process_approval(self: Arc<Self>, decision: Approval) -> Result<(), String> {
         if decision.approved {
             println!("Approved");
             Ok(())
@@ -120,7 +114,16 @@ impl Document {
     #[flow]
     async fn publish(self: Arc<Self>) -> Result<(), String> {
         println!("Waiting for approval...");
-        self.await_approval().await?;
+
+        // Await signal at flow level (suspension point)
+        let token = format!("approval-{}", self.id);
+        let decision: Approval = await_external_signal(&token)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Process decision in atomic step
+        self.process_approval(decision).await?;
+
         println!("Published");
         Ok(())
     }

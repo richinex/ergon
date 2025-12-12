@@ -396,33 +396,21 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 5: Generate Shipping Label (CHILD FLOW - depends on all parallel steps)
+    /// Step 5: Process shipping label result (depends on all parallel steps)
     #[step(depends_on = ["validate_customer", "check_fraud", "reserve_inventory", "process_payment"])]
-    async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, String> {
-        // CRITICAL: Invoke child FIRST - before any side effects
-        // This ensures side effects only run on success path, not on replay
-        let label = self
-            .invoke(LabelGenerator {
-                order_id: self.order_id.clone(),
-                customer_id: self.customer_id.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| format!("Label generation failed: {}", e))?;
-
-        // Side effects AFTER await - only runs once on success
+    async fn process_shipping_label(self: Arc<Self>, label: ShippingLabel) -> Result<ShippingLabel, String> {
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] generate_shipping_label (attempt #{}) - INVOKING CHILD FLOW",
+            "[{:.3}]   [{}] process_shipping_label (attempt #{})",
             timestamp(),
             &self.order_id,
             count
         );
 
         println!(
-            "[{:.3}]      -> Label generated: {}",
+            "[{:.3}]      -> Label processed: {}",
             timestamp(),
             label.tracking_number
         );
@@ -431,8 +419,8 @@ impl OrderFulfillment {
 
     /// Step 6: Notify Customer (depends on label) - returns label for flow result
     #[step(
-        depends_on = "generate_shipping_label",
-        inputs(label = "generate_shipping_label")
+        depends_on = "process_shipping_label",
+        inputs(label = "process_shipping_label")
     )]
     async fn notify_customer(
         self: Arc<Self>,
@@ -485,7 +473,19 @@ impl OrderFulfillment {
             .process_payment()
             .await
             .map_err(|e| e.to_string())?;
-        let label = self.clone().generate_shipping_label().await?;
+
+        // Invoke child flow at flow level
+        let label = self
+            .invoke(LabelGenerator {
+                order_id: self.order_id.clone(),
+                customer_id: self.customer_id.clone(),
+            })
+            .result()
+            .await
+            .map_err(|e| format!("Label generation failed: {}", e))?;
+
+        // Process label in atomic step
+        let label = self.clone().process_shipping_label(label).await?;
         let label = self.clone().notify_customer(label).await?;
 
         println!(

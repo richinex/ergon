@@ -100,24 +100,17 @@ impl FlowType for ParentFlow {
 }
 
 impl ParentFlow {
-    /// Single step that invokes child
+    /// Process child result atomically
     #[step]
-    async fn invoke_child_task(self: Arc<Self>) -> Result<String, ExecutionError> {
+    async fn process_child_result(self: Arc<Self>, result: String) -> Result<String, ExecutionError> {
         let count = PARENT_STEP_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
         println!(
-            "[{:.3}]   [{}] invoke_child_task (attempt #{})",
+            "[{:.3}]   [{}] process_child_result (attempt #{})",
             timestamp(),
             self.flow_id,
             count
         );
-
-        let result = self
-            .invoke(ChildTask {
-                task_id: format!("CHILD-{}", self.flow_id),
-            })
-            .result()
-            .await?;
 
         println!(
             "[{:.3}]   [{}] Received child result: {}",
@@ -138,6 +131,21 @@ impl ParentFlow {
         let count = PARENT_START_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
         println!(
+            "[{:.3}]   [{}] Starting parent flow (attempt #{})",
+            timestamp(),
+            self.flow_id,
+            count
+        );
+
+        // Invoke child at flow level
+        let result = self
+            .invoke(ChildTask {
+                task_id: format!("CHILD-{}", self.flow_id),
+            })
+            .result()
+            .await?;
+
+        println!(
             "\n[{:.3}] PARENT[{}] flow_id={}: START #{} ================================",
             timestamp(),
             self.flow_id,
@@ -145,7 +153,8 @@ impl ParentFlow {
             count
         );
 
-        let result = self.clone().invoke_child_task().await?;
+        // Process result in atomic step
+        let result = self.clone().process_child_result(result).await?;
 
         println!(
             "[{:.3}] PARENT[{}] flow_id={}: COMPLETE ================================\n",
@@ -206,9 +215,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         CHILD_EXEC_COUNT.load(Ordering::Relaxed)
     );
 
-    println!("\nExpected (minimal case: parent invokes child, no retries):");
+    println!("\nExpected (with atomic steps refactoring):");
     println!("  Parent starts:    2 (initial + resume after child)");
-    println!("  Parent step:      2 (invoke child + get cached result)");
+    println!("  Parent step:      1 (atomic - executes once)");
     println!("  Child executions: 1 (actual work)");
 
     let parent_count = PARENT_START_COUNT.load(Ordering::Relaxed);

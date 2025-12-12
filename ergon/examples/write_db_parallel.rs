@@ -174,96 +174,94 @@ impl OrderProcessing {
         Ok(())
     }
 
-    // These three operations run in PARALLEL after inventory is reserved
+    // Process child flow results in atomic steps
     #[step(depends_on = "reserve_inventory")]
-    async fn create_shipment(self: Arc<Self>) -> Result<String, String> {
+    async fn process_shipment(self: Arc<Self>, result: String) -> Result<String, String> {
         println!(
-            "[Step 3a] Creating shipment for order {} (parallel)",
+            "[Step 3a] Processing shipment for order {}",
             self.order_id
         );
-
-        let result = self
-            .invoke(ShipmentCreation {
-                order_id: self.order_id.clone(),
-                items: self.items.clone(),
-                analytics_db_path: self.analytics_db_path.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| e.to_string())?;
-
         println!("[Step 3a] ✅ Shipment created: {}", result);
         Ok(result)
     }
 
     #[step(depends_on = "reserve_inventory")]
-    async fn write_revenue_analytics(self: Arc<Self>) -> Result<(), String> {
-        println!("[Step 3b] Writing revenue analytics (parallel)");
-
-        self.invoke(RevenueAnalytics {
-            order_id: self.order_id.clone(),
-            amount: self.amount,
-            analytics_db_path: self.analytics_db_path.clone(),
-        })
-        .result()
-        .await
-        .map_err(|e| e.to_string())?;
-
+    async fn process_revenue_analytics(self: Arc<Self>) -> Result<(), String> {
+        println!("[Step 3b] Revenue analytics processing complete");
         println!("[Step 3b] ✅ Revenue analytics written");
         Ok(())
     }
 
     #[step(depends_on = "reserve_inventory")]
-    async fn write_inventory_analytics(self: Arc<Self>) -> Result<(), String> {
-        println!("[Step 3c] Writing inventory analytics (parallel)");
-
-        self.invoke(InventoryAnalytics {
-            order_id: self.order_id.clone(),
-            items: self.items.clone(),
-            analytics_db_path: self.analytics_db_path.clone(),
-        })
-        .result()
-        .await
-        .map_err(|e| e.to_string())?;
-
+    async fn process_inventory_analytics(self: Arc<Self>) -> Result<(), String> {
+        println!("[Step 3c] Inventory analytics processing complete");
         println!("[Step 3c] ✅ Inventory analytics written");
         Ok(())
     }
 
-    // Notification waits for all parallel operations to complete
-    #[step(depends_on = ["create_shipment", "write_revenue_analytics", "write_inventory_analytics"])]
-    async fn send_notification(self: Arc<Self>) -> Result<(), String> {
+    #[step(depends_on = "reserve_inventory")]
+    async fn process_notification(self: Arc<Self>) -> Result<(), String> {
         println!(
-            "[Step 4] Sending notification to {} (after parallel ops)",
+            "[Step 4] Notification to {} complete",
             self.customer_email
         );
-
-        self.invoke(NotificationSender {
-            order_id: self.order_id.clone(),
-            customer_email: self.customer_email.clone(),
-            analytics_db_path: self.analytics_db_path.clone(),
-        })
-        .result()
-        .await
-        .map_err(|e| e.to_string())?;
-
         println!("[Step 4] ✅ Notification sent");
         Ok(())
     }
 
     #[flow]
     async fn process(self: Arc<Self>) -> Result<(), ExecutionError> {
-        // Parallel execution using DAG
-        dag! {
-            self.register_validate_payment();
-            self.register_reserve_inventory();
-            // These three run in parallel:
-            self.register_create_shipment();
-            self.register_write_revenue_analytics();
-            self.register_write_inventory_analytics();
-            // Waits for all parallel ops:
-            self.register_send_notification()
-        }
+        // Sequential execution with child flows at flow level
+        self.clone().validate_payment().await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone().reserve_inventory().await.map_err(|e| ExecutionError::Failed(e))?;
+
+        // Invoke child flows at flow level (sequential for atomic steps)
+        println!("[Flow] Creating shipment for order {}", self.order_id);
+        let shipment_result = self
+            .invoke(ShipmentCreation {
+                order_id: self.order_id.clone(),
+                items: self.items.clone(),
+                analytics_db_path: self.analytics_db_path.clone(),
+            })
+            .result()
+            .await?;
+
+        println!("[Flow] Writing revenue analytics");
+        self.invoke(RevenueAnalytics {
+            order_id: self.order_id.clone(),
+            amount: self.amount,
+            analytics_db_path: self.analytics_db_path.clone(),
+        })
+        .result()
+        .await?;
+
+        println!("[Flow] Writing inventory analytics");
+        self.invoke(InventoryAnalytics {
+            order_id: self.order_id.clone(),
+            items: self.items.clone(),
+            analytics_db_path: self.analytics_db_path.clone(),
+        })
+        .result()
+        .await?;
+
+        // Process results in atomic steps
+        self.clone().process_shipment(shipment_result).await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone().process_revenue_analytics().await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone().process_inventory_analytics().await.map_err(|e| ExecutionError::Failed(e))?;
+
+        // Invoke notification child flow
+        println!("[Flow] Sending notification to {}", self.customer_email);
+        self.invoke(NotificationSender {
+            order_id: self.order_id.clone(),
+            customer_email: self.customer_email.clone(),
+            analytics_db_path: self.analytics_db_path.clone(),
+        })
+        .result()
+        .await?;
+
+        // Process notification in atomic step
+        self.clone().process_notification().await.map_err(|e| ExecutionError::Failed(e))?;
+        Ok(())
     }
 }
 

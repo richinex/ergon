@@ -50,17 +50,8 @@ impl Order {
         Ok(())
     }
 
-    #[step(depends_on = "validate")]
-    async fn ship(self: Arc<Self>) -> Result<ShippingResult, String> {
-        let result = self
-            .invoke(Shipment {
-                order_id: self.id.clone(),
-                expedited: self.expedited,
-            })
-            .result()
-            .await
-            .map_err(|e| e.to_string())?;
-
+    #[step]
+    async fn process_shipment(self: Arc<Self>, result: ShippingResult) -> Result<ShippingResult, String> {
         // Pattern match on the enum result
         match &result {
             ShippingResult::Success { tracking, eta_days } => {
@@ -90,7 +81,19 @@ impl Order {
     #[flow]
     async fn fulfill(self: Arc<Self>) -> Result<ShippingResult, String> {
         self.clone().validate().await?;
-        self.clone().ship().await
+
+        // Invoke child at flow level
+        let result = self
+            .invoke(Shipment {
+                order_id: self.id.clone(),
+                expedited: self.expedited,
+            })
+            .result()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Process in atomic step
+        self.clone().process_shipment(result).await
     }
 }
 

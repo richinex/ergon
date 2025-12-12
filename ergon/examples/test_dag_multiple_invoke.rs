@@ -1,6 +1,7 @@
-//! Test: Can DAG execution handle multiple steps with .invoke()?
+//! Test: Sequential execution with multiple .invoke() calls
 //!
-//! Uses dag! macro which has stable hash-based step IDs
+//! Note: With atomic steps, .invoke() must be at flow level.
+//! This means we can't use dag! macro when child results are needed in steps.
 
 use chrono::Utc;
 use ergon::executor::{ExecutionError, InvokeChild};
@@ -24,46 +25,45 @@ impl Order {
     }
 
     #[step]
-    async fn process_payment(self: Arc<Self>) -> Result<PaymentResult, String> {
-        println!("[{}] Step: invoking Payment child", ts());
+    async fn finalize_payment(self: Arc<Self>, result: PaymentResult) -> Result<PaymentResult, String> {
+        println!("[{}] Step: processing payment result: {:?}", ts(), result);
+        Ok(result)
+    }
 
-        let result = self
+    #[step]
+    async fn finalize_shipment(self: Arc<Self>, result: ShipmentResult) -> Result<ShipmentResult, String> {
+        println!("[{}] Step: processing shipment result: {:?}", ts(), result);
+        Ok(result)
+    }
+
+    #[flow]
+    async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
+        // Validate first
+        self.clone().validate().await.map_err(|e| ExecutionError::Failed(e))?;
+
+        // Invoke children at flow level
+        println!("[{}] Flow: invoking Payment child", ts());
+        let payment_result = self
             .invoke(PaymentFlow {
                 order_id: self.id.clone(),
                 amount: 99.99,
             })
             .result()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
-        println!("[{}] Step: got payment result: {:?}", ts(), result);
-        Ok(result)
-    }
-
-    #[step]
-    async fn ship(self: Arc<Self>) -> Result<ShipmentResult, String> {
-        println!("[{}] Step: invoking Shipment child", ts());
-
-        let result = self
+        println!("[{}] Flow: invoking Shipment child", ts());
+        let shipment_result = self
             .invoke(ShipmentFlow {
                 order_id: self.id.clone(),
             })
             .result()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
-        println!("[{}] Step: got shipment result: {:?}", ts(), result);
-        Ok(result)
-    }
-
-    #[flow]
-    async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
-        // Use dag! macro for stable hash-based step IDs
-        dag! {
-            self.register_validate();
-            self.register_process_payment();
-            self.register_ship()
-        }
+        // Process results in atomic steps
+        self.clone().finalize_payment(payment_result).await.map_err(|e| ExecutionError::Failed(e))?;
+        self.clone().finalize_shipment(shipment_result).await.map_err(|e| ExecutionError::Failed(e))
     }
 }
 
@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
     let scheduler = Scheduler::new(storage.clone());
 
-    println!("\n=== Test: DAG with Multiple .invoke() Calls ===\n");
+    println!("\n=== Test: Sequential Flow with Multiple .invoke() Calls ===\n");
 
     let order = Order {
         id: "ORD-001".into(),

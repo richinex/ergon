@@ -99,21 +99,6 @@ required-features = ["redis"]
 name = "observability_demo"
 required-features = ["redis"]
 
-[[example]]
-name = "child_flow_multi_worker"
-required-features = ["sqlite"]
-
-[[example]]
-name = "child_flow_multi_worker_redis"
-required-features = ["redis"]
-
-[[example]]
-name = "complex_multi_worker_dag"
-required-features = ["sqlite"]
-
-[[example]]
-name = "complex_multi_worker_dag_redis"
-required-features = ["redis"]
 
 [[example]]
 name = "external_signal_abstraction_redis"
@@ -128,9 +113,6 @@ required-features = ["redis"]
 name = "axum_order_processing"
 required-features = ["sqlite"]
 
-[[example]]
-name = "mwe_custom_error"
-required-features = ["sqlite"]
 
 [[example]]
 name = "dag_limit_sequential"

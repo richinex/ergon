@@ -41,16 +41,8 @@ impl Order {
         Ok(())
     }
 
-    #[step(depends_on = "charge")]
-    async fn ship(self: Arc<Self>) -> Result<Label, String> {
-        let label = self
-            .invoke(Shipment {
-                order_id: self.id.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| e.to_string())?;
-
+    #[step]
+    async fn finalize_shipment(self: Arc<Self>, label: Label) -> Result<Label, String> {
         println!("[{}] shipped: {}", ts(), label.tracking);
         Ok(label)
     }
@@ -59,7 +51,18 @@ impl Order {
     async fn fulfill(self: Arc<Self>) -> Result<Label, String> {
         self.clone().validate().await?;
         self.clone().charge().await?;
-        self.clone().ship().await
+
+        // Invoke child at flow level
+        let label = self
+            .invoke(Shipment {
+                order_id: self.id.clone(),
+            })
+            .result()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Pass result to atomic step
+        self.clone().finalize_shipment(label).await
     }
 }
 

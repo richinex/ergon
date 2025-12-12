@@ -62,7 +62,14 @@ struct Order {
 
 impl Order {
     #[step]
-    async fn ship(self: Arc<Self>) -> Result<String, String> {
+    async fn finalize_shipment(self: Arc<Self>, tracking: String) -> Result<String, String> {
+        println!("Order shipped: {}", tracking);
+        Ok(tracking)
+    }
+
+    #[flow]
+    async fn fulfill(self: Arc<Self>) -> Result<String, String> {
+        // Invoke child at flow level (not in step)
         let tracking = self
             .invoke(Shipment {
                 order_id: self.id.clone(),
@@ -71,13 +78,8 @@ impl Order {
             .await
             .map_err(|e| e.to_string())?;
 
-        println!("Order shipped: {}", tracking);
-        Ok(tracking)
-    }
-
-    #[flow]
-    async fn fulfill(self: Arc<Self>) -> Result<String, String> {
-        self.ship().await
+        // Pass result to atomic step
+        self.finalize_shipment(tracking).await
     }
 }
 

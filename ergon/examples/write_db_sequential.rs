@@ -176,36 +176,15 @@ impl OrderProcessing {
     }
 
     #[step(depends_on = "reserve_inventory")]
-    async fn create_shipment(self: Arc<Self>) -> Result<String, String> {
-        println!("[Step 3] Creating shipment for order {}", self.order_id);
-
-        let result = self
-            .invoke(ShipmentCreation {
-                order_id: self.order_id.clone(),
-                items: self.items.clone(),
-                analytics_db_path: self.analytics_db_path.clone(),
-            })
-            .result()
-            .await
-            .map_err(|e| e.to_string())?;
-
+    async fn process_shipment(self: Arc<Self>, result: String) -> Result<String, String> {
+        println!("[Step 3] Processing shipment result for order {}", self.order_id);
         println!("[Step 3] ✅ Shipment created: {}", result);
         Ok(result)
     }
 
-    #[step(depends_on = "create_shipment")]
-    async fn send_notification(self: Arc<Self>) -> Result<(), String> {
-        println!("[Step 4] Sending notification to {}", self.customer_email);
-
-        self.invoke(NotificationSender {
-            order_id: self.order_id.clone(),
-            customer_email: self.customer_email.clone(),
-            analytics_db_path: self.analytics_db_path.clone(),
-        })
-        .result()
-        .await
-        .map_err(|e| e.to_string())?;
-
+    #[step(depends_on = "reserve_inventory")]
+    async fn process_notification(self: Arc<Self>) -> Result<(), String> {
+        println!("[Step 4] Notification processing complete");
         println!("[Step 4] ✅ Notification sent");
         Ok(())
     }
@@ -215,8 +194,35 @@ impl OrderProcessing {
         // Sequential execution: each step waits for the previous
         self.clone().validate_payment().await?;
         self.clone().reserve_inventory().await?;
-        self.clone().create_shipment().await?;
-        self.clone().send_notification().await?;
+
+        // Invoke child flow at flow level
+        println!("[Flow] Creating shipment for order {}", self.order_id);
+        let shipment_result = self
+            .invoke(ShipmentCreation {
+                order_id: self.order_id.clone(),
+                items: self.items.clone(),
+                analytics_db_path: self.analytics_db_path.clone(),
+            })
+            .result()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Process shipment result in atomic step
+        self.clone().process_shipment(shipment_result).await?;
+
+        // Invoke notification child flow at flow level
+        println!("[Flow] Sending notification to {}", self.customer_email);
+        self.invoke(NotificationSender {
+            order_id: self.order_id.clone(),
+            customer_email: self.customer_email.clone(),
+            analytics_db_path: self.analytics_db_path.clone(),
+        })
+        .result()
+        .await
+        .map_err(|e| e.to_string())?;
+
+        // Process notification in atomic step
+        self.clone().process_notification().await?;
         Ok(())
     }
 }
