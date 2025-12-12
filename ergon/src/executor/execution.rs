@@ -192,6 +192,10 @@ pub(super) async fn check_should_retry<S: ExecutionLog>(
             return Ok(None);
         }
         Ok(false) => {
+            debug!(
+                "Flow {} has no non-retryable errors (or flag not found) - continuing to retry policy check",
+                flow.flow_id
+            );
             // Continue to check retry policy
         }
         Err(e) => {

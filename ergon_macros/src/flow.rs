@@ -148,7 +148,7 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let (__should_cache, __is_retryable_opt) = match __result.as_ref().err() {
                     Some(__e) => {
-                        let __is_retryable = (__e).error_kind().is_retryable(__e);
+                        let __is_retryable = (*__e).error_kind().is_retryable(__e);
                         (!__is_retryable, Some(__is_retryable)) // should_cache = !is_retryable
                     }
                     None => (true, None),

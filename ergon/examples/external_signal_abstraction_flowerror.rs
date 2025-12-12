@@ -1,45 +1,38 @@
-//! External Signal Abstraction Example - Custom Error Variant
+//! External Signal Abstraction Example - FlowError Variant
 //!
-//! This example demonstrates using **custom domain errors** for error handling.
+//! This example demonstrates using **FlowError** for error handling.
 //!
-//! ## Pattern Shown: Custom Errors
+//! ## Pattern Shown: FlowError
 //!
-//! This variant uses `Result<T, DocumentError>` in flows and steps:
-//! - **Simpler** for non-dag examples (no dag! macro or inputs())
-//! - Direct domain error types in signatures
-//! - Framework errors converted at boundaries using `.map_err()`
+//! This variant uses `Result<T, FlowError>` in flows and steps:
+//! - **Required** when using `dag!` macro or `inputs()` feature
+//! - Preserves error type information via serialization
+//! - Allows downcasting back to original error types
+//! - Custom errors auto-convert via `IntoFlowError` trait
 //!
 //! ```rust
 //! #[flow]
-//! async fn process(self: Arc<Self>) -> Result<String, DocumentError> {
-//!     self.validate().await?;  // Returns DocumentError
+//! async fn process(self: Arc<Self>) -> Result<String, FlowError> {
+//!     self.validate().await?;  // DocumentError auto-converts to FlowError
 //!     Ok("done")
 //! }
 //!
 //! #[step]
-//! async fn validate(self: Arc<Self>) -> Result<(), DocumentError> {
-//!     // Convert framework errors at boundaries
-//!     await_external_signal("signal")
-//!         .await
-//!         .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
+//! async fn validate(self: Arc<Self>) -> Result<(), FlowError> {
+//!     if problem {
+//!         return Err(DocumentError::Invalid.into_flow_error());
+//!     }
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Key Features
-//!
-//! - Signal source abstraction via `SignalSource` trait
-//! - Worker integration for automatic signal processing
-//! - Modeling signal outcomes (approved/rejected) vs errors
-//!
 //! ## Compare With
 //!
-//! See `external_signal_abstraction_flowerror.rs` for the FlowError variant
-//! (required when using dag! macro or inputs()).
+//! See `external_signal_abstraction.rs` for the custom error variant.
 //!
 //! ## Run with
 //! ```bash
-//! cargo run --example external_signal_abstraction --features=sqlite
+//! cargo run --example external_signal_abstraction_flowerror --features=sqlite
 //! ```
 
 use async_trait::async_trait;
@@ -50,6 +43,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -63,33 +57,18 @@ static PUBLISH_COUNT: AtomicU32 = AtomicU32::new(0);
 // Custom Error Type
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Error, Serialize, Deserialize)]
 enum DocumentError {
     /// Document was rejected by manager (permanent business decision)
+    #[error("Document rejected by {by} - {reason}")]
     ManagerRejection { by: String, reason: String },
     /// Document was rejected by legal team (permanent business decision)
+    #[error("Legal rejected by {by} - {reason}")]
     LegalRejection { by: String, reason: String },
     /// Infrastructure or framework error (retryable)
+    #[error("Infrastructure error: {0}")]
     Infrastructure(String),
 }
-
-impl std::fmt::Display for DocumentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DocumentError::ManagerRejection { by, reason } => {
-                write!(f, "Document rejected by {} - {}", by, reason)
-            }
-            DocumentError::LegalRejection { by, reason } => {
-                write!(f, "Legal rejected by {} - {}", by, reason)
-            }
-            DocumentError::Infrastructure(msg) => {
-                write!(f, "Infrastructure error: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for DocumentError {}
 
 impl From<DocumentError> for String {
     fn from(err: DocumentError) -> Self {
@@ -226,7 +205,7 @@ struct DocumentApprovalFlow {
 
 impl DocumentApprovalFlow {
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<String, DocumentError> {
+    async fn process(self: Arc<Self>) -> Result<String, FlowError> {
         println!("\n[FLOW] Processing document: {}", self.submission.title);
         println!("       Author: {}", self.submission.author);
 
@@ -245,7 +224,7 @@ impl DocumentApprovalFlow {
             ApprovalOutcome::Rejected { by, reason } => {
                 // Manager rejection is a permanent business decision
                 println!("       [COMPLETE] Document rejected (permanent)");
-                return Err(DocumentError::ManagerRejection { by, reason });
+                return Err(DocumentError::ManagerRejection { by, reason }.into_flow_error());
             }
         }
 
@@ -262,7 +241,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn validate_document(self: Arc<Self>) -> Result<(), DocumentError> {
+    async fn validate_document(self: Arc<Self>) -> Result<(), FlowError> {
         VALIDATE_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Validating document format...");
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -271,12 +250,11 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, DocumentError> {
+    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, FlowError> {
         // This may suspend the flow until signal arrives (or return immediately if cached)
         let decision: ApprovalDecision =
             await_external_signal(&format!("manager_approval_{}", self.submission.document_id))
-                .await
-                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
+                .await?; // ExecutionError auto-converts to FlowError
 
         // Count and log AFTER signal received (only once per flow, not on replay)
         MANAGER_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -300,12 +278,11 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_legal_review(self: Arc<Self>) -> Result<(), DocumentError> {
+    async fn await_legal_review(self: Arc<Self>) -> Result<(), FlowError> {
         // Another suspension point (or immediate return if cached)
         let decision: ApprovalDecision =
             await_external_signal(&format!("legal_review_{}", self.submission.document_id))
-                .await
-                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
+                .await?; // ExecutionError auto-converts to FlowError
 
         // Count and log AFTER signal received (only once per flow, not on replay)
         LEGAL_REVIEW_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -318,7 +295,8 @@ impl DocumentApprovalFlow {
             return Err(DocumentError::LegalRejection {
                 by: decision.approver,
                 reason: decision.comments,
-            });
+            }
+            .into_flow_error());
         }
 
         println!(
@@ -329,7 +307,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn publish_document(self: Arc<Self>) -> Result<(), DocumentError> {
+    async fn publish_document(self: Arc<Self>) -> Result<(), FlowError> {
         PUBLISH_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Publishing document...");
         tokio::time::sleep(Duration::from_millis(100)).await;

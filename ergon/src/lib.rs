@@ -95,8 +95,9 @@ pub use core::kind;
 
 pub use executor::{
     await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt, DeferredRegistry,
-    ExecutionContext, ExecutionError, Executor, Registry, Result as ExecutionResult, Scheduler,
-    StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE, EXECUTION_CONTEXT,
+    ExecutionContext, ExecutionError, FlowError, Executor, IntoFlowError, Registry,
+    Result as ExecutionResult, Scheduler, StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE,
+    EXECUTION_CONTEXT,
 };
 
 pub use graph::{Graph, GraphError, GraphResult, StepId, StepNode};
@@ -136,8 +137,9 @@ pub mod prelude {
 
     pub use crate::executor::{
         await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt,
-        DeferredRegistry, ExecutionContext, ExecutionError, Executor, FlowOutcome, Registry,
-        Result as ExecutionResult, Scheduler, StepFuture, StepHandle, Worker, WorkerHandle,
+        DeferredRegistry, ExecutionContext, ExecutionError, FlowError, Executor, FlowOutcome,
+        IntoFlowError, Registry, Result as ExecutionResult, Scheduler, StepFuture, StepHandle,
+        Worker, WorkerHandle,
     };
 
     pub use crate::graph::{Graph, GraphError, GraphResult, StepId};

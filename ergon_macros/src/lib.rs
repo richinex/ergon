@@ -115,7 +115,7 @@ pub fn derive_flow_type(input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[flow]
-/// async fn process(self: Arc<Self>) -> Result<OrderResult, String> {
+/// async fn process(self: Arc<Self>) -> Result<OrderResult, FlowError> {
 ///     dag! {
 ///         self.register_get_customer();
 ///         self.register_validate_payment();
@@ -135,8 +135,8 @@ pub fn derive_flow_type(input: TokenStream) -> TokenStream {
 ///     self.register_check_inventory(&mut registry);
 ///     self.register_process_order(&mut registry);
 ///     let final_handle = self.register_send_confirmation(&mut registry);
-///     registry.execute().await.map_err(|e| e.to_string())?;
-///     final_handle.resolve().await.map_err(|e| e.to_string())?
+///     registry.execute().await.map_err(|e| e.into_flow_error())?;
+///     final_handle.resolve().await.map_err(|e| e.into_flow_error())?
 /// }
 /// ```
 #[proc_macro]
@@ -217,8 +217,8 @@ pub fn dag(input: TokenStream) -> TokenStream {
             let mut __registry = ergon::DeferredRegistry::new();
             #(#intermediate_stmts)*
             let __final_handle = #final_call_stmt;
-            __registry.execute().await.map_err(|e| e.to_string())?;
-            __final_handle.resolve().await.map_err(|e| e.to_string())?
+            __registry.execute().await.map_err(|e| ergon::IntoFlowError::into_flow_error(e))?;
+            __final_handle.resolve().await.map_err(|e| ergon::IntoFlowError::into_flow_error(e))?
         }
     };
 

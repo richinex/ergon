@@ -37,6 +37,10 @@ pub enum ExecutionError {
     /// An external signal timed out while waiting.
     #[error("signal timeout: {message}")]
     SignalTimeout { message: String },
+
+    /// A flow error with preserved retryability metadata.
+    #[error("{0}")]
+    Flow(FlowError),
 }
 
 // Manual From implementations to convert nested errors to strings
@@ -55,6 +59,151 @@ impl From<crate::core::Error> for ExecutionError {
 impl From<GraphError> for ExecutionError {
     fn from(e: GraphError) -> Self {
         ExecutionError::Graph(e.to_string())
+    }
+}
+
+/// Unified error type for flow execution with type preservation.
+///
+/// This type wraps any serializable error while preserving type information
+/// for potential downcasting. Inspired by Axum's IntoResponse pattern.
+///
+/// Key features:
+/// - Preserves error type name and message
+/// - Stores serialized error data for downcasting
+/// - Tracks retry policy
+/// - Works with any error type that implements Error + Serialize
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowError {
+    /// Type name of the original error (e.g., "OrderError")
+    pub type_name: String,
+    /// Human-readable error message
+    pub message: String,
+    /// Serialized error data for downcasting (JSON bytes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Vec<u8>>,
+    /// Whether this error should trigger a retry
+    pub retryable: bool,
+}
+
+impl FlowError {
+    /// Create a retryable flow error from any serializable error.
+    pub fn retryable<E>(err: E) -> Self
+    where
+        E: std::error::Error + Serialize,
+    {
+        Self {
+            type_name: std::any::type_name::<E>().to_string(),
+            message: err.to_string(),
+            data: serde_json::to_vec(&err).ok(),
+            retryable: true,
+        }
+    }
+
+    /// Create a terminal (non-retryable) flow error from any serializable error.
+    pub fn terminal<E>(err: E) -> Self
+    where
+        E: std::error::Error + Serialize,
+    {
+        Self {
+            type_name: std::any::type_name::<E>().to_string(),
+            message: err.to_string(),
+            data: serde_json::to_vec(&err).ok(),
+            retryable: false,
+        }
+    }
+
+    /// Attempt to downcast this FlowError back to its original type.
+    ///
+    /// Returns Some(E) if:
+    /// - The error data was serialized
+    /// - Deserialization succeeds
+    /// - Type matches
+    ///
+    /// Returns None otherwise.
+    pub fn downcast<E>(&self) -> Option<E>
+    where
+        E: serde::de::DeserializeOwned,
+    {
+        self.data
+            .as_ref()
+            .and_then(|d| serde_json::from_slice(d).ok())
+    }
+}
+
+impl std::fmt::Display for FlowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.type_name, self.message)
+    }
+}
+
+impl std::error::Error for FlowError {}
+
+impl crate::core::RetryableError for FlowError {
+    fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+}
+
+/// Trait for converting errors into FlowError.
+///
+/// This trait is automatically implemented for all types that implement
+/// Error + Serialize, allowing natural use of the `?` operator with any
+/// error type in flow methods.
+///
+/// # Default Behavior
+///
+/// If your error type does NOT implement `RetryableError`:
+/// - All errors are treated as retryable (safe default)
+///
+/// If your error type implements `RetryableError`:
+/// - Uses `is_retryable()` for fine-grained control
+///
+/// This uses autoref specialization (same pattern as RetryableError) to
+/// automatically detect whether the error type implements RetryableError.
+///
+/// Inspired by Axum's IntoResponse pattern.
+pub trait IntoFlowError {
+    fn into_flow_error(self) -> FlowError;
+}
+
+/// Blanket implementation for all serializable errors.
+///
+/// Requires errors to implement RetryableError for fine-grained control.
+/// This is intentionally restrictive - all flow errors should implement RetryableError.
+impl<E> IntoFlowError for E
+where
+    E: std::error::Error + Serialize + crate::core::RetryableError,
+{
+    fn into_flow_error(self) -> FlowError {
+        let is_retryable = self.is_retryable();
+        if is_retryable {
+            FlowError::retryable(self)
+        } else {
+            FlowError::terminal(self)
+        }
+    }
+}
+
+impl From<ExecutionError> for FlowError {
+    fn from(err: ExecutionError) -> Self {
+        err.into_flow_error()
+    }
+}
+
+impl From<FlowError> for String {
+    fn from(err: FlowError) -> Self {
+        err.to_string()
+    }
+}
+
+impl From<String> for FlowError {
+    fn from(s: String) -> Self {
+        FlowError {
+            type_name: "String".to_string(),
+            message: s.clone(),
+            data: Some(serde_json::to_vec(&s).unwrap_or_default()),
+            retryable: true,
+        }
     }
 }
 
@@ -95,6 +244,7 @@ impl From<String> for ExecutionError {
 /// After removing suspension-as-error, ExecutionError only contains:
 /// - Infrastructure errors (Storage, Core, Failed, SignalTimeout): transient, should retry
 /// - Framework permanent errors (Incompatible, TaskPanic, Graph): permanent, should NOT retry
+/// - Flow errors: delegates to FlowError's retryable field
 impl crate::core::RetryableError for ExecutionError {
     fn is_retryable(&self) -> bool {
         match self {
@@ -108,6 +258,9 @@ impl crate::core::RetryableError for ExecutionError {
             ExecutionError::Incompatible(_) => false,
             ExecutionError::TaskPanic(_) => false,
             ExecutionError::Graph(_) => false,
+
+            // Flow errors - delegate to FlowError's retryable field
+            ExecutionError::Flow(flow_err) => flow_err.retryable,
         }
     }
 }

@@ -496,11 +496,24 @@ impl<S: ExecutionLog + 'static> Registry<S> {
                             // Convert user's error type E to ExecutionError
                             let converted_result = result.map(|_| ()).map_err(|e| {
                                 let boxed: BoxError = e.into();
-                                // Try to downcast to ExecutionError to preserve variant info
-                                // (important for NonRetryable errors!)
+
+                                // Try to downcast to ExecutionError first (framework errors)
                                 match boxed.downcast::<ExecutionError>() {
-                                    Ok(exec_err) => *exec_err, // Preserve ExecutionError variant
-                                    Err(other_err) => ExecutionError::Failed(other_err.to_string()),
+                                    Ok(exec_err) => *exec_err,
+                                    Err(boxed) => {
+                                        // Try to downcast to FlowError (user errors with metadata)
+                                        // FlowError preserves retryability info via the retryable field
+                                        match boxed.downcast::<crate::executor::FlowError>() {
+                                            Ok(flow_err) => {
+                                                // Wrap in ExecutionError::Flow to preserve retryability
+                                                ExecutionError::Flow(*flow_err)
+                                            }
+                                            Err(boxed) => {
+                                                // Fall back to generic string conversion
+                                                ExecutionError::Failed(boxed.to_string())
+                                            }
+                                        }
+                                    }
                                 }
                             });
                             FlowOutcome::Completed(converted_result)

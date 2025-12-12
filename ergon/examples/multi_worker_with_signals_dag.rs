@@ -67,6 +67,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 // Global execution counters (for summary statistics only)
@@ -218,70 +219,45 @@ impl OrderAttempts {
 // =============================================================================
 
 /// Comprehensive order fulfillment error type
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Error, Serialize, Deserialize)]
 enum OrderError {
     // Payment errors - transient
+    #[error("Network timeout")]
     PaymentNetworkTimeout,
+    #[error("Payment gateway unavailable")]
     PaymentGatewayUnavailable,
 
     // Payment errors - permanent
+    #[error("Insufficient funds")]
     InsufficientFunds,
+    #[error("Card declined")]
     CardDeclined,
+    #[error("Fraud detected")]
     FraudDetected,
 
     // Inventory errors - transient
+    #[error("Database timeout")]
     InventoryDatabaseTimeout,
+    #[error("Warehouse system down")]
     WarehouseSystemDown,
 
     // Inventory errors - permanent
+    #[error("Out of stock: {product} (requested: {requested})")]
     OutOfStock { product: String, requested: u32 },
+    #[error("Invalid product ID")]
     InvalidProductId,
 
     // Approval errors - permanent
+    #[error("Manager rejected by {by} - {reason}")]
     ManagerRejected { by: String, reason: String },
 
     // Infrastructure errors - transient
+    #[error("Infrastructure error: {0}")]
     Infrastructure(String),
 
     // Generic errors
+    #[error("{0}")]
     Failed(String),
-}
-
-impl std::fmt::Display for OrderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OrderError::PaymentNetworkTimeout => write!(f, "Network timeout"),
-            OrderError::PaymentGatewayUnavailable => write!(f, "Payment gateway unavailable"),
-            OrderError::InsufficientFunds => write!(f, "Insufficient funds"),
-            OrderError::CardDeclined => write!(f, "Card declined"),
-            OrderError::FraudDetected => write!(f, "Fraud detected"),
-            OrderError::InventoryDatabaseTimeout => write!(f, "Database timeout"),
-            OrderError::WarehouseSystemDown => write!(f, "Warehouse system down"),
-            OrderError::OutOfStock { product, requested } => {
-                write!(f, "Out of stock: {} (requested: {})", product, requested)
-            }
-            OrderError::InvalidProductId => write!(f, "Invalid product ID"),
-            OrderError::ManagerRejected { by, reason } => {
-                write!(f, "Manager rejected by {} - {}", by, reason)
-            }
-            OrderError::Infrastructure(msg) => write!(f, "Infrastructure error: {}", msg),
-            OrderError::Failed(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-impl std::error::Error for OrderError {}
-
-impl From<OrderError> for String {
-    fn from(err: OrderError) -> Self {
-        err.to_string()
-    }
-}
-
-impl From<String> for OrderError {
-    fn from(s: String) -> Self {
-        OrderError::Failed(s)
-    }
 }
 
 impl RetryableError for OrderError {
@@ -480,7 +456,7 @@ impl OrderFulfillment {
 
     /// Step 3: Reserve Inventory (runs in parallel with validation)
     #[step(depends_on = "validate_customer")]
-    async fn reserve_inventory(self: Arc<Self>) -> Result<bool, OrderError> {
+    async fn reserve_inventory(self: Arc<Self>) -> Result<bool, FlowError> {
         let count = OrderAttempts::inc_reserve(&self.order_id);
         RESERVE_INVENTORY_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -499,7 +475,7 @@ impl OrderFulfillment {
                 "[{:.3}]      -> Warehouse system timeout (retryable)",
                 timestamp()
             );
-            return Err(OrderError::WarehouseSystemDown);
+            return Err(OrderError::WarehouseSystemDown.into_flow_error());
         }
 
         // Check stock
@@ -508,7 +484,8 @@ impl OrderFulfillment {
             return Err(OrderError::OutOfStock {
                 product: self.product_id.clone(),
                 requested: self.quantity,
-            });
+            }
+            .into_flow_error());
         }
 
         println!("[{:.3}]      -> Inventory reserved", timestamp());
@@ -526,7 +503,7 @@ impl OrderFulfillment {
     /// - Both approval and rejection are valid outcomes (step succeeds)
     /// - The flow decides what rejection means (permanent failure in this case)
     #[step(depends_on = "check_fraud")]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, OrderError> {
+    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, FlowError> {
         let count = OrderAttempts::inc_approval(&self.order_id);
         AWAIT_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -542,8 +519,7 @@ impl OrderFulfillment {
         // Execution #2: await_external_signal() returns cached result immediately
         let decision: ApprovalDecision =
             await_external_signal(&format!("order_approval_{}", self.order_id))
-                .await
-                .map_err(|e| OrderError::Infrastructure(e.to_string()))?;
+                .await?; // ExecutionError auto-converts to FlowError via From trait
 
         // Convert decision to outcome - BOTH approved and rejected are successful step outcomes
         let outcome: ApprovalOutcome = decision.into();
@@ -608,7 +584,7 @@ impl OrderFulfillment {
         self: Arc<Self>,
         approval: ApprovalOutcome,
         tax: f64,
-    ) -> Result<bool, OrderError> {
+    ) -> Result<bool, FlowError> {
         let count = OrderAttempts::inc_payment(&self.order_id);
         PROCESS_PAYMENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -629,7 +605,7 @@ impl OrderFulfillment {
                     by,
                     reason
                 );
-                return Err(OrderError::ManagerRejected { by, reason }); // Non-retryable
+                return Err(OrderError::ManagerRejected { by, reason }.into_flow_error()); // Non-retryable
             }
             ApprovalOutcome::Approved { .. } => {
                 // Continue with payment processing
@@ -644,7 +620,7 @@ impl OrderFulfillment {
                 "[{:.3}]      -> Insufficient funds (permanent)",
                 timestamp()
             );
-            return Err(OrderError::InsufficientFunds);
+            return Err(OrderError::InsufficientFunds.into_flow_error());
         }
 
         println!("[{:.3}]      -> Payment authorized", timestamp());
@@ -659,7 +635,7 @@ impl OrderFulfillment {
     /// - **Execution #1**: Spawns child flow, may suspend until child completes
     /// - **Execution #2**: Replays from beginning, retrieves cached child result
     #[step(depends_on = "process_payment")]
-    async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, OrderError> {
+    async fn generate_shipping_label(self: Arc<Self>) -> Result<ShippingLabel, FlowError> {
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -679,8 +655,7 @@ impl OrderFulfillment {
                 customer_id: self.customer_id.clone(),
             })
             .result()
-            .await
-            .map_err(|e| OrderError::Failed(format!("Label generation failed: {}", e)))?;
+            .await?; // ExecutionError auto-converts to FlowError via From trait
 
         println!(
             "[{:.3}]      -> Label generated: {}",
@@ -698,7 +673,7 @@ impl OrderFulfillment {
     async fn notify_customer(
         self: Arc<Self>,
         label: ShippingLabel,
-    ) -> Result<ShippingLabel, OrderError> {
+    ) -> Result<ShippingLabel, FlowError> {
         let count = OrderAttempts::inc_notify(&self.order_id);
         NOTIFY_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -721,7 +696,7 @@ impl OrderFulfillment {
 
     /// Main DAG-PARALLEL flow with signals
     #[flow]
-    async fn fulfill_order(self: Arc<Self>) -> Result<OrderSummary, OrderError> {
+    async fn fulfill_order(self: Arc<Self>) -> Result<OrderSummary, FlowError> {
         println!(
             "\n[{:.3}] ORDER[{}] Starting DAG-PARALLEL fulfillment",
             timestamp(),

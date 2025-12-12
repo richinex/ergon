@@ -490,7 +490,7 @@ pub use RetryableKind as RetryableResultKind;
 
 // Re-export kind module for macro use
 pub mod kind {
-    pub use super::{DefaultKind, RetryableKind};
+    pub use super::{DefaultKind, RetryableError, RetryableKind};
 }
 
 // =============================================================================

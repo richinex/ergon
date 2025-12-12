@@ -11,74 +11,52 @@ use ergon::storage::SqliteExecutionLog;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::Error;
 
 // =============================================================================
 // Custom Error Type - Rich Enum with Context
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Error, Serialize, Deserialize)]
 enum PaymentError {
+    #[error("Insufficient funds: ${available:.2} available, ${required:.2} required")]
     InsufficientFunds {
         available: f64,
         required: f64,
     },
+    #[error("Network error: {message} (retry after {retry_after_ms}ms)")]
     NetworkError {
         message: String,
         retry_after_ms: u64,
     },
+    #[error("Fraud detected: {reason} (risk score: {risk_score:.2})")]
     FraudDetected {
         reason: String,
         risk_score: f32,
     },
+    #[error("Invalid card: {field} is invalid")]
     InvalidCard {
         field: String,
     },
+    #[error("Service unavailable: {service}")]
     ServiceUnavailable {
         service: String,
     },
 }
 
-impl std::fmt::Display for PaymentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl RetryableError for PaymentError {
+    fn is_retryable(&self) -> bool {
         match self {
-            PaymentError::InsufficientFunds {
-                available,
-                required,
-            } => {
-                write!(
-                    f,
-                    "Insufficient funds: ${:.2} available, ${:.2} required",
-                    available, required
-                )
-            }
-            PaymentError::NetworkError {
-                message,
-                retry_after_ms,
-            } => {
-                write!(
-                    f,
-                    "Network error: {} (retry after {}ms)",
-                    message, retry_after_ms
-                )
-            }
-            PaymentError::FraudDetected { reason, risk_score } => {
-                write!(
-                    f,
-                    "Fraud detected: {} (risk score: {:.2})",
-                    reason, risk_score
-                )
-            }
-            PaymentError::InvalidCard { field } => {
-                write!(f, "Invalid card: {} is invalid", field)
-            }
-            PaymentError::ServiceUnavailable { service } => {
-                write!(f, "Service unavailable: {}", service)
-            }
+            // Transient errors - retryable
+            PaymentError::NetworkError { .. } => true,
+            PaymentError::ServiceUnavailable { .. } => true,
+            // Permanent errors - non-retryable
+            PaymentError::InsufficientFunds { .. } => false,
+            PaymentError::FraudDetected { .. } => false,
+            PaymentError::InvalidCard { .. } => false,
         }
     }
 }
-
-impl std::error::Error for PaymentError {}
 
 // =============================================================================
 // Domain Types
