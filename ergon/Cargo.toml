@@ -104,10 +104,6 @@ required-features = ["redis"]
 name = "external_signal_abstraction_redis"
 required-features = ["redis"]
 
-[[example]]
-name = "complex_multi_worker_dag_with_signals_redis"
-required-features = ["redis"]
-
 
 [[example]]
 name = "axum_order_processing"
