@@ -1,6 +1,8 @@
-//! Test: Can DAG execution handle multiple steps with .invoke()?
+//! Test: Sequential execution with multiple steps with .invoke()
 //!
-//! Uses dag! macro which has stable hash-based step IDs
+//! This is a SEQUENTIAL version (no dag! macro) to isolate the bug.
+//! Compare with test_dag_multiple_invoke.rs to determine if the issue
+//! is with DAG execution or general step suspension/resumption.
 
 use chrono::Utc;
 use ergon::executor::{ExecutionError, InvokeChild};
@@ -8,7 +10,7 @@ use ergon::prelude::*;
 use std::time::Duration;
 
 // =============================================================================
-// Parent Flow - Uses DAG execution
+// Parent Flow - Sequential execution (no DAG)
 // =============================================================================
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
@@ -24,46 +26,52 @@ impl Order {
     }
 
     #[step]
-    async fn process_payment(self: Arc<Self>) -> Result<PaymentResult, String> {
-        println!("[{}] Step: invoking Payment child", ts());
+    async fn finalize_payment(self: Arc<Self>, payment: PaymentResult) -> Result<PaymentResult, String> {
+        println!("[{}] Step: finalized payment: {:?}", ts(), payment);
+        Ok(payment)
+    }
 
-        let result = self
+    #[step]
+    async fn finalize_shipment(self: Arc<Self>, shipment: ShipmentResult) -> Result<ShipmentResult, String> {
+        println!("[{}] Step: finalized shipment: {:?}", ts(), shipment);
+        Ok(shipment)
+    }
+
+    // Sequential flow - NO dag! macro
+    // Invocations happen at FLOW level, not in steps
+    #[flow]
+    async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
+        println!("[{}] FLOW: Starting sequential execution", ts());
+
+        self.clone().validate().await.map_err(|e| ExecutionError::Failed(e))?;
+        println!("[{}] FLOW: Validate complete", ts());
+
+        // Invoke payment child at flow level
+        let payment = self
             .invoke(PaymentFlow {
                 order_id: self.id.clone(),
                 amount: 99.99,
             })
             .result()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
-        println!("[{}] Step: got payment result: {:?}", ts(), result);
-        Ok(result)
-    }
+        self.clone().finalize_payment(payment).await.map_err(|e| ExecutionError::Failed(e))?;
+        println!("[{}] FLOW: Payment complete", ts());
 
-    #[step]
-    async fn ship(self: Arc<Self>) -> Result<ShipmentResult, String> {
-        println!("[{}] Step: invoking Shipment child", ts());
-
-        let result = self
+        // Invoke shipment child at flow level
+        let shipment = self
             .invoke(ShipmentFlow {
                 order_id: self.id.clone(),
             })
             .result()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
-        println!("[{}] Step: got shipment result: {:?}", ts(), result);
+        let result = self.clone().finalize_shipment(shipment).await.map_err(|e| ExecutionError::Failed(e))?;
+        println!("[{}] FLOW: Ship complete", ts());
+
         Ok(result)
-    }
-
-    #[flow]
-    async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
-        // Use dag! macro for stable hash-based step IDs
-        dag! {
-            self.register_validate();
-            self.register_process_payment();
-            self.register_ship()
-        }
     }
 }
 
@@ -136,13 +144,13 @@ fn ts() -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = "/tmp/ergon_test_dag_multiple_invoke.db";
+    let db = "/tmp/ergon_test_sequential_multiple_invoke.db";
     let _ = std::fs::remove_file(db);
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
     let scheduler = Scheduler::new(storage.clone());
 
-    println!("\n=== Test: DAG with Multiple .invoke() Calls ===\n");
+    println!("\n=== Test: SEQUENTIAL with Multiple .invoke() Calls ===\n");
 
     let order = Order {
         id: "ORD-001".into(),

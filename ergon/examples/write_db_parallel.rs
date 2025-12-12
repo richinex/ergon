@@ -22,7 +22,7 @@
 //! cargo run --example write_db_parallel --features sqlite
 //! ```
 
-use ergon::executor::{InvokeChild, Worker};
+use ergon::executor::{ExecutionError, InvokeChild, Worker};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
@@ -252,7 +252,7 @@ impl OrderProcessing {
     }
 
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<(), String> {
+    async fn process(self: Arc<Self>) -> Result<(), ExecutionError> {
         // Parallel execution using DAG
         dag! {
             self.register_validate_payment();

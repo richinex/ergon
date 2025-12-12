@@ -18,6 +18,7 @@
 use async_trait::async_trait;
 use ergon::executor::{await_external_signal, SignalSource};
 use ergon::prelude::*;
+use ergon::{Retryable, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -63,7 +64,7 @@ impl From<DocumentError> for String {
     }
 }
 
-impl RetryableError for DocumentError {
+impl Retryable for DocumentError {
     fn is_retryable(&self) -> bool {
         match self {
             // Business rejections are permanent

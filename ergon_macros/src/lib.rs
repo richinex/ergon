@@ -213,13 +213,38 @@ pub fn dag(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        {
+        async {
             let mut __registry = ergon::DeferredRegistry::new();
             #(#intermediate_stmts)*
             let __final_handle = #final_call_stmt;
-            __registry.execute().await.map_err(|e| ergon::IntoFlowError::into_flow_error(e))?;
-            __final_handle.resolve().await.map_err(|e| ergon::IntoFlowError::into_flow_error(e))?
-        }
+
+            // Execute registry and handle framework/infrastructure errors
+            match __registry.execute().await {
+                Ok(_) => {
+                    // Handle is parameterized by Result<T, UserError>
+                    // resolve() returns Result<Result<T, UserError>, ExecutionError>
+                    // Flatten and convert user errors to ExecutionError::User with downcasting support
+                    match __final_handle.resolve().await {
+                        Ok(user_result) => {
+                            user_result.map_err(|__user_error| {
+                                // Convert user error to ExecutionError::User
+                                #[allow(unused_imports)]
+                                use ::ergon::kind::*;
+                                let __is_retryable = (__user_error).error_kind().is_retryable(&__user_error);
+
+                                ergon::ExecutionError::User {
+                                    type_name: std::any::type_name_of_val(&__user_error).to_string(),
+                                    message: __user_error.to_string(),
+                                    retryable: __is_retryable,
+                                }
+                            })
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        }.await
     };
 
     TokenStream::from(expanded)

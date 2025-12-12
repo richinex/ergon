@@ -7,11 +7,10 @@
 //! When apply_discount is called with Some("SAVE20") on run 1, then None on run 2,
 //! the parameter hash differs and triggers non-determinism detection.
 
+use ergon::executor::{ExecutionError, Executor, FlowOutcome};
 use ergon::prelude::*;
 use futures::FutureExt;
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
 
 // Simulates external state that changes between runs
 static HAS_DISCOUNT_CODE: AtomicBool = AtomicBool::new(true);
@@ -63,7 +62,7 @@ impl PaymentProcessor {
     }
 
     #[flow]
-    async fn process_payment(self: Arc<Self>) -> Result<String, String> {
+    async fn process_payment(self: Arc<Self>) -> Result<String, ExecutionError> {
         dag! {
             self.register_apply_discount();
             self.register_validate_card();

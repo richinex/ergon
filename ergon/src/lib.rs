@@ -87,7 +87,7 @@ pub mod storage;
 // Re-export commonly used types for convenience
 pub use core::{
     deserialize_value, hash_params, retry_with_policy, serialize_value, CallType,
-    Error as CoreError, Invocation, InvocationStatus, Result as CoreResult, RetryableError,
+    Error as CoreError, Invocation, InvocationStatus, Result as CoreResult,
 };
 
 // Re-export the kind module for macro use (autoref specialization)
@@ -95,7 +95,7 @@ pub use core::kind;
 
 pub use executor::{
     await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt, DeferredRegistry,
-    ExecutionContext, ExecutionError, FlowError, Executor, IntoFlowError, Registry,
+    ExecutionContext, ExecutionError, Executor, Registry, Retryable,
     Result as ExecutionResult, Scheduler, StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE,
     EXECUTION_CONTEXT,
 };
@@ -129,35 +129,57 @@ pub use uuid; // Users create Uuid::new_v4() for flow IDs // Users need tokio ru
 /// ```ignore
 /// use ergon::prelude::*;
 /// ```
+///
+/// # What's included:
+/// - **Macros**: `#[flow]`, `#[step]`, `#[dag]`, `FlowType`
+/// - **Core API**: `Scheduler`, `Worker`, `ExecutionContext`, `await_external_signal`
+/// - **Traits**: `ArcStepExt` (extension methods for step futures)
+/// - **Storage**: `ExecutionLog` and concrete implementations
+/// - **External types**: `Arc`, `Uuid`, `Serialize`, `Deserialize`
+///
+/// # What's NOT included (import explicitly when needed):
+/// - **Result types** - Use `ergon::executor::Result`, `ergon::storage::Result`, etc.
+/// - **Error types** - Use `ergon::executor::ExecutionError`, `ergon::storage::StorageError`, etc.
+/// - **Advanced types** - Use `ergon::Invocation`, `ergon::PoolConfig`, etc.
 pub mod prelude {
-    pub use crate::core::{
-        CallType, Error as CoreError, Invocation, InvocationStatus, Result as CoreResult,
-        RetryableError,
-    };
-
-    pub use crate::executor::{
-        await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt,
-        DeferredRegistry, ExecutionContext, ExecutionError, FlowError, Executor, FlowOutcome,
-        IntoFlowError, Registry, Result as ExecutionResult, Scheduler, StepFuture, StepHandle,
-        Worker, WorkerHandle,
-    };
-
-    pub use crate::graph::{Graph, GraphError, GraphResult, StepId};
-
-    pub use crate::storage::{
-        ExecutionLog, InMemoryExecutionLog, PoolConfig, Result as StorageResult, ScheduledFlow,
-        StorageError, TaskStatus,
-    };
-
-    #[cfg(feature = "sqlite")]
-    pub use crate::storage::SqliteExecutionLog;
-
-    #[cfg(feature = "redis")]
-    pub use crate::storage::RedisExecutionLog;
-
+    // ========================================================================
+    // Macros - Essential entry point to the framework
+    // ========================================================================
     pub use ergon_macros::{dag, flow, step, FlowType};
 
-    // Re-export commonly used external types
+    // ========================================================================
+    // Core API - Used in every workflow application
+    // ========================================================================
+    pub use crate::executor::{
+        await_external_signal,   // Signal/suspend API
+        idempotency_key,         // Key generation utilities
+        idempotency_key_parts,
+        ExecutionContext,        // Flow context (passed to every flow)
+        Scheduler,               // Schedule flows
+        Worker,                  // Process flows
+        WorkerHandle,            // Worker lifecycle management
+    };
+
+    // ========================================================================
+    // Traits - Provide common extension methods
+    // ========================================================================
+    pub use crate::executor::ArcStepExt;
+
+    // ========================================================================
+    // Storage - Main abstraction and implementations
+    // ========================================================================
+    pub use crate::storage::ExecutionLog;         // Core storage trait
+    pub use crate::storage::InMemoryExecutionLog; // In-memory implementation
+
+    #[cfg(feature = "sqlite")]
+    pub use crate::storage::SqliteExecutionLog;   // SQLite implementation
+
+    #[cfg(feature = "redis")]
+    pub use crate::storage::RedisExecutionLog;    // Redis implementation
+
+    // ========================================================================
+    // External types - Used throughout workflow code
+    // ========================================================================
     pub use serde::{Deserialize, Serialize};
     pub use std::sync::Arc;
     pub use uuid::Uuid;

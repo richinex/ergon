@@ -44,7 +44,7 @@ mod worker;
 pub use child_flow::{InvokeChild, PendingChild};
 pub use context::{ExecutionContext, LogStepStartParams, CALL_TYPE, EXECUTION_CONTEXT};
 pub use dag::{DagSummary, DeferredRegistry, StepHandle};
-pub use error::{ExecutionError, FlowError, FlowOutcome, IntoFlowError, Result, SuspendReason};
+pub use error::{ExecutionError, FlowOutcome, Result, Retryable, SuspendReason};
 pub use instance::Executor;
 pub use scheduler::Scheduler;
 pub use signal::{

@@ -2,9 +2,11 @@
 //!
 //! Tests if timers in child flows correctly propagate errors to parent.
 
-use ergon::core::{FlowType, InvokableFlow, RetryableError};
+use ergon::core::{FlowType, InvokableFlow};
 use ergon::executor::{schedule_timer_named, InvokeChild, Worker};
 use ergon::prelude::*;
+use ergon::Retryable;
+use ergon::TaskStatus;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,7 +39,7 @@ impl From<TaskError> for String {
     }
 }
 
-impl RetryableError for TaskError {
+impl Retryable for TaskError {
     fn is_retryable(&self) -> bool {
         match self {
             TaskError::Timeout => true,

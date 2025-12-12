@@ -23,11 +23,9 @@
 //! Critical path: fetch → mul/square → cross_mul → cross_add → aggregate → final
 //! Expected time: ~300ms (6 levels × 50ms)
 
+use ergon::executor::{ExecutionError, Executor, FlowOutcome};
 use ergon::prelude::*;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct ComplexDag {
@@ -170,7 +168,7 @@ impl ComplexDag {
     }
 
     #[flow]
-    async fn run(self: Arc<Self>) -> Result<i64, String> {
+    async fn run(self: Arc<Self>) -> Result<i64, ExecutionError> {
         dag! {
             self.register_start();
             self.register_fetch_a();

@@ -23,11 +23,9 @@
 //! Expected: final = 1670
 //! Sequential execution: 10 steps × 50ms = ~500ms
 
+use ergon::executor::{ExecutionError, Executor, FlowOutcome};
 use ergon::prelude::*;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct ComplexDagSequential {
@@ -162,7 +160,7 @@ impl ComplexDagSequential {
     }
 
     #[flow]
-    async fn run(self: Arc<Self>) -> Result<i64, String> {
+    async fn run(self: Arc<Self>) -> Result<i64, ExecutionError> {
         // Sequential execution using dag! macro, but dependencies force sequential order
         dag! {
             self.register_start();

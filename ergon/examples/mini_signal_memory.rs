@@ -17,7 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ergon::executor::{await_external_signal, SignalSource, Worker};
 use ergon::prelude::*;
-use ergon::storage::InMemoryExecutionLog;
+use ergon::TaskStatus;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 

@@ -21,6 +21,7 @@
 //! cargo run --example idempotency_patterns --features=sqlite
 //! ```
 
+use ergon::executor::{ExecutionError, Executor, FlowOutcome};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

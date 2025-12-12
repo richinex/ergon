@@ -36,13 +36,12 @@
 
 use chrono::Utc;
 use dashmap::DashMap;
-use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{ExecutionError, InvokeChild, Worker};
+use ergon::core::InvokableFlow;
+use ergon::executor::{ExecutionError, InvokeChild};
 use ergon::prelude::*;
-use ergon::storage::SqliteExecutionLog;
-use serde::{Deserialize, Serialize};
+use ergon::Retryable;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 // Global execution counters (for summary statistics only)
@@ -166,7 +165,7 @@ impl OrderAttempts {
 }
 
 // =============================================================================
-// Custom Error Types with RetryableError
+// Custom Error Types with Retryable
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,7 +192,7 @@ impl std::fmt::Display for PaymentError {
     }
 }
 
-impl RetryableError for PaymentError {
+impl Retryable for PaymentError {
     fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -232,7 +231,7 @@ impl std::fmt::Display for InventoryError {
     }
 }
 
-impl RetryableError for InventoryError {
+impl ergon::Retryable for InventoryError {
     fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -332,7 +331,7 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 3: Reserve Inventory (runs in parallel, uses RetryableError)
+    /// Step 3: Reserve Inventory (runs in parallel, uses Retryable)
     #[step]
     async fn reserve_inventory(self: Arc<Self>) -> Result<bool, InventoryError> {
         let count = OrderAttempts::inc_reserve(&self.order_id); // Lock released immediately
@@ -369,7 +368,7 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 4: Process Payment (depends on validate_customer, uses RetryableError)
+    /// Step 4: Process Payment (depends on validate_customer, uses Retryable)
     #[step(depends_on = "validate_customer")]
     async fn process_payment(self: Arc<Self>) -> Result<bool, PaymentError> {
         let count = OrderAttempts::inc_payment(&self.order_id); // Lock released immediately
@@ -512,16 +511,10 @@ impl OrderFulfillment {
 // Child Flow - Label Generator
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct LabelGenerator {
     order_id: String,
     customer_id: String,
-}
-
-impl FlowType for LabelGenerator {
-    fn type_id() -> &'static str {
-        "LabelGenerator"
-    }
 }
 
 impl InvokableFlow for LabelGenerator {

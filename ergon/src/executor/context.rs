@@ -307,6 +307,7 @@ impl ExecutionContext {
         method_name: &str,
         current_params: &P,
     ) -> Result<Option<R>> {
+        tracing::debug!("Checking cache for step {} ({}::{})", step, class_name, method_name);
         let invocation = self
             .storage
             .get_invocation(self.id, step)
@@ -314,6 +315,7 @@ impl ExecutionContext {
             .map_err(ExecutionError::from)?;
 
         if let Some(inv) = invocation {
+            tracing::debug!("Found invocation for step {} with status {:?}", step, inv.status());
             // Validate the invocation matches current execution
             self.validate_invocation(&inv, step, class_name, method_name, current_params)?;
 
@@ -322,6 +324,29 @@ impl ExecutionContext {
                 if let Some(return_bytes) = inv.return_value() {
                     let result: R = deserialize_value(return_bytes)?;
                     return Ok(Some(result));
+                }
+            } else if inv.status() == InvocationStatus::WaitingForSignal {
+                // FIX: Check if signal result is available (child completed)
+                // This prevents re-executing step bodies when replaying flows with child invocations
+                tracing::debug!("Step {} is WaitingForSignal, checking for signal params", step);
+                if let Ok(Some(signal_params)) = self.storage.get_signal_params(self.id, step).await {
+                    tracing::debug!("Found signal params for step {}, deserializing", step);
+                    // Deserialize the signal payload to get the result
+                    use crate::executor::child_flow::SignalPayload;
+                    if let Ok(payload) = deserialize_value::<SignalPayload>(&signal_params) {
+                        if payload.success {
+                            // Return the successful result from the child
+                            tracing::debug!("Returning cached result from signal for step {}", step);
+                            let result: R = deserialize_value(&payload.data)?;
+                            return Ok(Some(result));
+                        }
+                        // If child failed, don't return cached result - let it fail again
+                        tracing::debug!("Signal indicates failure for step {}, not caching", step);
+                    } else {
+                        tracing::warn!("Failed to deserialize signal payload for step {}", step);
+                    }
+                } else {
+                    tracing::debug!("No signal params found for step {} yet", step);
                 }
             }
         }

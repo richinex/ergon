@@ -116,8 +116,12 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
                     // Flow completed - check if it set suspend_reason just before completing
                     // (shouldn't happen, but handle it defensively)
                     match context.take_suspend_reason() {
-                        Some(reason) => Poll::Ready(FlowOutcome::Suspended(reason)),
-                        None => Poll::Ready(FlowOutcome::Completed(result)),
+                        Some(reason) => {
+                            Poll::Ready(FlowOutcome::Suspended(reason))
+                        }
+                        None => {
+                            Poll::Ready(FlowOutcome::Completed(result))
+                        }
                     }
                 }
                 Poll::Pending => {

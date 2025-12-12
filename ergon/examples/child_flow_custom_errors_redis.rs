@@ -92,7 +92,7 @@ impl From<CreditCheckError> for String {
     }
 }
 
-impl RetryableError for CreditCheckError {
+impl ergon::Retryable for CreditCheckError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors - should retry
@@ -160,7 +160,7 @@ impl From<IncomeVerificationError> for String {
     }
 }
 
-impl RetryableError for IncomeVerificationError {
+impl ergon::Retryable for IncomeVerificationError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors
@@ -693,7 +693,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //   4. Custom Error Handling
 
 //   - ✅ Domain-specific errors (CreditCheckError, IncomeVerificationError)
-//   - ✅ RetryableError trait implementation
+//   - ✅ Retryable trait implementation
 //   - ✅ Parent catches child errors and makes business decisions
 
 //   5. Retry Logic

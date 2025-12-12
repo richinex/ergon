@@ -106,7 +106,7 @@ pub trait TimerProcessing: Send + Sync {
 /// for workers with and without signal processing enabled.
 #[async_trait::async_trait]
 pub trait SignalProcessing: Send + Sync {
-    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
+    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str, work_notify: &Arc<tokio::sync::Notify>);
 }
 
 // ============================================================================
@@ -206,7 +206,7 @@ impl TimerProcessing for WithTimers {
 
 #[async_trait::async_trait]
 impl SignalProcessing for WithoutSignals {
-    async fn process_signals<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str) {
+    async fn process_signals<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str, _work_notify: &Arc<tokio::sync::Notify>) {
         // No-op: signal processing disabled
     }
 }
@@ -216,7 +216,7 @@ impl<Src> SignalProcessing for WithSignals<Src>
 where
     Src: crate::executor::SignalSource + 'static,
 {
-    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str) {
+    async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str, _work_notify: &Arc<tokio::sync::Notify>) {
         // Get all flows waiting for signals
         let waiting_signals = match storage.get_waiting_signals().await {
             Ok(signals) => signals,
@@ -247,6 +247,7 @@ where
                         self.signal_source.consume_signal(signal_name).await;
 
                         // Try to resume flow
+                        // Note: resume_flow() already calls work_notify internally
                         match storage.resume_flow(signal_info.flow_id).await {
                             Ok(true) => {
                                 debug!(
@@ -501,17 +502,20 @@ impl<S: ExecutionLog + 'static> Registry<S> {
                                 match boxed.downcast::<ExecutionError>() {
                                     Ok(exec_err) => *exec_err,
                                     Err(boxed) => {
-                                        // Try to downcast to FlowError (user errors with metadata)
-                                        // FlowError preserves retryability info via the retryable field
-                                        match boxed.downcast::<crate::executor::FlowError>() {
-                                            Ok(flow_err) => {
-                                                // Wrap in ExecutionError::Flow to preserve retryability
-                                                ExecutionError::Flow(*flow_err)
-                                            }
-                                            Err(boxed) => {
-                                                // Fall back to generic string conversion
-                                                ExecutionError::Failed(boxed.to_string())
-                                            }
+                                        // User error - wrap in ExecutionError::User
+                                        let type_name = std::any::type_name_of_val(&*boxed).to_string();
+                                        let message = boxed.to_string();
+
+                                        // Note: Defaulting to retryable=true because the flow macro
+                                        // has already checked retryability and stored the flag in storage.
+                                        // This conversion happens during task panic recovery where we
+                                        // no longer have access to the original typed error.
+                                        let retryable = true;
+
+                                        ExecutionError::User {
+                                            type_name,
+                                            message,
+                                            retryable,
                                         }
                                     }
                                 }
@@ -920,9 +924,11 @@ impl<
             delayed_task_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             stale_lock_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            // Create channel for dequeue results to prevent concurrent dequeue calls
-            // This ensures exactly ONE dequeue is in-flight at any time
-            let (dequeue_tx, mut dequeue_rx) = tokio::sync::mpsc::unbounded_channel();
+            // Create BOUNDED channel for dequeue results with capacity of 1
+            // This provides natural backpressure: when main loop is busy processing,
+            // send().await will block the dequeue task, preventing channel flooding
+            // When main loop recv()s, it frees space and dequeue task can continue
+            let (dequeue_tx, mut dequeue_rx) = tokio::sync::mpsc::channel(1);
 
             // Spawn dedicated dequeue task to prevent concurrent dequeues
             let dequeue_storage = self.storage.clone();
@@ -939,22 +945,27 @@ impl<
                             // Check if we got a task
                             let got_task = matches!(&result, Ok(Some(_)));
 
-                            // Send result to main loop (non-blocking)
-                            if dequeue_tx.send(result).is_err() {
-                                // Channel closed, exit loop
-                                break;
+                            // Send result to main loop (BLOCKING when channel is full)
+                            // This provides natural backpressure - if main loop is busy, we wait
+                            tokio::select! {
+                                _ = dequeue_token.cancelled() => {
+                                    break;
+                                }
+                                send_result = dequeue_tx.send(result) => {
+                                    if send_result.is_err() {
+                                        // Channel closed, exit loop
+                                        break;
+                                    }
+                                }
                             }
 
-                            // If no task available, wait for notification from storage
-                            // This provides event-driven wakeup instead of polling
-                            // Redis Streams: XREADGROUP already blocks for 1000ms, this adds minimal overhead
-                            // SQLite: Provides instant wakeup when work becomes available
-                            // We use a timeout as a safety measure to prevent infinite waits
+                            // Only wait for notification when no task was found
+                            // When a task was found, channel backpressure already provided coordination
                             if !got_task {
-                                tokio::time::timeout(
+                                let _notified = tokio::time::timeout(
                                     Duration::from_millis(1000),
                                     dequeue_notify.notified()
-                                ).await.ok();
+                                ).await;
                             }
                         }
                     }
@@ -1034,7 +1045,7 @@ impl<
                         // Process pending signals (deliver to waiting flows)
                         {
                             self.signal_state
-                                .process_signals(&self.storage, &self.worker_id)
+                                .process_signals(&self.storage, &self.worker_id, &self.work_notify)
                                 .await;
                         }
 

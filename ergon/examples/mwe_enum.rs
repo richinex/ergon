@@ -7,6 +7,7 @@ use chrono::Utc;
 use ergon::executor::{InvokeChild, Worker};
 use ergon::prelude::*;
 use ergon::storage::SqliteExecutionLog;
+use ergon::TaskStatus;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;

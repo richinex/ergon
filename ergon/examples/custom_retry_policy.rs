@@ -17,6 +17,7 @@
 
 use ergon::core::RetryPolicy;
 use ergon::prelude::*;
+use ergon::TaskStatus;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

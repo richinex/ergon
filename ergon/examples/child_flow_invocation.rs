@@ -43,6 +43,7 @@
 //! - Simple to understand - explicit schedule + await pattern
 
 use chrono::Utc;
+use ergon::executor::ExecutionError;
 use ergon::executor::{Scheduler, Worker};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};

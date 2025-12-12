@@ -18,7 +18,7 @@
 //!
 //! # Retry Behavior
 //! - [`RetryPolicy`]: Configuration for retry attempts and backoff strategy
-//! - [`RetryableError`]: Trait for fine-grained control over which errors trigger retries
+//! - [`crate::executor::Retryable`]: Trait for fine-grained control over which errors trigger retries
 //! - Automatic detection via autoref specialization (no manual configuration needed)
 //! - See [`retry`] module for detailed documentation on the retry system
 //!
@@ -62,7 +62,7 @@ mod serialization;
 pub use error::{Error, Result};
 pub use flow_type::{FlowType, InvokableFlow};
 pub use invocation::{CallType, Invocation, InvocationStatus};
-pub use retry::{retry_with_policy, DefaultKind, RetryPolicy, RetryableError, RetryableKind};
+pub use retry::{retry_with_policy, DefaultKind, RetryPolicy, RetryableKind};
 pub use serialization::{deserialize_value, hash_params, serialize_value};
 
 // Re-export kind module for macro use

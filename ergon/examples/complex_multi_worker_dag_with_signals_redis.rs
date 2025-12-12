@@ -55,6 +55,7 @@ use ergon::core::{FlowType, InvokableFlow};
 use ergon::executor::{await_external_signal, InvokeChild, SignalSource, Worker};
 use ergon::prelude::*;
 use ergon::storage::RedisExecutionLog;
+use ergon::TaskStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -201,7 +202,7 @@ impl OrderAttempts {
 }
 
 // =============================================================================
-// Custom Error Types with RetryableError
+// Custom Error Types with Retryable
 // =============================================================================
 
 /// Comprehensive order fulfillment error type
@@ -271,7 +272,7 @@ impl From<String> for OrderError {
     }
 }
 
-impl RetryableError for OrderError {
+impl ergon::Retryable for OrderError {
     fn is_retryable(&self) -> bool {
         matches!(
             self,

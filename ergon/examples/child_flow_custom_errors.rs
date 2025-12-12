@@ -29,13 +29,12 @@
 //! ```
 
 use chrono::Utc;
-use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{InvokeChild, Worker};
+use ergon::core::InvokableFlow;
+use ergon::executor::InvokeChild;
 use ergon::prelude::*;
-use serde::{Deserialize, Serialize};
+use ergon::{Retryable, TaskStatus};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 // =============================================================================
@@ -92,7 +91,7 @@ impl From<CreditCheckError> for String {
     }
 }
 
-impl RetryableError for CreditCheckError {
+impl Retryable for CreditCheckError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors - should retry
@@ -160,7 +159,7 @@ impl From<IncomeVerificationError> for String {
     }
 }
 
-impl RetryableError for IncomeVerificationError {
+impl ergon::Retryable for IncomeVerificationError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors
@@ -344,17 +343,11 @@ impl LoanApplication {
 // Child Flow 1 - Credit Check (Level 3 API with Custom Errors)
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct CreditCheck {
     applicant_name: String,
     simulate_error: Option<String>,
     // ✨ NO parent_flow_id field!
-}
-
-impl FlowType for CreditCheck {
-    fn type_id() -> &'static str {
-        "CreditCheck"
-    }
 }
 
 impl InvokableFlow for CreditCheck {
@@ -451,17 +444,11 @@ impl CreditCheck {
 // Child Flow 2 - Income Verification (Level 3 API with Custom Errors)
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct IncomeVerification {
     applicant_name: String,
     simulate_error: Option<String>,
     // ✨ NO parent_flow_id field!
-}
-
-impl FlowType for IncomeVerification {
-    fn type_id() -> &'static str {
-        "IncomeVerification"
-    }
 }
 
 impl InvokableFlow for IncomeVerification {

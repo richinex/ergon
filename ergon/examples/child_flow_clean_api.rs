@@ -26,10 +26,8 @@
 //! ```
 
 use chrono::Utc;
-use ergon::executor::{Scheduler, Worker};
+use ergon::executor::ExecutionError;
 use ergon::prelude::*;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::Duration;
 
 // =============================================================================

@@ -490,7 +490,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     async move {
                         // Deserialize input parameters from dependency outputs
                         // Note: Steps return Result<T, E> which gets serialized.
-                        // We deserialize as Result<T, FlowError> then unwrap to get T.
+                        // We deserialize as Result<T, ExecutionError> then unwrap to get T.
                         #(
                             let #input_param_names: #input_param_types = {
                                 let __step_id = ergon::StepId::new(#input_step_names);
@@ -498,8 +498,8 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     .ok_or_else(|| ergon::ExecutionError::Failed(
                                         format!("Missing dependency output for step: {}", #input_step_names)
                                     ))?;
-                                // Try to deserialize as Result<T, FlowError> first (steps return Result)
-                                let __result: std::result::Result<#input_param_types, ergon::FlowError> = ergon::deserialize_value(__bytes)
+                                // Try to deserialize as Result<T, ExecutionError> first (steps return Result)
+                                let __result: std::result::Result<#input_param_types, ergon::ExecutionError> = ergon::deserialize_value(__bytes)
                                     .map_err(|e| ergon::ExecutionError::Core(e.to_string()))?;
                                 // Extract the Ok value (step must have succeeded to be cached)
                                 __result.map_err(|e| ergon::ExecutionError::Failed(

@@ -632,17 +632,23 @@ impl ExecutionLog for SqliteExecutionLog {
     }
 
     async fn dequeue_flow(&self, worker_id: &str) -> Result<Option<super::ScheduledFlow>> {
-        // Single atomic operation using UPDATE...RETURNING (SQLite 3.35+)
-        // This eliminates the race condition where multiple workers SELECT the same row
         let now = Utc::now().timestamp_millis();
 
+        // Use a single atomic UPDATE without a transaction to avoid isolation issues.
+        // SQLite with WAL mode: transactions see a snapshot from BEGIN time.
+        // If we BEGIN, then resume_flow() commits a PENDING flow, we won't see it.
+        // Solution: Single UPDATE...RETURNING is atomic and sees latest committed state.
+
+        // We need to find the oldest PENDING flow and claim it atomically.
+        // SQLite doesn't support UPDATE...ORDER BY...LIMIT directly, so we use a subquery.
+        // This works because the UPDATE happens in a single statement (no transaction isolation).
         let flow_opt = sqlx::query(
             "UPDATE flow_queue
-             SET status = 'RUNNING', locked_by = ?1, updated_at = ?2
+             SET status = 'RUNNING', locked_by = ?, updated_at = ?
              WHERE task_id = (
                  SELECT task_id FROM flow_queue
                  WHERE status = 'PENDING'
-                   AND (scheduled_for IS NULL OR scheduled_for <= ?3)
+                   AND (scheduled_for IS NULL OR scheduled_for <= ?)
                  ORDER BY created_at ASC
                  LIMIT 1
              )
@@ -655,8 +661,7 @@ impl ExecutionLog for SqliteExecutionLog {
         .bind(now)
         .fetch_optional(&self.pool)
         .await?
-        .map(|row| Self::row_to_scheduled_flow(&row))
-        .transpose()?;
+        .and_then(|row| Self::row_to_scheduled_flow(&row).ok());
 
         if let Some(flow) = &flow_opt {
             debug!(
@@ -669,16 +674,30 @@ impl ExecutionLog for SqliteExecutionLog {
     }
 
     async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
-        let result = sqlx::query(
-            "UPDATE flow_queue
-             SET status = ?, updated_at = ?
-             WHERE task_id = ?",
-        )
-        .bind(status.as_str())
-        .bind(Utc::now().timestamp_millis())
-        .bind(task_id.to_string())
-        .execute(&self.pool)
-        .await?;
+        // When marking as SUSPENDED, we need to clear the lock so the flow can be resumed
+        let result = if status == super::TaskStatus::Suspended {
+            sqlx::query(
+                "UPDATE flow_queue
+                 SET status = ?, locked_by = NULL, updated_at = ?
+                 WHERE task_id = ?",
+            )
+            .bind(status.as_str())
+            .bind(Utc::now().timestamp_millis())
+            .bind(task_id.to_string())
+            .execute(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE flow_queue
+                 SET status = ?, updated_at = ?
+                 WHERE task_id = ?",
+            )
+            .bind(status.as_str())
+            .bind(Utc::now().timestamp_millis())
+            .bind(task_id.to_string())
+            .execute(&self.pool)
+            .await?
+        };
 
         if result.rows_affected() == 0 {
             return Err(StorageError::ScheduledFlowNotFound(task_id));
@@ -904,10 +923,12 @@ impl ExecutionLog for SqliteExecutionLog {
 
     async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
         let rows = sqlx::query(
-            "SELECT id, step, timer_name
-             FROM execution_log
-             WHERE status = 'WAITING_FOR_SIGNAL'
-             ORDER BY timestamp ASC
+            "SELECT el.id, el.step, el.timer_name
+             FROM execution_log el
+             JOIN flow_queue fq ON el.id = fq.flow_id
+             WHERE el.status = 'WAITING_FOR_SIGNAL'
+               AND fq.status = 'SUSPENDED'
+             ORDER BY el.timestamp ASC
              LIMIT 100",
         )
         .fetch_all(&self.pool)

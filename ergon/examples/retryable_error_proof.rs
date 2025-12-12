@@ -1,7 +1,7 @@
-//! RetryableError Trait - Proof of Concept
+//! Retryable Trait - Proof of Concept
 //!
 //! This example demonstrates:
-//! - Concrete evidence that RetryableError trait controls retry behavior
+//! - Concrete evidence that Retryable trait controls retry behavior
 //! - Differential behavior between retryable and non-retryable errors
 //! - Execution counters proving retry logic respects is_retryable()
 //! - Retryable errors are automatically retried (ApiTimeout)
@@ -19,7 +19,7 @@
 //! - Retryable errors (STEP_A_EXECUTIONS = 3) are retried automatically
 //! - Non-retryable errors (STEP_B_EXECUTIONS = 1) fail immediately
 //! - The is_retryable() method controls whether an error triggers retry
-//! - RetryPolicy configuration respects the RetryableError trait
+//! - RetryPolicy configuration respects the Retryable trait
 //! - Framework distinguishes transient failures from permanent failures
 //! - This proves the trait is not just documentation but enforced behavior
 //!
@@ -30,7 +30,7 @@
 
 use ergon::core::RetryPolicy;
 use ergon::prelude::*;
-use ergon::RetryableError;
+use ergon::Retryable;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,7 +40,7 @@ static STEP_A_EXECUTIONS: AtomicU32 = AtomicU32::new(0);
 static STEP_B_EXECUTIONS: AtomicU32 = AtomicU32::new(0);
 
 // ============================================================================
-// Custom Error Type with RetryableError Trait
+// Custom Error Type with Retryable Trait
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ impl std::fmt::Display for InventoryError {
 impl std::error::Error for InventoryError {}
 
 /// This is the KEY implementation - it determines retry behavior
-impl RetryableError for InventoryError {
+impl Retryable for InventoryError {
     fn is_retryable(&self) -> bool {
         match self {
             InventoryError::ApiTimeout => {
@@ -159,7 +159,7 @@ impl OrderB {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nRetryableError Trait - Proof of Concept");
+    println!("\nRetryable Trait - Proof of Concept");
     println!("========================================");
     println!("Testing: Retryable error (ApiTimeout) vs Non-retryable error (ItemNotFound)\n");
 
@@ -253,7 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nResult:");
     if step_a_count > step_b_count && step_b_count == 1 {
-        println!("  PROOF CONFIRMED - RetryableError working correctly");
+        println!("  PROOF CONFIRMED - Retryable working correctly");
         println!(
             "  Retryable: {} attempts | Non-retryable: {} attempt",
             step_a_count, step_b_count

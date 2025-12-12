@@ -174,7 +174,7 @@ impl OrderAttempts {
 }
 
 // =============================================================================
-// Custom Error Types with RetryableError
+// Custom Error Types with Retryable
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,7 +201,7 @@ impl std::fmt::Display for PaymentError {
     }
 }
 
-impl RetryableError for PaymentError {
+impl ergon::Retryable for PaymentError {
     fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -240,7 +240,7 @@ impl std::fmt::Display for InventoryError {
     }
 }
 
-impl RetryableError for InventoryError {
+impl ergon::Retryable for InventoryError {
     fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -340,7 +340,7 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 3: Reserve Inventory (runs in parallel, uses RetryableError)
+    /// Step 3: Reserve Inventory (runs in parallel, uses Retryable)
     #[step]
     async fn reserve_inventory(self: Arc<Self>) -> Result<bool, InventoryError> {
         let count = OrderAttempts::inc_reserve(&self.order_id); // Lock released immediately
@@ -377,7 +377,7 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 4: Process Payment (depends on validate_customer, uses RetryableError)
+    /// Step 4: Process Payment (depends on validate_customer, uses Retryable)
     #[step(depends_on = "validate_customer")]
     async fn process_payment(self: Arc<Self>) -> Result<bool, PaymentError> {
         let count = OrderAttempts::inc_payment(&self.order_id); // Lock released immediately

@@ -282,14 +282,18 @@ pub(super) async fn handle_suspended_flow<S: ExecutionLog>(
                         inv.step()
                     );
                     match storage.resume_flow(flow_id).await {
-                        Ok(true) => debug!("Resumed flow {} with pending signal", flow_id),
+                        Ok(true) => {
+                            debug!("Resumed flow {} with pending signal", flow_id);
+                        }
                         Ok(false) => {
                             debug!("Flow {} already resumed by another worker", flow_id)
                         }
-                        Err(e) => warn!(
-                            "Failed to resume flow {} with pending signal: {}",
-                            flow_id, e
-                        ),
+                        Err(e) => {
+                            warn!(
+                                "Failed to resume flow {} with pending signal: {}",
+                                flow_id, e
+                            );
+                        }
                     }
                     break;
                 }
@@ -343,7 +347,7 @@ pub(super) async fn handle_flow_error<S: ExecutionLog>(
     );
 
     // Mark non-retryable errors in storage using is_retryable() trait method
-    use crate::core::RetryableError;
+    use crate::executor::Retryable;
     if !error.is_retryable() {
         if let Err(e) = storage.update_is_retryable(flow.flow_id, 0, false).await {
             warn!(

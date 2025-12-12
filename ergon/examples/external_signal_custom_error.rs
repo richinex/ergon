@@ -3,7 +3,7 @@
 //! This example demonstrates:
 //! - Using external signals to suspend and resume flows
 //! - Properly modeling signal outcomes (approved/rejected) as DATA, not errors
-//! - Using custom error types with `RetryableError` trait
+//! - Using custom error types with `Retryable` trait
 //! - Converting `ExecutionError` to custom errors using `From` trait
 //! - Distinguishing between retryable failures and permanent rejections
 //! - Worker integration with `.with_signals()`
@@ -15,7 +15,7 @@
 //! - **Error**: Network timeout, validation failure → `Err(LoanError::...)`
 //!
 //! ### Custom Errors with Signals
-//! - Define custom error types with `RetryableError` trait
+//! - Define custom error types with `Retryable` trait
 //! - Convert ExecutionError at framework boundaries using `.map_err()`
 //! - The step macro now checks `suspend_reason` BEFORE caching, so suspension works correctly
 //! - Use `is_retryable()` to control retry behavior for business logic errors
@@ -42,6 +42,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use ergon::executor::{await_external_signal, SignalSource};
 use ergon::prelude::*;
+use ergon::{Retryable, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,8 +53,6 @@ use uuid::Uuid;
 // ============================================================================
 // Custom Error Type
 // ============================================================================
-
-use ergon::core::RetryableError;
 
 /// Custom error type for loan processing
 ///
@@ -79,7 +78,7 @@ impl std::fmt::Display for LoanError {
 
 impl std::error::Error for LoanError {}
 
-impl RetryableError for LoanError {
+impl Retryable for LoanError {
     fn is_retryable(&self) -> bool {
         match self {
             LoanError::Infrastructure(_) => true, // Infrastructure errors should retry
@@ -650,7 +649,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   1. Signal outcomes (approved/rejected) are Ok(LoanDecision)");
     println!("   2. Technical failures are Err(LoanError)");
     println!("   3. Flow decides what outcomes mean (rejection = BusinessRejection error)");
-    println!("   4. RetryableError::is_retryable() controls retry behavior");
+    println!("   4. Retryable::is_retryable() controls retry behavior");
     println!("   5. Custom errors provide rich context for error handling\n");
 
     storage.close().await?;

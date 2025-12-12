@@ -174,7 +174,7 @@ impl OrderAttempts {
 }
 
 // =============================================================================
-// Custom Error Types with RetryableError
+// Custom Error Types with Retryable
 // =============================================================================
 
 /// Comprehensive order fulfillment error type
@@ -234,7 +234,7 @@ impl From<String> for OrderError {
     }
 }
 
-impl RetryableError for OrderError {
+impl ergon::Retryable for OrderError {
     fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -331,7 +331,7 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 3: Reserve Inventory (runs in parallel, uses RetryableError)
+    /// Step 3: Reserve Inventory (runs in parallel, uses Retryable)
     #[step]
     async fn reserve_inventory(self: Arc<Self>) -> Result<bool, OrderError> {
         let count = OrderAttempts::inc_reserve(&self.order_id); // Lock released immediately
@@ -368,7 +368,7 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 4: Process Payment (depends on validate_customer, uses RetryableError)
+    /// Step 4: Process Payment (depends on validate_customer, uses Retryable)
     #[step(depends_on = "validate_customer")]
     async fn process_payment(self: Arc<Self>) -> Result<bool, OrderError> {
         let count = OrderAttempts::inc_payment(&self.order_id); // Lock released immediately

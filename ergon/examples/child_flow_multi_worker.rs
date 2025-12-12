@@ -33,12 +33,11 @@
 //! ```
 
 use chrono::Utc;
-use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{InvokeChild, Worker};
+use ergon::core::InvokableFlow;
+use ergon::executor::InvokeChild;
 use ergon::prelude::*;
-use serde::{Deserialize, Serialize};
+use ergon::TaskStatus;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 // Counters to track execution
@@ -162,15 +161,9 @@ impl OrderFulfillment {
 // Child Flow 1 - Inventory Check
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct InventoryCheck {
     product_id: String,
-}
-
-impl FlowType for InventoryCheck {
-    fn type_id() -> &'static str {
-        "InventoryCheck"
-    }
 }
 
 impl InvokableFlow for InventoryCheck {
@@ -218,16 +211,10 @@ impl InventoryCheck {
 // Child Flow 2 - Payment Processing
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct PaymentProcessing {
     customer_email: String,
     amount: f64,
-}
-
-impl FlowType for PaymentProcessing {
-    fn type_id() -> &'static str {
-        "PaymentProcessing"
-    }
 }
 
 impl InvokableFlow for PaymentProcessing {
@@ -274,16 +261,10 @@ impl PaymentProcessing {
 // Child Flow 3 - Shipping Label
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct ShippingLabel {
     order_id: String,
     customer_email: String,
-}
-
-impl FlowType for ShippingLabel {
-    fn type_id() -> &'static str {
-        "ShippingLabel"
-    }
 }
 
 impl InvokableFlow for ShippingLabel {

@@ -1,10 +1,10 @@
-//! Distributed Worker Failover Demo with RetryableError
+//! Distributed Worker Failover Demo with Retryable
 //!
 //! This example demonstrates:
 //! - Distributed execution with multiple workers polling the same queue
 //! - Automatic failover when a worker crashes mid-execution
 //! - Step-level resumability ensuring completed steps are not re-executed
-//! - RetryableError trait for distinguishing transient vs permanent errors
+//! - Retryable trait for distinguishing transient vs permanent errors
 //! - Durable retry state that survives worker crashes
 //! - Zero duplicate operations (payment not re-charged after failover)
 //!
@@ -18,7 +18,7 @@
 //! ## Key Takeaways
 //! - Multiple workers can safely process from the same queue
 //! - Worker crashes don't lose progress - completed steps stay completed
-//! - RetryableError trait controls which errors trigger retry
+//! - Retryable trait controls which errors trigger retry
 //! - Transient errors (crashes, network timeouts) are automatically retried
 //! - Permanent errors (validation failures) fail immediately without retry
 //! - Exponential backoff prevents thundering herd during retries
@@ -32,7 +32,7 @@
 
 use ergon::core::RetryPolicy;
 use ergon::prelude::*;
-use ergon::RetryableError;
+use ergon::Retryable;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,12 +43,12 @@ static INVENTORY_RESERVE_COUNT: AtomicU32 = AtomicU32::new(0);
 static WORKER_A_CRASHED: AtomicBool = AtomicBool::new(false);
 
 // ============================================================================
-// Custom Error Type with RetryableError Trait
+// Custom Error Type with Retryable Trait
 // ============================================================================
 
 /// Custom error type that distinguishes between transient and permanent errors.
 ///
-/// This demonstrates Ergon's `RetryableError` trait which allows steps to specify
+/// This demonstrates Ergon's `Retryable` trait which allows steps to specify
 /// which errors should trigger retry and which should fail immediately.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum InventoryError {
@@ -103,12 +103,12 @@ impl std::fmt::Display for InventoryError {
 
 impl std::error::Error for InventoryError {}
 
-/// Implement RetryableError to distinguish transient from permanent errors.
+/// Implement Retryable to distinguish transient from permanent errors.
 ///
 /// This is the KEY feature - errors that return `is_retryable() == false` will be
 /// cached immediately and won't trigger retry, while retryable errors will trigger
 /// the worker-level retry mechanism.
-impl RetryableError for InventoryError {
+impl Retryable for InventoryError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors - should retry

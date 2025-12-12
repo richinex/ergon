@@ -14,19 +14,19 @@
 //    - Simple: `retry = 3` for up to 3 attempts with standard backoff
 //    - Advanced: Custom `RetryPolicy` for full control
 //
-// 2. RETRYABLE ERROR TRAIT: `RetryableError` trait
+// 2. RETRYABLE ERROR TRAIT: `Retryable` trait
 //    - Controls WHICH errors should be retried
 //    - Implement on your error type for fine-grained control
 //    - Each error variant can specify if it's retryable
 //
 // 3. SIMPLE OVERRIDE: `#[step(cache_errors)]`
 //    - Caches ALL errors immediately (treats them as permanent)
-//    - Overrides both RetryPolicy and RetryableError
+//    - Overrides both RetryPolicy and Retryable
 //
 // This follows Dave Cheney's principle "APIs should be hard to misuse":
 // - Safe default: no automatic retries (backward compatible)
 // - Simple retry: `retry = 3` (up to 3 attempts with standard backoff)
-// - Advanced control: `RetryableError` trait + custom `RetryPolicy`
+// - Advanced control: `Retryable` trait + custom `RetryPolicy`
 //
 // IMPLEMENTATION:
 //
@@ -34,7 +34,7 @@
 // 1. If `cache_errors` is set: always cache the result, no retries
 // 2. If result is Ok: always cache
 // 3. If result is Err and retry_policy is set:
-//    - Check if error.is_retryable() (if RetryableError implemented)
+//    - Check if error.is_retryable() (if Retryable implemented)
 //    - If is_retryable() == false: cache error, stop retrying
 //    - If is_retryable() == true AND attempts < max_attempts: retry with backoff
 //    - If is_retryable() == true AND attempts >= max_attempts: return error
@@ -254,132 +254,23 @@ impl From<u32> for RetryPolicy {
 }
 
 // =============================================================================
-// RETRYABLE ERROR TRAIT
-// =============================================================================
-
-/// Trait for error types to specify whether they should trigger a retry.
-///
-/// Implement this trait on your error types to get fine-grained control over
-/// which errors are retried vs. cached as permanent failures.
-///
-/// # Default Behavior (without this trait)
-///
-/// If your error type does NOT implement `RetryableError`:
-/// - ALL errors trigger retry (not cached)
-/// - Use `#[step(cache_errors)]` to cache all errors
-///
-/// # With RetryableError
-///
-/// If your error type implements `RetryableError`:
-/// - `is_retryable() == true`: Error is NOT cached, step will retry
-/// - `is_retryable() == false`: Error IS cached, step won't retry
-///
-/// # Example
-///
-/// ```rust
-/// use ergon::RetryableError;
-///
-/// #[derive(Debug)]
-/// enum PaymentError {
-///     // Transient errors - should retry
-///     NetworkTimeout,
-///     ServiceUnavailable,
-///     RateLimited,
-///
-///     // Permanent errors - should NOT retry
-///     InsufficientFunds,
-///     InvalidCard,
-///     FraudDetected,
-/// }
-///
-/// impl RetryableError for PaymentError {
-///     fn is_retryable(&self) -> bool {
-///         matches!(self,
-///             PaymentError::NetworkTimeout |
-///             PaymentError::ServiceUnavailable |
-///             PaymentError::RateLimited
-///         )
-///     }
-/// }
-/// ```
-///
-/// # Design Rationale
-///
-/// This approach follows Dave Cheney's principle "APIs should be hard to misuse":
-/// - The safe default (retry all errors) requires no extra code
-/// - Fine-grained control requires explicit implementation
-/// - The logic lives with the error type, not scattered in step attributes
-pub trait RetryableError {
-    /// Returns true if this error is transient and the operation should be retried.
-    ///
-    /// - `true`: Error is transient (network timeout, service unavailable).
-    ///   The step will NOT be cached, allowing retry on next execution.
-    /// - `false`: Error is permanent (invalid input, not found, business rule violation).
-    ///   The step WILL be cached, preventing retry.
-    fn is_retryable(&self) -> bool;
-}
-
-// Implement RetryableError for common error types
-
-impl RetryableError for std::io::Error {
-    fn is_retryable(&self) -> bool {
-        use std::io::ErrorKind;
-        matches!(
-            self.kind(),
-            ErrorKind::ConnectionRefused
-                | ErrorKind::ConnectionReset
-                | ErrorKind::ConnectionAborted
-                | ErrorKind::NotConnected
-                | ErrorKind::TimedOut
-                | ErrorKind::Interrupted
-                | ErrorKind::WouldBlock
-        )
-    }
-}
-
-impl RetryableError for String {
-    /// Strings are retryable by default - allowing for transient error messages.
-    ///
-    /// Since String is a generic error type, we cannot distinguish between
-    /// transient errors ("connection timeout") and permanent errors ("invalid input").
-    /// Following the "safe default" principle, we treat all String errors as retryable.
-    ///
-    /// Use `#[step(cache_errors)]` or a custom error type for permanent failures.
-    fn is_retryable(&self) -> bool {
-        true
-    }
-}
-
-impl<T: RetryableError> RetryableError for Box<T> {
-    fn is_retryable(&self) -> bool {
-        (**self).is_retryable()
-    }
-}
-
-impl<T: RetryableError> RetryableError for std::sync::Arc<T> {
-    fn is_retryable(&self) -> bool {
-        (**self).is_retryable()
-    }
-}
-
-// =============================================================================
 // Autoref-based Specialization for Cache Behavior
 // =============================================================================
 //
 // This technique allows automatic detection of whether an error type implements
-// `RetryableError`, without requiring extra attributes on the step.
+// `Retryable`, without requiring extra attributes on the step.
 //
 // Based on dtolnay's autoref specialization used in anyhow:
 // https://github.com/dtolnay/anyhow/blob/master/src/kind.rs
 //
 // HOW IT WORKS:
 // We use two traits with the same method name but different Self types:
-// - RetryableKind: implemented for E where E: RetryableError (higher priority)
+// - RetryableKind: implemented for E where E: Retryable (higher priority)
 // - DefaultKind: implemented for &E for all E (lower priority, needs autoref)
 //
 // When the macro calls `(&error).error_kind().should_cache(&error)`:
-// - If E: RetryableError -> RetryableKind method takes &E, matches directly
-// - If E: !RetryableError -> DefaultKind method takes &&E, needs autoref
+// - If E: Retryable -> RetryableKind method takes &E, matches directly
+// - If E: !Retryable -> DefaultKind method takes &&E, needs autoref
 //
 // CRITICAL: The macro must call error_kind() on the ERROR TYPE, not on Result.
 // The macro generates:
@@ -397,7 +288,7 @@ impl<T: RetryableError> RetryableError for std::sync::Arc<T> {
 // For &E calling error_kind():
 // - RetryableKind: Self=E, method takes &self = &E, matches &E directly
 // - DefaultKind: Self=&E, method takes &self = &&E, needs autoref from &E
-// RetryableKind wins if E: RetryableError!
+// RetryableKind wins if E: Retryable!
 
 /// Tag for retryable error handling (uses is_retryable() for fine-grained control).
 pub struct RetryableTag;
@@ -405,10 +296,10 @@ pub struct RetryableTag;
 /// Tag for default error handling (cache Ok, retry all Err).
 pub struct DefaultTag;
 
-/// Trait for error types that implement RetryableError (higher priority).
+/// Trait for error types that implement Retryable (higher priority).
 ///
 /// When calling `(&error).error_kind()` where error is owned:
-/// - This trait is implemented for E where E: RetryableError
+/// - This trait is implemented for E where E: Retryable
 /// - The method takes &self = &E
 /// - &E matches the call (&error) directly
 ///
@@ -435,33 +326,33 @@ pub trait DefaultKind: Sized {
     }
 }
 
-// Higher priority: implemented for E where E: RetryableError
-// When calling (error).error_kind() where error: E and E: RetryableError:
+// Higher priority: implemented for E where E: Retryable
+// When calling (error).error_kind() where error: E and E: Retryable:
 // - error has type E
 // - E implements RetryableKind directly
-// - Returns RetryableTag which delegates to user's RetryableError impl
-impl<E: RetryableError> RetryableKind for E {}
+// - Returns RetryableTag which delegates to user's Retryable impl
+impl<E: crate::executor::Retryable> RetryableKind for E {}
 
 // Lower priority: implemented for &E for any E (via autoref)
-// When calling (error).error_kind() where error: E and E does NOT implement RetryableError:
+// When calling (error).error_kind() where error: E and E does NOT implement Retryable:
 // - error has type E
-// - E doesn't implement RetryableKind (no RetryableError bound)
+// - E doesn't implement RetryableKind (no Retryable bound)
 // - Rust autorefs to &E to match this impl
 // - Returns DefaultTag (all errors retryable by default)
 impl<E> DefaultKind for &E {}
 
 impl RetryableTag {
     /// Returns true if the error should be cached (permanent error).
-    /// Uses RetryableError::is_retryable() for fine-grained control.
+    /// Uses Retryable::is_retryable() for fine-grained control.
     #[inline]
-    pub fn should_cache<E: RetryableError>(self, error: &E) -> bool {
+    pub fn should_cache<E: crate::executor::Retryable>(self, error: &E) -> bool {
         !error.is_retryable() // Permanent errors cached, transient errors retry
     }
 
     /// Returns true if the error is retryable (transient error).
-    /// Uses RetryableError::is_retryable() for fine-grained control.
+    /// Uses Retryable::is_retryable() for fine-grained control.
     #[inline]
-    pub fn is_retryable<E: RetryableError>(self, error: &E) -> bool {
+    pub fn is_retryable<E: crate::executor::Retryable>(self, error: &E) -> bool {
         error.is_retryable() // Delegate to the trait implementation
     }
 }
@@ -490,7 +381,7 @@ pub use RetryableKind as RetryableResultKind;
 
 // Re-export kind module for macro use
 pub mod kind {
-    pub use super::{DefaultKind, RetryableError, RetryableKind};
+    pub use super::{DefaultKind, RetryableKind};
 }
 
 // =============================================================================
@@ -505,7 +396,7 @@ use std::future::Future;
 /// 1. Attempts to execute the operation
 /// 2. On success, returns the result
 /// 3. On failure:
-///    - Checks if the error is retryable (using RetryableError trait)
+///    - Checks if the error is retryable (using Retryable trait)
 ///    - Checks if we have attempts remaining (using RetryPolicy)
 ///    - If both conditions are met, delays and retries
 ///    - Otherwise, returns the error
@@ -514,7 +405,7 @@ use std::future::Future;
 ///
 /// * `F` - The async operation to execute
 /// * `T` - The success type
-/// * `E` - The error type (must implement RetryableError)
+/// * `E` - The error type (must implement Retryable)
 ///
 /// # Arguments
 ///
@@ -538,7 +429,7 @@ pub async fn retry_with_policy<F, Fut, T, E>(
 where
     F: FnMut(u32) -> Fut,
     Fut: Future<Output = Result<T, E>>,
-    E: RetryableError + std::fmt::Debug,
+    E: crate::executor::Retryable + std::fmt::Debug,
 {
     // If no retry policy, execute once
     let Some(policy) = retry_policy else {
@@ -600,6 +491,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::Retryable;
 
     // =============================================================================
     // RETRY POLICY TESTS
@@ -816,10 +708,10 @@ mod tests {
 
     #[test]
     fn test_autoref_specialization_with_retryable_error() {
-        // Test autoref specialization: when E: RetryableError, uses is_retryable()
+        // Test autoref specialization: when E: Retryable, uses is_retryable()
         // The macro matches on Result and calls (&*error).error_kind().should_cache(&*error)
 
-        // io::Error implements RetryableError
+        // io::Error implements Retryable
         // TimedOut is retryable -> should NOT cache (allow retry)
         let timeout_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
         assert!(!timeout_err.error_kind().should_cache(&timeout_err));
@@ -828,7 +720,7 @@ mod tests {
         let not_found_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
         assert!(not_found_err.error_kind().should_cache(&not_found_err));
 
-        // String implements RetryableError (always returns true = retryable)
+        // String implements Retryable (always returns true = retryable)
         // String.is_retryable() returns true -> should NOT cache (transient error)
         let string_err = "error".to_string();
         assert!(!string_err.error_kind().should_cache(&string_err));
@@ -836,13 +728,13 @@ mod tests {
 
     #[test]
     fn test_autoref_specialization_without_retryable_error() {
-        // Test autoref specialization: when E: !RetryableError, uses default behavior
-        // This tests with an error type that does NOT implement RetryableError
+        // Test autoref specialization: when E: !Retryable, uses default behavior
+        // This tests with an error type that does NOT implement Retryable
 
         #[derive(Debug)]
         struct CustomError;
 
-        // CustomError doesn't implement RetryableError -> default behavior
+        // CustomError doesn't implement Retryable -> default behavior
         // Default: Err is NOT cached (allows retry for all errors)
         let custom_err = CustomError;
         assert!(!(&custom_err).error_kind().should_cache(&custom_err));
@@ -853,7 +745,7 @@ mod tests {
         // Test the exact pattern the macro generates
         // This simulates what happens inside the macro-generated code
 
-        // Case 1: Error implements RetryableError, is_retryable = true (transient)
+        // Case 1: Error implements Retryable, is_retryable = true (transient)
         let result1: std::result::Result<i32, std::io::Error> =
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"));
         let should_cache1 = match &result1 {
@@ -862,7 +754,7 @@ mod tests {
         };
         assert!(!should_cache1); // Transient error should NOT be cached
 
-        // Case 2: Error implements RetryableError, is_retryable = false (permanent)
+        // Case 2: Error implements Retryable, is_retryable = false (permanent)
         let result2: std::result::Result<i32, std::io::Error> = Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "not found",
@@ -873,7 +765,7 @@ mod tests {
         };
         assert!(should_cache2); // Permanent error should be cached
 
-        // Case 3: Error does NOT implement RetryableError
+        // Case 3: Error does NOT implement Retryable
         #[derive(Debug)]
         struct CustomError;
         let result3: std::result::Result<i32, CustomError> = Err(CustomError);

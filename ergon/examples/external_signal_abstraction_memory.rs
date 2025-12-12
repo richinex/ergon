@@ -1,56 +1,52 @@
-//! External Signal Abstraction Example - Custom Error Variant
+//! External Signal Abstraction Example - FlowError Variant
 //!
-//! This example demonstrates using **custom domain errors** for error handling.
+//! This example demonstrates using **FlowError** for error handling.
 //!
-//! ## Pattern Shown: Custom Errors
+//! ## Pattern Shown: FlowError
 //!
-//! This variant uses `Result<T, DocumentError>` in flows and steps:
-//! - **Simpler** for non-dag examples (no dag! macro or inputs())
-//! - Direct domain error types in signatures
-//! - Framework errors converted at boundaries using `.map_err()`
+//! This variant uses `Result<T, FlowError>` in flows and steps:
+//! - **Required** when using `dag!` macro or `inputs()` feature
+//! - Preserves error type information via serialization
+//! - Allows downcasting back to original error types
+//! - Custom errors auto-convert via `IntoFlowError` trait
 //!
 //! ```rust
 //! #[flow]
-//! async fn process(self: Arc<Self>) -> Result<String, DocumentError> {
-//!     self.validate().await?;  // Returns DocumentError
+//! async fn process(self: Arc<Self>) -> Result<String, FlowError> {
+//!     self.validate().await?;  // DocumentError auto-converts to FlowError
 //!     Ok("done")
 //! }
 //!
 //! #[step]
-//! async fn validate(self: Arc<Self>) -> Result<(), DocumentError> {
-//!     // Convert framework errors at boundaries
-//!     await_external_signal("signal")
-//!         .await
-//!         .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
+//! async fn validate(self: Arc<Self>) -> Result<(), FlowError> {
+//!     if problem {
+//!         return Err(DocumentError::Invalid.into_flow_error());
+//!     }
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Key Features
-//!
-//! - Signal source abstraction via `SignalSource` trait
-//! - Worker integration for automatic signal processing
-//! - Modeling signal outcomes (approved/rejected) vs errors
-//!
 //! ## Compare With
 //!
-//! See `external_signal_abstraction_flowerror.rs` for the FlowError variant
-//! (required when using dag! macro or inputs()).
+//! See `external_signal_abstraction.rs` for the custom error variant.
 //!
 //! ## Run with
 //! ```bash
-//! cargo run --example external_signal_abstraction --features=sqlite
+//! cargo run --example external_signal_abstraction_flowerror --features=sqlite
 //! ```
 
 use async_trait::async_trait;
+
 use ergon::executor::{await_external_signal, SignalSource};
 use ergon::prelude::*;
+use ergon::storage::InMemoryExecutionLog;
 use ergon::{Retryable, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -64,33 +60,18 @@ static PUBLISH_COUNT: AtomicU32 = AtomicU32::new(0);
 // Custom Error Type
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Error, Serialize, Deserialize)]
 enum DocumentError {
     /// Document was rejected by manager (permanent business decision)
+    #[error("Document rejected by {by} - {reason}")]
     ManagerRejection { by: String, reason: String },
     /// Document was rejected by legal team (permanent business decision)
+    #[error("Legal rejected by {by} - {reason}")]
     LegalRejection { by: String, reason: String },
     /// Infrastructure or framework error (retryable)
+    #[error("Infrastructure error: {0}")]
     Infrastructure(String),
 }
-
-impl std::fmt::Display for DocumentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DocumentError::ManagerRejection { by, reason } => {
-                write!(f, "Document rejected by {} - {}", by, reason)
-            }
-            DocumentError::LegalRejection { by, reason } => {
-                write!(f, "Legal rejected by {} - {}", by, reason)
-            }
-            DocumentError::Infrastructure(msg) => {
-                write!(f, "Infrastructure error: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for DocumentError {}
 
 impl From<DocumentError> for String {
     fn from(err: DocumentError) -> Self {
@@ -349,7 +330,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║     External Signal Abstraction Example                  ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
-    let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
+    let storage = Arc::new(InMemoryExecutionLog::default());
+    storage.reset().await?;
+
     let signal_source = Arc::new(SimulatedUserInputSource::new());
 
     // ============================================================
@@ -538,6 +521,158 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    println!("\n=== Test 3: Document Rejected During Validation (Error Case) ===\n");
+
+    // Create a document that will be rejected by the manager
+    let doc3 = DocumentSubmission {
+        document_id: "DOC-003".to_string(),
+        title: "Controversial Policy".to_string(),
+        author: "controversial@company.com".to_string(),
+        content: "Sensitive content".to_string(),
+    };
+
+    let flow3 = DocumentApprovalFlow {
+        submission: doc3.clone(),
+    };
+
+    let flow_id_3 = Uuid::new_v4();
+    let task_id_3 = scheduler.schedule(flow3, flow_id_3).await?;
+    println!("   ✓ DOC-003 scheduled (task_id: {})", task_id_3);
+    println!(
+        "\n[FLOW] Processing document: {}\n       Author: {}",
+        doc3.title, doc3.author
+    );
+
+    // Simulate manager rejecting DOC-003 immediately
+    let signal_source_clone = signal_source.clone();
+    let doc_id = doc3.document_id.clone();
+    tokio::spawn(async move {
+        signal_source_clone
+            .simulate_user_decision(
+                &format!("manager_approval_{}", doc_id),
+                Duration::from_millis(500),
+                false, // reject
+            )
+            .await;
+    });
+
+    // Wait for Test 3 to fail with proper polling
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(15) {
+            println!("\n[TIMEOUT] Test 3 did not complete within 15 seconds");
+            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_3).await {
+                println!(
+                    "[INFO] Test 3 status: {:?}, retry_count: {}",
+                    scheduled.status, scheduled.retry_count
+                );
+            }
+            break;
+        }
+        match storage.get_scheduled_flow(task_id_3).await? {
+            Some(scheduled) => {
+                if matches!(scheduled.status, TaskStatus::Failed) {
+                    println!(
+                        "\n[COMPLETE] Test 3 failed as expected: Manager rejection (non-retryable)"
+                    );
+                    break;
+                } else if matches!(scheduled.status, TaskStatus::Complete) {
+                    println!("\n[ERROR] Test 3 completed unexpectedly (should have failed)");
+                    break;
+                }
+            }
+            None => {
+                println!("\n[COMPLETE] Test 3 flow removed from queue");
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Give worker time to fully complete Test 3 before starting Test 4
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    println!("\n=== Test 4: Document Rejected by Legal (Error Case) ===\n");
+
+    // Create a document that passes manager but fails legal
+    let doc4 = DocumentSubmission {
+        document_id: "DOC-004".to_string(),
+        title: "Legal Compliance Issue".to_string(),
+        author: "legal-issue@company.com".to_string(),
+        content: "Problematic legal content".to_string(),
+    };
+
+    let flow4 = DocumentApprovalFlow {
+        submission: doc4.clone(),
+    };
+
+    let flow_id_4 = Uuid::new_v4();
+    let task_id_4 = scheduler.schedule(flow4, flow_id_4).await?;
+    println!("   ✓ DOC-004 scheduled (task_id: {})", task_id_4);
+    println!(
+        "\n[FLOW] Processing document: {}\n       Author: {}",
+        doc4.title, doc4.author
+    );
+
+    // Simulate manager approving DOC-004 (increased delay to ensure flow is waiting)
+    let signal_source_clone = signal_source.clone();
+    let doc_id = doc4.document_id.clone();
+    tokio::spawn(async move {
+        signal_source_clone
+            .simulate_user_decision(
+                &format!("manager_approval_{}", doc_id),
+                Duration::from_secs(2), // Increased from 500ms to 2s to give worker time
+                true,                   // approve
+            )
+            .await;
+    });
+
+    // Simulate legal rejecting DOC-004 (delay ensures flow processes manager approval first)
+    let signal_source_clone = signal_source.clone();
+    let doc_id = doc4.document_id.clone();
+    tokio::spawn(async move {
+        signal_source_clone
+            .simulate_user_decision(
+                &format!("legal_review_{}", doc_id),
+                Duration::from_secs(5), // 5s: enough time for manager approval (2s) to be processed
+                false,                  // reject
+            )
+            .await;
+    });
+
+    // Wait for Test 4 to fail with proper polling (increased timeout for 5s legal signal delay)
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(20) {
+            println!("\n[TIMEOUT] Test 4 did not complete within 20 seconds");
+            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_4).await {
+                println!(
+                    "[INFO] Test 4 status: {:?}, retry_count: {}",
+                    scheduled.status, scheduled.retry_count
+                );
+            }
+            break;
+        }
+        match storage.get_scheduled_flow(task_id_4).await? {
+            Some(scheduled) => {
+                if matches!(scheduled.status, TaskStatus::Failed) {
+                    println!(
+                        "\n[COMPLETE] Test 4 failed as expected: Legal rejection (non-retryable)"
+                    );
+                    break;
+                } else if matches!(scheduled.status, TaskStatus::Complete) {
+                    println!("\n[ERROR] Test 4 completed unexpectedly (should have failed)");
+                    break;
+                }
+            }
+            None => {
+                println!("\n[COMPLETE] Test 4 flow removed from queue");
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     // Shutdown
     worker.shutdown().await;
 
@@ -569,6 +704,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match storage.get_scheduled_flow(task_id_2).await? {
         Some(scheduled) => println!("  DOC-002: {:?}", scheduled.status),
         None => println!("  DOC-002: Complete (removed from queue)"),
+    }
+    match storage.get_scheduled_flow(task_id_3).await? {
+        Some(scheduled) => println!("  DOC-003: {:?}", scheduled.status),
+        None => println!("  DOC-003: Complete (removed from queue)"),
+    }
+    match storage.get_scheduled_flow(task_id_4).await? {
+        Some(scheduled) => println!("  DOC-004: {:?}", scheduled.status),
+        None => println!("  DOC-004: Complete (removed from queue)"),
     }
 
     storage.close().await?;

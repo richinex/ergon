@@ -14,7 +14,9 @@
 //! cargo run --example panic_handling_test --features=sqlite
 //! ```
 
+use ergon::executor::ExecutionError;
 use ergon::prelude::*;
+use ergon::TaskStatus;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;

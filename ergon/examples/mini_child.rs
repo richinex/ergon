@@ -16,6 +16,7 @@ use std::time::Duration;
 use ergon::executor::{InvokeChild, Worker};
 use ergon::prelude::*;
 use ergon::storage::SqliteExecutionLog;
+use ergon::TaskStatus;
 use uuid::Uuid;
 
 #[tokio::main]

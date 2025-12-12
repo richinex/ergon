@@ -37,6 +37,7 @@
 use async_trait::async_trait;
 use ergon::executor::{await_external_signal, SignalSource};
 use ergon::prelude::*;
+use ergon::Retryable;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -112,7 +113,7 @@ impl From<String> for DocumentError {
     }
 }
 
-impl RetryableError for DocumentError {
+impl Retryable for DocumentError {
     fn is_retryable(&self) -> bool {
         matches!(self, DocumentError::Infrastructure(_))
     }

@@ -8,6 +8,7 @@ use chrono::Utc;
 use ergon::executor::{InvokeChild, Worker};
 use ergon::prelude::*;
 use ergon::storage::SqliteExecutionLog;
+use ergon::TaskStatus;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,7 +45,7 @@ enum PaymentError {
     },
 }
 
-impl RetryableError for PaymentError {
+impl ergon::Retryable for PaymentError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors - retryable

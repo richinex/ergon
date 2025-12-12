@@ -5,6 +5,7 @@
 //!
 //! There is NO auto-chaining. Dependencies must be explicit.
 
+use ergon::executor::{ExecutionError, Executor, FlowOutcome};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -46,7 +47,7 @@ impl Workflow {
     }
 
     #[flow]
-    async fn run_parallel(self: Arc<Self>) -> Result<String, String> {
+    async fn run_parallel(self: Arc<Self>) -> Result<String, ExecutionError> {
         dag! {
             self.register_par_step1();
             self.register_par_step2();
@@ -83,7 +84,7 @@ impl Workflow {
     }
 
     #[flow]
-    async fn run_sequential(self: Arc<Self>) -> Result<String, String> {
+    async fn run_sequential(self: Arc<Self>) -> Result<String, ExecutionError> {
         dag! {
             self.register_seq_step1();
             self.register_seq_step2();
@@ -134,7 +135,7 @@ impl Workflow {
     }
 
     #[flow]
-    async fn run_dag(self: Arc<Self>) -> Result<String, String> {
+    async fn run_dag(self: Arc<Self>) -> Result<String, ExecutionError> {
         dag! {
             self.register_dag_root();
             self.register_dag_branch1();

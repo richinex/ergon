@@ -33,13 +33,13 @@
 
 use chrono::Utc;
 use dashmap::DashMap;
-use ergon::core::{FlowType, InvokableFlow};
-use ergon::executor::{schedule_timer_named, InvokeChild, Worker};
+use ergon::core::InvokableFlow;
+use ergon::executor::{schedule_timer_named, InvokeChild};
 use ergon::prelude::*;
-use serde::{Deserialize, Serialize};
+use ergon::{Retryable, TaskStatus};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 // =============================================================================
@@ -97,7 +97,7 @@ impl From<CreditCheckError> for String {
     }
 }
 
-impl RetryableError for CreditCheckError {
+impl Retryable for CreditCheckError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors - should retry
@@ -170,7 +170,7 @@ impl From<IncomeVerificationError> for String {
     }
 }
 
-impl RetryableError for IncomeVerificationError {
+impl ergon::Retryable for IncomeVerificationError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors
@@ -221,7 +221,7 @@ impl From<FraudCheckError> for String {
     }
 }
 
-impl RetryableError for FraudCheckError {
+impl ergon::Retryable for FraudCheckError {
     fn is_retryable(&self) -> bool {
         match self {
             // Transient errors
@@ -491,16 +491,10 @@ fn inc_credit_attempt(applicant_name: &str) -> u32 {
 // Child Flow 1 - Credit Check (with Timer)
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct CreditCheck {
     applicant_name: String,
     simulate_error: Option<String>,
-}
-
-impl FlowType for CreditCheck {
-    fn type_id() -> &'static str {
-        "CreditCheck"
-    }
 }
 
 impl InvokableFlow for CreditCheck {
@@ -613,16 +607,10 @@ impl CreditCheck {
 // Child Flow 2 - Income Verification (with Timer)
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct IncomeVerification {
     applicant_name: String,
     simulate_error: Option<String>,
-}
-
-impl FlowType for IncomeVerification {
-    fn type_id() -> &'static str {
-        "IncomeVerification"
-    }
 }
 
 impl InvokableFlow for IncomeVerification {
@@ -730,16 +718,10 @@ impl IncomeVerification {
 // Child Flow 3 - Fraud Check (with Timer)
 // =============================================================================
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, FlowType)]
 struct FraudCheck {
     applicant_name: String,
     simulate_error: Option<String>,
-}
-
-impl FlowType for FraudCheck {
-    fn type_id() -> &'static str {
-        "FraudCheck"
-    }
 }
 
 impl InvokableFlow for FraudCheck {

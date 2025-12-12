@@ -2,7 +2,7 @@
 //!
 //! This example demonstrates:
 //! - Automatic retry with RetryPolicy for transient errors
-//! - RetryableError trait to distinguish transient vs permanent errors
+//! - Retryable trait to distinguish transient vs permanent errors
 //! - Exponential backoff between retry attempts
 //! - Step-level resumability with retry policies
 //!
@@ -12,8 +12,9 @@
 //!
 //! Run: cargo run --example retry_recovery_demo
 
-use ergon::core::{RetryPolicy, RetryableError};
+use ergon::core::RetryPolicy;
 use ergon::prelude::*;
+use ergon::Retryable;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,7 +53,7 @@ impl From<InventoryError> for String {
     }
 }
 
-impl RetryableError for InventoryError {
+impl Retryable for InventoryError {
     fn is_retryable(&self) -> bool {
         matches!(
             self,

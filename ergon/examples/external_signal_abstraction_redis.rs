@@ -38,6 +38,8 @@
 use async_trait::async_trait;
 use ergon::executor::{await_external_signal, SignalSource};
 use ergon::prelude::*;
+use ergon::storage::RedisExecutionLog;
+use ergon::TaskStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -76,7 +78,7 @@ impl From<DocumentError> for String {
     }
 }
 
-impl RetryableError for DocumentError {
+impl ergon::Retryable for DocumentError {
     fn is_retryable(&self) -> bool {
         match self {
             // Business rejections are permanent
@@ -205,7 +207,7 @@ struct DocumentApprovalFlow {
 
 impl DocumentApprovalFlow {
     #[flow]
-    async fn process(self: Arc<Self>) -> Result<String, FlowError> {
+    async fn process(self: Arc<Self>) -> Result<String, DocumentError> {
         println!("\n[FLOW] Processing document: {}", self.submission.title);
         println!("       Author: {}", self.submission.author);
 
@@ -224,7 +226,7 @@ impl DocumentApprovalFlow {
             ApprovalOutcome::Rejected { by, reason } => {
                 // Manager rejection is a permanent business decision
                 println!("       [COMPLETE] Document rejected (permanent)");
-                return Err(DocumentError::ManagerRejection { by, reason }.into_flow_error());
+                return Err(DocumentError::ManagerRejection { by, reason });
             }
         }
 
@@ -241,7 +243,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn validate_document(self: Arc<Self>) -> Result<(), FlowError> {
+    async fn validate_document(self: Arc<Self>) -> Result<(), DocumentError> {
         VALIDATE_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Validating document format...");
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -250,11 +252,12 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, FlowError> {
+    async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, DocumentError> {
         // This may suspend the flow until signal arrives (or return immediately if cached)
         let decision: ApprovalDecision =
             await_external_signal(&format!("manager_approval_{}", self.submission.document_id))
-                .await?; // ExecutionError auto-converts to FlowError
+                .await
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         // Count and log AFTER signal received (only once per flow, not on replay)
         MANAGER_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -278,11 +281,12 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn await_legal_review(self: Arc<Self>) -> Result<(), FlowError> {
+    async fn await_legal_review(self: Arc<Self>) -> Result<(), DocumentError> {
         // Another suspension point (or immediate return if cached)
         let decision: ApprovalDecision =
             await_external_signal(&format!("legal_review_{}", self.submission.document_id))
-                .await?; // ExecutionError auto-converts to FlowError
+                .await
+                .map_err(|e| DocumentError::Infrastructure(e.to_string()))?;
 
         // Count and log AFTER signal received (only once per flow, not on replay)
         LEGAL_REVIEW_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -295,8 +299,7 @@ impl DocumentApprovalFlow {
             return Err(DocumentError::LegalRejection {
                 by: decision.approver,
                 reason: decision.comments,
-            }
-            .into_flow_error());
+            });
         }
 
         println!(
@@ -307,7 +310,7 @@ impl DocumentApprovalFlow {
     }
 
     #[step]
-    async fn publish_document(self: Arc<Self>) -> Result<(), FlowError> {
+    async fn publish_document(self: Arc<Self>) -> Result<(), DocumentError> {
         PUBLISH_COUNT.fetch_add(1, Ordering::Relaxed);
         println!("       [STEP] Publishing document...");
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -326,7 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║     External Signal Abstraction Example                  ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
-    let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
+    let redis_url = "redis://127.0.0.1:6379";
+    let storage: Arc<RedisExecutionLog> = Arc::new(RedisExecutionLog::new(redis_url).await?);
+    storage.reset().await?;
+
     let signal_source = Arc::new(SimulatedUserInputSource::new());
 
     // ============================================================
@@ -515,6 +521,158 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    println!("\n=== Test 3: Document Rejected During Validation (Error Case) ===\n");
+
+    // Create a document that will be rejected by the manager
+    let doc3 = DocumentSubmission {
+        document_id: "DOC-003".to_string(),
+        title: "Controversial Policy".to_string(),
+        author: "controversial@company.com".to_string(),
+        content: "Sensitive content".to_string(),
+    };
+
+    let flow3 = DocumentApprovalFlow {
+        submission: doc3.clone(),
+    };
+
+    let flow_id_3 = Uuid::new_v4();
+    let task_id_3 = scheduler.schedule(flow3, flow_id_3).await?;
+    println!("   ✓ DOC-003 scheduled (task_id: {})", task_id_3);
+    println!(
+        "\n[FLOW] Processing document: {}\n       Author: {}",
+        doc3.title, doc3.author
+    );
+
+    // Simulate manager rejecting DOC-003 immediately
+    let signal_source_clone = signal_source.clone();
+    let doc_id = doc3.document_id.clone();
+    tokio::spawn(async move {
+        signal_source_clone
+            .simulate_user_decision(
+                &format!("manager_approval_{}", doc_id),
+                Duration::from_millis(500),
+                false, // reject
+            )
+            .await;
+    });
+
+    // Wait for Test 3 to fail with proper polling
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(15) {
+            println!("\n[TIMEOUT] Test 3 did not complete within 15 seconds");
+            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_3).await {
+                println!(
+                    "[INFO] Test 3 status: {:?}, retry_count: {}",
+                    scheduled.status, scheduled.retry_count
+                );
+            }
+            break;
+        }
+        match storage.get_scheduled_flow(task_id_3).await? {
+            Some(scheduled) => {
+                if matches!(scheduled.status, TaskStatus::Failed) {
+                    println!(
+                        "\n[COMPLETE] Test 3 failed as expected: Manager rejection (non-retryable)"
+                    );
+                    break;
+                } else if matches!(scheduled.status, TaskStatus::Complete) {
+                    println!("\n[ERROR] Test 3 completed unexpectedly (should have failed)");
+                    break;
+                }
+            }
+            None => {
+                println!("\n[COMPLETE] Test 3 flow removed from queue");
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Give worker time to fully complete Test 3 before starting Test 4
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    println!("\n=== Test 4: Document Rejected by Legal (Error Case) ===\n");
+
+    // Create a document that passes manager but fails legal
+    let doc4 = DocumentSubmission {
+        document_id: "DOC-004".to_string(),
+        title: "Legal Compliance Issue".to_string(),
+        author: "legal-issue@company.com".to_string(),
+        content: "Problematic legal content".to_string(),
+    };
+
+    let flow4 = DocumentApprovalFlow {
+        submission: doc4.clone(),
+    };
+
+    let flow_id_4 = Uuid::new_v4();
+    let task_id_4 = scheduler.schedule(flow4, flow_id_4).await?;
+    println!("   ✓ DOC-004 scheduled (task_id: {})", task_id_4);
+    println!(
+        "\n[FLOW] Processing document: {}\n       Author: {}",
+        doc4.title, doc4.author
+    );
+
+    // Simulate manager approving DOC-004 (increased delay to ensure flow is waiting)
+    let signal_source_clone = signal_source.clone();
+    let doc_id = doc4.document_id.clone();
+    tokio::spawn(async move {
+        signal_source_clone
+            .simulate_user_decision(
+                &format!("manager_approval_{}", doc_id),
+                Duration::from_secs(2), // Increased from 500ms to 2s to give worker time
+                true,                   // approve
+            )
+            .await;
+    });
+
+    // Simulate legal rejecting DOC-004 (delay ensures flow processes manager approval first)
+    let signal_source_clone = signal_source.clone();
+    let doc_id = doc4.document_id.clone();
+    tokio::spawn(async move {
+        signal_source_clone
+            .simulate_user_decision(
+                &format!("legal_review_{}", doc_id),
+                Duration::from_secs(5), // 5s: enough time for manager approval (2s) to be processed
+                false,                  // reject
+            )
+            .await;
+    });
+
+    // Wait for Test 4 to fail with proper polling (increased timeout for 5s legal signal delay)
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > Duration::from_secs(20) {
+            println!("\n[TIMEOUT] Test 4 did not complete within 20 seconds");
+            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_4).await {
+                println!(
+                    "[INFO] Test 4 status: {:?}, retry_count: {}",
+                    scheduled.status, scheduled.retry_count
+                );
+            }
+            break;
+        }
+        match storage.get_scheduled_flow(task_id_4).await? {
+            Some(scheduled) => {
+                if matches!(scheduled.status, TaskStatus::Failed) {
+                    println!(
+                        "\n[COMPLETE] Test 4 failed as expected: Legal rejection (non-retryable)"
+                    );
+                    break;
+                } else if matches!(scheduled.status, TaskStatus::Complete) {
+                    println!("\n[ERROR] Test 4 completed unexpectedly (should have failed)");
+                    break;
+                }
+            }
+            None => {
+                println!("\n[COMPLETE] Test 4 flow removed from queue");
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     // Shutdown
     worker.shutdown().await;
 
@@ -546,6 +704,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match storage.get_scheduled_flow(task_id_2).await? {
         Some(scheduled) => println!("  DOC-002: {:?}", scheduled.status),
         None => println!("  DOC-002: Complete (removed from queue)"),
+    }
+    match storage.get_scheduled_flow(task_id_3).await? {
+        Some(scheduled) => println!("  DOC-003: {:?}", scheduled.status),
+        None => println!("  DOC-003: Complete (removed from queue)"),
+    }
+    match storage.get_scheduled_flow(task_id_4).await? {
+        Some(scheduled) => println!("  DOC-004: {:?}", scheduled.status),
+        None => println!("  DOC-004: Complete (removed from queue)"),
     }
 
     storage.close().await?;

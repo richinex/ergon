@@ -51,10 +51,9 @@
 //! ```
 
 use ergon::deserialize_value;
+use ergon::executor::{ExecutionError, Executor, FlowOutcome};
 use ergon::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
 use std::time::Duration;
 // ==================== Data Models ====================
 
@@ -648,7 +647,7 @@ impl RetailETLPipeline {
     // ==================== DAG FLOW ====================
 
     #[flow]
-    async fn run_etl_pipeline(self: Arc<Self>) -> Result<WarehouseLoadResult, String> {
+    async fn run_etl_pipeline(self: Arc<Self>) -> Result<WarehouseLoadResult, ExecutionError> {
         dag! {
             // Extract phase
             self.register_extract_customer_data();
