@@ -1,0 +1,82 @@
+# Docker Compose for Ergon Postgres Development
+#
+# Usage:
+#   Start Postgres:   docker compose -f docker-compose.postgres.yml up -d
+#   Stop Postgres:    docker compose -f docker-compose.postgres.yml down
+#   View logs:        docker compose -f docker-compose.postgres.yml logs -f postgres
+#   Remove data:      docker compose -f docker-compose.postgres.yml down -v
+#
+# Connect with psql:
+#   docker compose -f docker-compose.postgres.yml exec postgres psql -U postgres -d ergon
+#
+# Environment variables for running examples:
+#   export DATABASE_URL=postgres://postgres:postgres@localhost:5432/ergon
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ergon-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      # Default credentials (change in production)
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ergon
+
+      # Performance tuning for development
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+
+    # Health check to ensure database is ready
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ergon"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+    # Persist data across restarts
+    volumes:
+      - ergon_postgres_data:/var/lib/postgresql/data
+      # Optional: custom PostgreSQL configuration
+      # - ./postgres.conf:/etc/postgresql/postgresql.conf:ro
+
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Optional: PgAdmin web interface
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ergon-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@ergon.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    volumes:
+      - ergon_pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Uncomment to disable pgadmin by default
+    # profiles:
+    #   - tools
+
+volumes:
+  ergon_postgres_data:
+    driver: local
+  ergon_pgadmin_data:
+    driver: local

@@ -31,6 +31,9 @@ mod queue;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
 #[cfg(feature = "redis")]
 pub mod redis;
 
@@ -44,6 +47,9 @@ pub use queue::{ScheduledFlow, TaskStatus};
 
 #[cfg(feature = "sqlite")]
 pub use sqlite::{PoolConfig, SqliteExecutionLog};
+
+#[cfg(feature = "postgres")]
+pub use postgres::{PoolConfig as PgPoolConfig, PostgresExecutionLog};
 
 #[cfg(feature = "redis")]
 pub use redis::RedisExecutionLog;

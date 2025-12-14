@@ -109,6 +109,9 @@ pub use storage::{
 #[cfg(feature = "sqlite")]
 pub use storage::SqliteExecutionLog;
 
+#[cfg(feature = "postgres")]
+pub use storage::PostgresExecutionLog;
+
 #[cfg(feature = "redis")]
 pub use storage::RedisExecutionLog;
 
@@ -172,6 +175,9 @@ pub mod prelude {
 
     #[cfg(feature = "sqlite")]
     pub use crate::storage::SqliteExecutionLog; // SQLite implementation
+
+    #[cfg(feature = "postgres")]
+    pub use crate::storage::PostgresExecutionLog; // Postgres implementation
 
     #[cfg(feature = "redis")]
     pub use crate::storage::RedisExecutionLog; // Redis implementation

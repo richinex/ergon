@@ -13,6 +13,7 @@ categories = ["asynchronous", "workflow"]
 [features]
 default = ["sqlite"]
 sqlite = ["dep:sqlx"]
+postgres = ["dep:sqlx"]
 redis = ["dep:redis", "dep:deadpool-redis"]
 
 [dependencies]
@@ -120,3 +121,14 @@ required-features = ["sqlite"]
 [[example]]
 name = "write_db_parallel"
 required-features = ["sqlite"]
+
+[[example]]
+name = "hybrid_ai_postgres"
+required-features = ["postgres"]
+
+[[example]]
+name = "hybrid_ai_redis"
+required-features = ["redis"]
+
+[[example]]
+name = "hybrid_ai_memory"

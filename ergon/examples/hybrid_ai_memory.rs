@@ -1,4 +1,4 @@
-//! Hybrid AI/Human Content Moderation Pipeline
+//! Hybrid AI/Human Content Moderation Pipeline (In-Memory Edition)
 //!
 //! Scenario:
 //! 1. Analyze text toxicity (Simulated AI).
@@ -8,10 +8,12 @@
 //! 5. Finally: Spawn a child flow to archive the decision.
 //!
 //! Run with:
-//! cargo run --release --example hybrid_ai
+//! ```
+//! cargo run --release --example hybrid_ai_memory
+//! ```
 
 use async_trait::async_trait;
-use ergon::core::InvokableFlow; // Removed unused FlowType
+use ergon::core::InvokableFlow;
 use ergon::executor::{await_external_signal, InvokeChild, SignalSource, Worker};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -208,17 +210,16 @@ impl ContentFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Setup SQLite (File-based so we can see persistence working)
-    let storage = Arc::new(ergon::storage::SqliteExecutionLog::new("ergon_demo.db").await?);
+    // 1. Setup In-Memory Storage
+    println!("Using in-memory storage");
 
-    // OPTIONAL: Reset DB on start so every run is fresh
-    // storage.reset().await?;
+    let storage = Arc::new(ergon::storage::InMemoryExecutionLog::new());
 
     let scheduler = ergon::executor::Scheduler::new(storage.clone());
     let dashboard = Arc::new(ModeratorDashboard::new());
 
     println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ Trust & Safety Pipeline (SQLite Backed)                   ║");
+    println!("║ Trust & Safety Pipeline (In-Memory Backed)                ║");
     println!("╚════════════════════════════════════════════════════════════╝\n");
 
     // 2. Schedule the 3 Flows
@@ -251,7 +252,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Start the Worker
     let worker = Worker::new(storage.clone(), "content-worker")
-        .with_poll_interval(Duration::from_millis(200)) // Give SQLite breathing room
+        .with_poll_interval(Duration::from_millis(200))
         .with_signals(dashboard.clone());
 
     worker.register(|f: Arc<ContentFlow>| f.process()).await;
@@ -271,20 +272,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dashboard.submit_review("POST-AMBIGUOUS", true).await;
     });
 
-    // 5. THE FIX: Wait until the Database says "No more work"
+    // 5. Wait until the Database says "No more work"
     println!("\n   [MAIN] Monitoring database for completion...");
 
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // We use the function you implemented in SqliteExecutionLog
         let pending_work = storage.get_incomplete_flows().await?;
 
         if pending_work.is_empty() {
             println!("   [MAIN] All flows completed successfully.");
             break;
         } else {
-            // Optional: Print what is still running for debugging
             println!("   [MAIN] Still running: {} flows", pending_work.len());
         }
     }
