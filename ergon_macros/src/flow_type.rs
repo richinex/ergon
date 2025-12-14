@@ -17,11 +17,22 @@ pub fn derive_flow_type_impl(input: TokenStream) -> TokenStream {
 
         if let Meta::NameValue(nv) = nested {
             if nv.path.is_ident("output") {
-                if let syn::Expr::Path(expr_path) = &nv.value {
-                    return Some(Type::Path(syn::TypePath {
-                        qself: None,
-                        path: expr_path.path.clone(),
-                    }));
+                match &nv.value {
+                    // Handle path types like ShippingLabel, String, etc.
+                    syn::Expr::Path(expr_path) => {
+                        return Some(Type::Path(syn::TypePath {
+                            qself: None,
+                            path: expr_path.path.clone(),
+                        }));
+                    }
+                    // Handle unit type ()
+                    syn::Expr::Tuple(expr_tuple) if expr_tuple.elems.is_empty() => {
+                        return Some(Type::Tuple(syn::TypeTuple {
+                            paren_token: expr_tuple.paren_token,
+                            elems: syn::punctuated::Punctuated::new(),
+                        }));
+                    }
+                    _ => {}
                 }
             }
         }
