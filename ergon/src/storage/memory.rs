@@ -361,6 +361,17 @@ impl ExecutionLog for InMemoryExecutionLog {
             entry.scheduled_for = Some(Utc::now() + chrono_delay);
             // Update timestamp
             entry.updated_at = Utc::now();
+
+            // Re-enqueue to channel (mimics Redis re-adding to stream)
+            self.pending_tx
+                .send(task_id)
+                .map_err(|_| StorageError::Connection("pending channel closed".to_string()))?;
+
+            // Notify workers that new work is available (or will be available soon)
+            if let Some(ref notify) = self.work_notify {
+                notify.notify_one();
+            }
+
             Ok(())
         } else {
             Err(StorageError::ScheduledFlowNotFound(task_id))

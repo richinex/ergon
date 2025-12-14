@@ -923,6 +923,9 @@ impl<
     /// Starts the worker in the background.
     ///
     /// Returns a [`WorkerHandle`] that can be used to control the worker.
+    /// Starts the worker in the background.
+    ///
+    /// Returns a [`WorkerHandle`] that can be used to control the worker.
     pub async fn start(self) -> WorkerHandle
     where
         Tr: Clone,
@@ -946,9 +949,7 @@ impl<
             stale_lock_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             // Create BOUNDED channel for dequeue results with capacity of 1
-            // This provides natural backpressure: when main loop is busy processing,
-            // send().await will block the dequeue task, preventing channel flooding
-            // When main loop recv()s, it frees space and dequeue task can continue
+            // Channel payload: (The DB Result, The Semaphore Permit)
             let (dequeue_tx, mut dequeue_rx) = tokio::sync::mpsc::channel(1);
 
             // Spawn dedicated dequeue task to prevent concurrent dequeues
@@ -956,32 +957,45 @@ impl<
             let dequeue_worker_id = self.worker_id.clone();
             let dequeue_token = worker_token.child_token();
             let dequeue_notify = self.work_notify.clone();
+            let dequeue_semaphore = self.max_concurrent_flows.clone();
+
             tokio::spawn(async move {
                 loop {
+                    // 1. ACQUIRE PERMIT BEFORE DB (Blocking safe here)
+                    let permit = if let Some(sem) = &dequeue_semaphore {
+                        tokio::select! {
+                            _ = dequeue_token.cancelled() => break,
+                            p = sem.clone().acquire_owned() => {
+                                match p {
+                                    Ok(p) => Some(p),
+                                    Err(_) => break, // Semaphore closed
+                                }
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    // 2. NOW poll the database
                     tokio::select! {
                         _ = dequeue_token.cancelled() => {
                             break;
                         }
                         result = dequeue_storage.dequeue_flow(&dequeue_worker_id) => {
-                            // Check if we got a task
                             let got_task = matches!(&result, Ok(Some(_)));
 
-                            // Send result to main loop (BLOCKING when channel is full)
-                            // This provides natural backpressure - if main loop is busy, we wait
+                            // 3. Send (Result, Permit) to main loop
                             tokio::select! {
                                 _ = dequeue_token.cancelled() => {
                                     break;
                                 }
-                                send_result = dequeue_tx.send(result) => {
+                                send_result = dequeue_tx.send((result, permit)) => {
                                     if send_result.is_err() {
-                                        // Channel closed, exit loop
-                                        break;
+                                        break; // Channel closed
                                     }
                                 }
                             }
 
-                            // Only wait for notification when no task was found
-                            // When a task was found, channel backpressure already provided coordination
                             if !got_task {
                                 let _notified = tokio::time::timeout(
                                     Duration::from_millis(1000),
@@ -994,229 +1008,144 @@ impl<
             });
 
             loop {
-                // Create worker loop span (no-op for WithoutStructuredTracing)
+                // Create worker loop span
                 let loop_span = self.tracing_state.worker_loop_span(&self.worker_id);
                 let _loop_guard = loop_span.as_ref().map(|span| span.enter());
 
-                // Use select! to handle multiple concurrent concerns
-                // biased; ensures shutdown and task cleanup are prioritized over accepting new work
                 tokio::select! {
                     biased;
 
-                    // Shutdown signal (highest priority)
-                    // CancellationToken is cancel-safe and supports hierarchical cancellation
+                    // Shutdown signal
                     _ = worker_token.cancelled() => {
                         info!("Worker {} received shutdown signal", self.worker_id);
                         break;
                     }
 
-                    // Maintenance: Move ready delayed tasks (every 1s)
+                    // Maintenance: Move ready delayed tasks
                     _ = delayed_task_interval.tick() => {
                         match self.storage.move_ready_delayed_tasks().await {
                             Ok(count) if count > 0 => {
-                                debug!("Worker {} moved {} delayed tasks to pending", self.worker_id, count);
+                                debug!("Worker {} moved {} delayed tasks", self.worker_id, count);
                             }
-                            Err(e) => {
-                                warn!("Worker {} failed to move delayed tasks: {}", self.worker_id, e);
-                            }
+                            Err(e) => warn!("Worker {} failed to move delayed tasks: {}", self.worker_id, e),
                             _ => {}
                         }
                     }
 
-                    // Maintenance: Recover stale locks (every 60s)
+                    // Maintenance: Recover stale locks
                     _ = stale_lock_interval.tick() => {
                         match self.storage.recover_stale_locks().await {
                             Ok(count) if count > 0 => {
                                 info!("Worker {} recovered {} stale locks", self.worker_id, count);
                             }
-                            Err(e) => {
-                                warn!("Worker {} failed to recover stale locks: {}", self.worker_id, e);
-                            }
+                            Err(e) => warn!("Worker {} failed to recover stale locks: {}", self.worker_id, e),
                             _ => {}
                         }
                     }
 
-                    // Main work: Receive dequeued flow from dedicated task
-                    Some(result) = dequeue_rx.recv() => {
-                        // Reap completed flow tasks (non-blocking)
+                    // Main work: Receive dequeued flow + Permit
+                    Some((result, permit)) = dequeue_rx.recv() => {
+                        // Reap completed flow tasks
                         while let Some(result) = active_flows.try_join_next() {
-                            match result {
-                                Ok(_) => {
-                                    // Task completed successfully
-                                }
-                                Err(e) => {
-                                    // Task panicked or was cancelled
-                                    error!("Worker {} flow task failed: {}", self.worker_id, e);
-                                    // Note: The task's error handling should have already marked the flow as failed
-                                    // This is a safety net for unexpected panics
-                                }
+                            if let Err(e) = result {
+                                error!("Worker {} flow task failed: {}", self.worker_id, e);
                             }
                         }
 
-                        // Process expired timers with optional span
+                        // Process timers
                         {
                             let timer_span = self.tracing_state.timer_processing_span(&self.worker_id);
                             let _timer_guard = timer_span.as_ref().map(|span| span.enter());
-
-                            self.timer_state
-                                .process_timers(&self.storage, &self.worker_id)
-                                .await;
+                            self.timer_state.process_timers(&self.storage, &self.worker_id).await;
                         }
 
-                        // Process pending signals (deliver to waiting flows)
+                        // Process signals
                         {
-                            self.signal_state
-                                .process_signals(&self.storage, &self.worker_id, &self.work_notify)
-                                .await;
+                            self.signal_state.process_signals(&self.storage, &self.worker_id, &self.work_notify).await;
                         }
 
                         match result {
-                    Ok(Some(flow)) => {
-                        // Spawn flow execution in background so worker can continue processing timers
-                        let registry = self.registry.clone();
-                        let storage = self.storage.clone();
-                        let worker_id = self.worker_id.clone();
-                        let flow_task_id = flow.task_id;
-                        let flow_id = flow.flow_id;
-                        let flow_type = flow.flow_type.clone();
-                        let tracing_state = self.tracing_state.clone(); // Clone the zero-sized tracing state
+                            Ok(Some(flow)) => {
+                                let registry = self.registry.clone();
+                                let storage = self.storage.clone();
+                                let worker_id = self.worker_id.clone();
+                                let flow_task_id = flow.task_id;
+                                let flow_id = flow.flow_id;
+                                let flow_type = flow.flow_type.clone();
+                                let tracing_state = self.tracing_state.clone();
 
-                        // Create flow execution span (returns Option<Span>)
-                        let flow_span = tracing_state.flow_execution_span(
-                            &worker_id,
-                            flow_id,
-                            &flow_type,
-                            flow_task_id,
-                        );
+                                let flow_span = tracing_state.flow_execution_span(
+                                    &worker_id,
+                                    flow_id,
+                                    &flow_type,
+                                    flow_task_id,
+                                );
 
-                        // Acquire semaphore permit for backpressure control (if enabled)
-                        // This limits concurrent flow execution and provides flow control
-                        let permit = if let Some(ref semaphore) = self.max_concurrent_flows {
-                            match semaphore.clone().acquire_owned().await {
-                                Ok(permit) => Some(permit),
-                                Err(_) => {
-                                    // Semaphore closed - should not happen in normal operation
-                                    error!("Worker {} semaphore closed unexpectedly", worker_id);
-                                    continue;
-                                }
-                            }
-                        } else {
-                            None
-                        };
+                                let task = async move {
+                                    // Permit held until task completes
+                                    let _permit = permit;
 
-                        // Instrument the spawned task with the span (proper async way)
-                        let task = async move {
-                            // Hold permit during entire flow execution (RAII - released on drop)
-                            let _permit = permit;
+                                    let executor = {
+                                        let registry = registry.read().await;
+                                        registry.get_executor(&flow.flow_type)
+                                    };
 
-                            // Get executor with brief lock, then release before execution
-                            let executor = {
-                                let registry = registry.read().await;
-                                registry.get_executor(&flow.flow_type)
-                            };
-                            // RwLock released here!
+                                    let parent_metadata = flow.parent_flow_id
+                                        .and_then(|parent_id| flow.signal_token.clone().map(|token| (parent_id, token)));
 
-                            // Extract parent metadata for Level 3 API signaling
-                            let parent_metadata = flow.parent_flow_id
-                                .and_then(|parent_id| flow.signal_token.clone().map(|token| (parent_id, token)));
-
-                            let outcome = match executor {
-                                Some(exec) => {
-                                    exec(flow.flow_data.clone(), flow.flow_id, storage.clone(), parent_metadata.clone()).await
-                                }
-                                None => {
-                                    use crate::executor::FlowOutcome;
-                                    FlowOutcome::Completed(Err(ExecutionError::Failed(format!("no executor registered for type: {}", flow.flow_type))))
-                                }
-                            };
-
-                            // Handle FlowOutcome - suspension is explicit per Dave Cheney's principle
-                            match outcome {
-                                crate::executor::FlowOutcome::Suspended(reason) => {
-                                    execution::handle_suspended_flow(
-                                        &storage,
-                                        &worker_id,
-                                        flow_task_id,
-                                        flow.flow_id,
-                                        reason,
-                                    )
-                                    .await;
-                                }
-                                crate::executor::FlowOutcome::Completed(result) => {
-                                    // Handle completion or retry
-                                    match result {
-                                        Ok(_) => {
-                                            execution::handle_flow_completion(
-                                                &storage,
-                                                &worker_id,
-                                                flow_task_id,
-                                                flow.flow_id,
-                                                parent_metadata.clone(),
-                                            )
-                                            .await;
+                                    let outcome = match executor {
+                                        Some(exec) => {
+                                            exec(flow.flow_data.clone(), flow.flow_id, storage.clone(), parent_metadata.clone()).await
                                         }
-                                        Err(error) => {
-                                            execution::handle_flow_error(
-                                                &storage,
-                                                &worker_id,
-                                                &flow,
-                                                flow_task_id,
-                                                error,
-                                                parent_metadata,
-                                            )
-                                            .await;
+                                        None => {
+                                            use crate::executor::FlowOutcome;
+                                            FlowOutcome::Completed(Err(ExecutionError::Failed(format!("no executor registered: {}", flow.flow_type))))
+                                        }
+                                    };
+
+                                    match outcome {
+                                        crate::executor::FlowOutcome::Suspended(reason) => {
+                                            execution::handle_suspended_flow(
+                                                &storage, &worker_id, flow_task_id, flow.flow_id, reason
+                                            ).await;
+                                        }
+                                        crate::executor::FlowOutcome::Completed(result) => {
+                                            match result {
+                                                Ok(_) => execution::handle_flow_completion(&storage, &worker_id, flow_task_id, flow.flow_id, parent_metadata.clone()).await,
+                                                Err(error) => execution::handle_flow_error(&storage, &worker_id, &flow, flow_task_id, error, parent_metadata).await,
+                                            }
                                         }
                                     }
+                                };
+
+                                if let Some(span) = flow_span {
+                                    active_flows.spawn(task.instrument(span));
+                                } else {
+                                    active_flows.spawn(task);
                                 }
                             }
-                        };
-
-                        // Spawn with proper instrumentation (avoids Span::enter() across await points)
-                        // Track in JoinSet for graceful shutdown
-                        if let Some(span) = flow_span {
-                            active_flows.spawn(task.instrument(span));
-                        } else {
-                            active_flows.spawn(task);
-                        }
-                    }
                             Ok(None) => {
-                                // No work available - sleep to avoid busy-looping and reduce lock contention
-                                // Add jitter (deterministic based on worker_id) to prevent thundering herd
-                                // Pattern from Redis Chapter 6: sleep 1ms between lock attempts
+                                drop(permit); // <--- Explicit drop
                                 let worker_hash = self.worker_id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
-                                let jitter_ms = 1 + (worker_hash % 5); // 1-5ms jitter
+                                let jitter_ms = 1 + (worker_hash % 5);
                                 let sleep_duration = self.poll_interval + Duration::from_millis(jitter_ms);
                                 tokio::time::sleep(sleep_duration).await;
                             }
                             Err(e) => {
-                                warn!("Worker {} failed to dequeue flow: {}", self.worker_id, e);
-                                // Add jitter to error retry as well
+                                drop(permit); // <--- Explicit drop
+                                warn!("Worker {} failed to dequeue: {}", self.worker_id, e);
                                 let worker_hash = self.worker_id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
-                                let jitter_ms = 1 + (worker_hash % 5); // 1-5ms jitter
+                                let jitter_ms = 1 + (worker_hash % 5);
                                 let sleep_duration = self.poll_interval + Duration::from_millis(jitter_ms);
                                 tokio::time::sleep(sleep_duration).await;
                             }
-                        }
-                    }
-                } // End of tokio::select!
-            }
+                        } // End match result
+                    } // End recv() branch
+                } // End tokio::select!
+            } // End main loop
 
-            // Gracefully wait for all in-flight flows to complete
-            let in_flight_count = active_flows.len();
-            if in_flight_count > 0 {
-                info!(
-                    "Worker {} waiting for {} in-flight flows to complete",
-                    self.worker_id, in_flight_count
-                );
-                while (active_flows.join_next().await).is_some() {
-                    // Wait for each flow to complete
-                }
-                info!(
-                    "Worker {} completed all {} in-flight flows",
-                    self.worker_id, in_flight_count
-                );
-            }
-
+            // Wait for in-flight
+            while (active_flows.join_next().await).is_some() {}
             info!("Worker {} stopped", self.worker_id);
         });
 

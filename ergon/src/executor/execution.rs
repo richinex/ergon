@@ -66,12 +66,12 @@ pub(super) async fn complete_child_flow<S: ExecutionLog>(
         // Since we're in the success branch, we know it's Result::Ok(value)
         // Bincode encodes Result as: [variant_index: 1 byte] + [data]
         // So we skip the first byte to get just the success value bytes
-        if result_bytes.len() <= 1 {
-            error!("Invalid result bytes for flow {}", flow_id);
-            return;
-        }
-
-        let value_bytes = &result_bytes[1..]; // Skip the Ok variant byte
+        // NOTE: For Result<(), E>, the success value is zero-sized, so len will be 1
+        let value_bytes = if result_bytes.len() > 1 {
+            &result_bytes[1..] // Skip Ok variant byte, return value data
+        } else {
+            &[] // Empty for () return type (zero-sized)
+        };
 
         crate::executor::child_flow::SignalPayload {
             success: true,

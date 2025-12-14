@@ -1,6 +1,27 @@
-//! Todo: Comments will be updated later
+//! Sequential Flow with Child Flows (SQLite)
 //!
-//! This example demonstrates the full power of Ergon by combining:
+//! This example demonstrates:
+//! 1. **Single Worker** execution
+//! 2. **Sequential Steps** (steps run one after another)
+//! 3. **Child Flow Invocation** (spawning sub-tasks)
+//! 4. **Error Handling** with retryable errors
+//!
+//! ## Scenario: E-Commerce Order Fulfillment System
+//!
+//! Each order goes through a linear sequence:
+//!
+//! 1. validate_customer
+//! 2. check_fraud
+//! 3. reserve_inventory
+//! 4. process_payment
+//! 5. generate_label (CHILD FLOW)
+//! 6. notify_customer
+//!
+//! ## Run
+//!
+//! ```bash
+//! cargo run --example complex_1_worker_dag_sqlite --features=sqlite
+//! ```
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -35,14 +56,10 @@ struct OrderAttempts {
 }
 
 impl OrderAttempts {
-    /// Increment and return validate_customer attempt counter
     fn inc_validate(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.validate_customer.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -51,14 +68,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return check_fraud attempt counter
     fn inc_fraud(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.check_fraud.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -67,14 +80,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return reserve_inventory attempt counter
     fn inc_reserve(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.reserve_inventory.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -83,14 +92,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return process_payment attempt counter
     fn inc_payment(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.process_payment.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -99,14 +104,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return generate_label attempt counter
     fn inc_label(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.generate_label.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -115,14 +116,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return notify_customer attempt counter
     fn inc_notify(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.notify_customer.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -237,7 +234,7 @@ struct OrderSummary {
 }
 
 // =============================================================================
-// Parent Flow - Order Fulfillment (with DAG)
+// Parent Flow - Order Fulfillment
 // =============================================================================
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
@@ -250,10 +247,10 @@ struct OrderFulfillment {
 }
 
 impl OrderFulfillment {
-    /// Step 1: Validate Customer (runs in parallel)
+    /// Step 1: Validate Customer
     #[step]
     async fn validate_customer(self: Arc<Self>) -> Result<String, String> {
-        let count = OrderAttempts::inc_validate(&self.order_id); // Lock released immediately
+        let count = OrderAttempts::inc_validate(&self.order_id);
         VALIDATE_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
@@ -275,7 +272,7 @@ impl OrderFulfillment {
         Ok(self.customer_id.clone())
     }
 
-    /// Step 2: Check Fraud (runs in parallel with validate_customer)
+    /// Step 2: Check Fraud
     #[step]
     async fn check_fraud(self: Arc<Self>) -> Result<bool, String> {
         let count = OrderAttempts::inc_fraud(&self.order_id);
@@ -299,10 +296,10 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 3: Reserve Inventory (runs in parallel, uses Retryable)
+    /// Step 3: Reserve Inventory (uses Retryable)
     #[step]
     async fn reserve_inventory(self: Arc<Self>) -> Result<bool, InventoryError> {
-        let count = OrderAttempts::inc_reserve(&self.order_id); // Lock released immediately
+        let count = OrderAttempts::inc_reserve(&self.order_id);
         RESERVE_INVENTORY_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
@@ -336,10 +333,10 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 4: Process Payment (depends on validate_customer, uses Retryable)
+    /// Step 4: Process Payment (uses Retryable)
     #[step(depends_on = "validate_customer")]
     async fn process_payment(self: Arc<Self>) -> Result<bool, PaymentError> {
-        let count = OrderAttempts::inc_payment(&self.order_id); // Lock released immediately
+        let count = OrderAttempts::inc_payment(&self.order_id);
         PROCESS_PAYMENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
@@ -364,7 +361,7 @@ impl OrderFulfillment {
         Ok(true)
     }
 
-    /// Step 5: Process shipping label result (depends on all parallel steps)
+    /// Step 5: Process shipping label result
     #[step(depends_on = ["validate_customer", "check_fraud", "reserve_inventory", "process_payment"])]
     async fn process_shipping_label(
         self: Arc<Self>,
@@ -388,7 +385,7 @@ impl OrderFulfillment {
         Ok(label)
     }
 
-    /// Step 6: Notify Customer (depends on label) - returns label for flow result
+    /// Step 6: Notify Customer - returns label for flow result
     #[step(
         depends_on = "process_shipping_label",
         inputs(label = "process_shipping_label")
@@ -417,7 +414,7 @@ impl OrderFulfillment {
         Ok(label)
     }
 
-    /// Main SEQUENTIAL flow (NO DAG)
+    /// Main SEQUENTIAL flow
     #[flow]
     async fn fulfill_order(self: Arc<Self>) -> Result<OrderSummary, String> {
         let flow_id = ergon::EXECUTION_CONTEXT
@@ -425,13 +422,13 @@ impl OrderFulfillment {
             .expect("Must be called within flow");
 
         println!(
-            "\n[{:.3}] ORDER[{}] flow_id={}: Starting fulfillment (SEQUENTIAL - NO DAG)",
+            "\n[{:.3}] ORDER[{}] flow_id={}: Starting fulfillment (SEQUENTIAL)",
             timestamp(),
             self.order_id,
             &flow_id.to_string()[..8]
         );
 
-        // Run steps SEQUENTIALLY (no DAG parallelism)
+        // Run steps SEQUENTIALLY
         let _customer = self.clone().validate_customer().await?;
         let _fraud = self.clone().check_fraud().await?;
         let _inventory = self
@@ -547,22 +544,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let scheduler = Scheduler::new(storage.clone());
 
-    // Schedule 3 orders with different characteristics
+    // Schedule 3 orders with specific failure triggers
     let orders = vec![
+        // Order 1: Triggers "CUST-RETRY" (fails validation once)
         OrderFulfillment {
             order_id: "ORD-001".to_string(),
-            customer_id: "CUST-001".to_string(), // No validation retry
-            product_id: "PROD-001".to_string(),  // No inventory retry
-            amount: 299.99,                      // Payment will retry once
+            customer_id: "CUST-RETRY".to_string(), // <--- TRIGGER: Transient validation failure
+            product_id: "PROD-001".to_string(),
+            amount: 299.99,
             quantity: 2,
         },
+        // Order 2: Triggers "PROD-SLOW" (fails inventory once)
         OrderFulfillment {
             order_id: "ORD-002".to_string(),
             customer_id: "CUST-002".to_string(),
-            product_id: "PROD-002".to_string(),
+            product_id: "PROD-SLOW".to_string(), // <--- TRIGGER: Transient inventory failure
             amount: 149.99,
             quantity: 1,
         },
+        // Order 3: Clean run
         OrderFulfillment {
             order_id: "ORD-003".to_string(),
             customer_id: "CUST-003".to_string(),
@@ -577,8 +577,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   - {} scheduled", order.order_id);
     }
 
-    // Start 1 worker (testing for logic bugs independent of concurrency)
-
+    // Start 1 worker
     let worker =
         Worker::new(storage.clone(), "test-worker").with_poll_interval(Duration::from_millis(100));
 
@@ -590,7 +589,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let handle = worker.start().await;
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await; // Increased timeout to allow for retries
     handle.shutdown().await;
 
     println!(
@@ -637,3 +636,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.close().await?;
     Ok(())
 }
+
+// This example serves as a proof-of-concept for the core promises of the Ergon framework. Specifically, it demonstrates Durable Execution.
+
+// By running this code (especially with your "trip wire" modifications), you proved four critical features of the library:
+
+// 1. Fault Tolerance (The "Trip Wires")
+
+// This is the most important lesson. In a standard Rust program, if validate_customer returns an Err, the program crashes or the request fails immediately.
+
+// What it showed: When ORD-001 failed validation, the worker didn't panic. It caught the error, checked if it was Retryable, waited (backoff), and tried again.
+
+// The Business Value: You don't need to write while loop retry logic inside your business code. The framework handles transient failures (like network blips) automatically.
+
+// 2. Concurrency on a Single Worker
+
+// You ran this with 1 Worker thread, yet 3 orders made progress simultaneously.
+
+// What it showed: Look at your logs. ORD-003 was validating while ORD-002 was waiting on a timer.
+
+// The Mechanism: This demonstrates Rust's async/await power combined with Ergon's scheduler. The worker picks up a flow, runs it until it hits an await (like a database call or a timer), parks it, and picks up the next flow.
+
+// 3. "Durable" State
+
+// Between "Attempt #1" (failure) and "Attempt #2" (success) for ORD-001, the flow completely stopped running.
+
+// What it showed: The state of the flow (variables like self.amount, self.customer_id) was saved to SQLite. When the retry happened 1.7 seconds later, Ergon re-loaded that state from the database and resumed exactly where it left off.
+
+// The implication: If you had killed the process (Ctrl+C) right after the failure and restarted it 5 minutes later, it still would have resumed and executed Attempt #2.
+
+// 4. Flow Composition (Child Flows)
+
+// You saw CHILD[...] logs separate from ORDER[...] logs.
+
+// What it showed: You can break complex logic into smaller, reusable flows (LabelGenerator). The parent flow suspended execution, waited for the child flow to finish independently, and then got the result back.
+
+// Summary
+
+// The example was designed to prove that you can write code that looks like a simple sequence of steps:
+
+// code
+// Rust
+// download
+// content_copy
+// expand_less
+// validate()?;
+// check_fraud()?;
+// reserve()?;
+
+// ...but at runtime, that code becomes a resilient, retrying, database-backed workflow that survives crashes and errors without you writing extra infrastructure code.
