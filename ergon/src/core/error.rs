@@ -7,7 +7,7 @@ use uuid::Uuid;
 /// to preserve error chains for debugging and error handling.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum Error {
+pub enum CoreError {
     /// Serialization failed when encoding a value to bytes.
     #[error("serialization failed")]
     Serialization(#[source] bincode::error::EncodeError),
@@ -42,4 +42,4 @@ pub enum Error {
     Storage(String),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, CoreError>;

@@ -1,4 +1,4 @@
-use super::error::{Error, Result};
+use super::error::{CoreError, Result};
 use super::retry::RetryPolicy;
 use super::serialization::deserialize_value;
 use chrono::{DateTime, Utc};
@@ -28,7 +28,7 @@ impl InvocationStatus {
 }
 
 impl FromStr for InvocationStatus {
-    type Err = Error;
+    type Err = CoreError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -36,7 +36,7 @@ impl FromStr for InvocationStatus {
             "WAITING_FOR_SIGNAL" => Ok(InvocationStatus::WaitingForSignal),
             "WAITING_FOR_TIMER" => Ok(InvocationStatus::WaitingForTimer),
             "COMPLETE" => Ok(InvocationStatus::Complete),
-            _ => Err(Error::InvalidStatus(s.to_string())),
+            _ => Err(CoreError::InvalidStatus(s.to_string())),
         }
     }
 }

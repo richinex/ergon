@@ -86,8 +86,8 @@ pub mod storage;
 
 // Re-export commonly used types for convenience
 pub use core::{
-    deserialize_value, hash_params, retry_with_policy, serialize_value, CallType,
-    Error as CoreError, Invocation, InvocationStatus, Result as CoreResult,
+    deserialize_value, hash_params, retry_with_policy, serialize_value, CallType, CoreError,
+    Invocation, InvocationStatus, Result as CoreResult,
 };
 
 // Re-export the kind module for macro use (autoref specialization)

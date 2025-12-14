@@ -1,4 +1,4 @@
-use super::error::{Error, Result};
+use super::error::{CoreError, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -22,19 +22,20 @@ pub fn hash_params(bytes: &[u8]) -> u64 {
 /// Serializes a value to bytes using bincode.
 ///
 /// # Errors
-/// Returns `Error::Serialization` if the value cannot be serialized.
+/// Returns `CoreError::Serialization` if the value cannot be serialized.
 pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard()).map_err(Error::Serialization)
+    bincode::serde::encode_to_vec(value, bincode::config::standard())
+        .map_err(CoreError::Serialization)
 }
 
 /// Deserializes bytes to a value using bincode.
 ///
 /// # Errors
-/// Returns `Error::Deserialization` if the bytes cannot be deserialized.
+/// Returns `CoreError::Deserialization` if the bytes cannot be deserialized.
 pub fn deserialize_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     bincode::serde::decode_from_slice(bytes, bincode::config::standard())
         .map(|(value, _len)| value)
-        .map_err(Error::Deserialization)
+        .map_err(CoreError::Deserialization)
 }
 
 #[cfg(test)]

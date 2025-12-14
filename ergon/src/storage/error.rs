@@ -1,4 +1,4 @@
-use crate::core::Error as CoreError;
+use crate::core::CoreError;
 use thiserror::Error;
 use uuid::Uuid;
 

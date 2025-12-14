@@ -13,8 +13,8 @@
 //! - [`hash_params`]: Create fingerprints of parameters for change detection
 //!
 //! # Error Handling
-//! - [`Error`]: Core error type with proper error chains
-//! - [`Result<T>`]: Type alias for Results using core Error
+//! - [`CoreError`]: Core error type with proper error chains
+//! - [`Result<T>`]: Type alias for Results using CoreError
 //!
 //! # Retry Behavior
 //! - [`RetryPolicy`]: Configuration for retry attempts and backoff strategy
@@ -59,7 +59,7 @@ pub mod retry;
 mod serialization;
 
 // Re-export public types from submodules
-pub use error::{Error, Result};
+pub use error::{CoreError, Result};
 pub use flow_type::{FlowType, InvokableFlow};
 pub use invocation::{CallType, Invocation, InvocationStatus};
 pub use retry::{retry_with_policy, DefaultKind, RetryPolicy, RetryableKind};

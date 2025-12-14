@@ -54,8 +54,8 @@ impl From<StorageError> for ExecutionError {
     }
 }
 
-impl From<crate::core::Error> for ExecutionError {
-    fn from(e: crate::core::Error) -> Self {
+impl From<crate::core::CoreError> for ExecutionError {
+    fn from(e: crate::core::CoreError) -> Self {
         ExecutionError::Core(e.to_string())
     }
 }
