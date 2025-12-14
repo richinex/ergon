@@ -131,6 +131,12 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into();
     }
 
+    // Check for non-deterministic operations using proper AST traversal
+    // Following Parnas: detection strategy is hidden in determinism module
+    if let Err(err) = crate::determinism::check_determinism(block) {
+        return err.to_compile_error().into();
+    }
+
     // Check if function is async
     if sig.asyncness.is_none() {
         return syn::Error::new_spanned(sig, "#[step] can only be applied to async functions")

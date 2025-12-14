@@ -41,11 +41,14 @@ impl NormalFlow {
     async fn process(self: Arc<Self>) -> Result<String, ExecutionError> {
         println!("\n[NORMAL] Processing order: {}", self.order_id);
 
+        // Generate transaction ID at flow level for determinism
+        let tx_id = format!("TXN-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
+
         // Step 1: Validate
         self.clone().validate().await?;
 
         // Step 2: Process payment
-        let tx_id = self.clone().process_payment().await?;
+        self.clone().process_payment(tx_id.clone()).await?;
 
         println!("[NORMAL] Order completed: {}", tx_id);
         Ok(tx_id)
@@ -65,7 +68,7 @@ impl NormalFlow {
     }
 
     #[step]
-    async fn process_payment(self: Arc<Self>) -> Result<String, String> {
+    async fn process_payment(self: Arc<Self>, tx_id: String) -> Result<(), String> {
         let attempt = EXECUTION_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
         println!(
             "[NORMAL] Processing payment: ${} (attempt #{})",
@@ -74,9 +77,8 @@ impl NormalFlow {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let tx_id = format!("TXN-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
         println!("[NORMAL] Payment processed: {}", tx_id);
-        Ok(tx_id)
+        Ok(())
     }
 }
 

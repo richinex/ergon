@@ -1071,6 +1071,14 @@ impl ExecutionLog for PostgresExecutionLog {
     fn work_notify(&self) -> Option<&Arc<Notify>> {
         self.work_notify.as_ref()
     }
+
+    async fn ping(&self) -> Result<()> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map_err(StorageError::Database)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

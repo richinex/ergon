@@ -118,8 +118,17 @@ impl EmailTask {
     async fn send(self: Arc<Self>) -> Result<String, String> {
         println!("[Email] Sending to {}: {}", self.recipient, self.subject);
 
+        // Generate deterministic email_id at flow level using hash of inputs
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.recipient.hash(&mut hasher);
+        self.subject.hash(&mut hasher);
+        self.template.hash(&mut hasher);
+        let email_id = format!("email_id_{:x}", hasher.finish());
+
         let rendered = self.clone().render_template().await?;
-        let result = self.clone().deliver(rendered).await?;
+        let result = self.clone().deliver(rendered, email_id).await?;
 
         println!("[Email] Sent successfully: {}", result);
         Ok(result)
@@ -136,10 +145,10 @@ impl EmailTask {
     }
 
     #[step]
-    async fn deliver(self: Arc<Self>, html: String) -> Result<String, String> {
+    async fn deliver(self: Arc<Self>, html: String, email_id: String) -> Result<String, String> {
         println!("  [Deliver] Sending via SMTP ({}...)", &html[..20]);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        Ok(format!("email_id_{}", uuid::Uuid::new_v4()))
+        Ok(email_id)
     }
 }
 

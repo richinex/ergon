@@ -132,3 +132,13 @@ required-features = ["redis"]
 
 [[example]]
 name = "hybrid_ai_memory"
+
+[[example]]
+name = "hybrid_ai_distributed_scheduler"
+path = "examples/hybrid_ai_distributed/scheduler.rs"
+required-features = ["postgres"]
+
+[[example]]
+name = "hybrid_ai_distributed_worker"
+path = "examples/hybrid_ai_distributed/worker.rs"
+required-features = ["postgres"]

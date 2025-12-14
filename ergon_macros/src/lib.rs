@@ -17,6 +17,7 @@
 //! - [`parsing`]: How macro attributes are parsed and signature analysis
 //! - [`step`]: How #[step] macro works and generates code
 //! - [`flow`]: How #[flow] macro works and generates code
+//! - [`determinism`]: How non-deterministic operations are detected
 //!
 //! This module (lib.rs) contains:
 //! - Public macro entry points (#[step], #[flow], dag!)
@@ -24,6 +25,7 @@
 
 use proc_macro::TokenStream;
 
+mod determinism;
 mod flow;
 mod flow_type;
 mod parsing;

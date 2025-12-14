@@ -32,11 +32,17 @@ impl DataPipeline {
             self.pipeline_id, self.batch_size
         );
 
+        // Generate timestamp at flow level for determinism
+        let transformed_at = chrono::Utc::now().timestamp();
+
         // Step 1: Load raw data
         let raw_data = self.clone().load_data().await?;
 
         // Step 2: Validate and transform (uses input from load_data)
-        let validated = self.clone().validate_and_transform(raw_data).await?;
+        let validated = self
+            .clone()
+            .validate_and_transform(raw_data, transformed_at)
+            .await?;
 
         // Step 3: Aggregate results (uses input from validate_and_transform)
         let result = self.clone().aggregate(validated).await?;
@@ -62,6 +68,7 @@ impl DataPipeline {
     async fn validate_and_transform(
         self: Arc<Self>,
         batch: DataBatch,
+        transformed_at: i64,
     ) -> Result<ValidatedBatch, String> {
         println!(
             "  [Transform] Validating and transforming {} records from {}",
@@ -70,7 +77,7 @@ impl DataPipeline {
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(ValidatedBatch {
             valid_records: batch.records - 2, // Simulate 2 invalid records
-            transformed_at: chrono::Utc::now().timestamp(),
+            transformed_at,
         })
     }
 
@@ -123,11 +130,19 @@ impl NotificationTask {
             self.task_id, self.recipient_count
         );
 
+        // Generate deterministic batch_id at flow level using task_id
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.task_id.hash(&mut hasher);
+        self.recipient_count.hash(&mut hasher);
+        let batch_id = format!("batch_{:x}", hasher.finish());
+
         // Step 1: Prepare recipients
         let recipients = self.clone().prepare_recipients().await?;
 
         // Step 2: Send notifications (uses input from prepare_recipients)
-        let result = self.clone().dispatch(recipients).await?;
+        let result = self.clone().dispatch(recipients, batch_id).await?;
 
         println!(
             "[Notification {}] Sent successfully (ID: {})",
@@ -153,6 +168,7 @@ impl NotificationTask {
     async fn dispatch(
         self: Arc<Self>,
         recipients: RecipientList,
+        batch_id: String,
     ) -> Result<NotificationResult, String> {
         println!(
             "  [Dispatch] Sending to {} recipients (list: {})",
@@ -160,7 +176,7 @@ impl NotificationTask {
         );
         tokio::time::sleep(Duration::from_millis(150)).await;
         Ok(NotificationResult {
-            batch_id: format!("batch_{}", uuid::Uuid::new_v4()),
+            batch_id,
             sent_count: recipients.count,
         })
     }

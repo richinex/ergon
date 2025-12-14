@@ -325,7 +325,11 @@ impl LoanApplicationFlow {
     }
 
     #[step]
-    async fn finalize_loan(self: Arc<Self>, decision: LoanDecision) -> Result<String, String> {
+    async fn finalize_loan(
+        self: Arc<Self>,
+        decision: LoanDecision,
+        loan_id: String,
+    ) -> Result<String, String> {
         println!("[{}] Finalizing loan...", ts());
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -336,7 +340,6 @@ impl LoanApplicationFlow {
                 term_months,
                 ..
             } => {
-                let loan_id = format!("LOAN-{}", &Uuid::new_v4().to_string()[..8]);
                 println!(
                     "[{}] Loan finalized: {} - ${:.2} at {:.2}% for {} months",
                     ts(),
@@ -366,6 +369,9 @@ impl LoanApplicationFlow {
             self.application.requested_amount
         );
 
+        // Generate loan ID at flow level for determinism
+        let loan_id = format!("LOAN-{}", &Uuid::new_v4().to_string()[..8]);
+
         // Step 1: Validate application
         self.clone().validate_application().await?;
 
@@ -382,7 +388,7 @@ impl LoanApplicationFlow {
                 // Continue to finalization
                 let loan_id = self
                     .clone()
-                    .finalize_loan(decision)
+                    .finalize_loan(decision, loan_id)
                     .await
                     .map_err(LoanError::Infrastructure)?;
                 println!("[FLOW] Loan approved and finalized: {}\n", loan_id);

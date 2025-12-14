@@ -35,7 +35,10 @@ impl CriticalTask {
             self.task_id, attempt
         );
 
-        let result = self.clone().perform_critical_operation().await?;
+        // Generate timestamp at flow level for determinism
+        let executed_at = chrono::Utc::now().timestamp();
+
+        let result = self.clone().perform_critical_operation(executed_at).await?;
         let verified = self.clone().verify_and_commit(result).await?;
 
         println!("  [COMPLETED] Task {} finished", self.task_id);
@@ -44,7 +47,10 @@ impl CriticalTask {
     }
 
     #[step]
-    async fn perform_critical_operation(self: Arc<Self>) -> Result<OperationResult, String> {
+    async fn perform_critical_operation(
+        self: Arc<Self>,
+        executed_at: i64,
+    ) -> Result<OperationResult, String> {
         println!(
             "    [Step 1] Performing critical operation: {}",
             self.operation
@@ -56,7 +62,7 @@ impl CriticalTask {
             task_id: self.task_id.clone(),
             operation: self.operation.clone(),
             result_data: format!("DATA-{}", self.task_id),
-            executed_at: chrono::Utc::now().timestamp(),
+            executed_at,
         })
     }
 

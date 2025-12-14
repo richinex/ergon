@@ -1847,4 +1847,19 @@ impl ExecutionLog for RedisExecutionLog {
     fn work_notify(&self) -> Option<&Arc<Notify>> {
         self.work_notify.as_ref()
     }
+
+    async fn ping(&self) -> Result<()> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        redis::cmd("PING")
+            .query_async::<()>(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(())
+    }
 }

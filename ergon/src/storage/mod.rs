@@ -562,6 +562,19 @@ pub trait ExecutionLog: Send + Sync {
     async fn recover_stale_locks(&self) -> Result<u64> {
         Ok(0) // No-op by default
     }
+
+    /// Check storage connectivity.
+    ///
+    /// This method performs a simple health check to verify the storage backend
+    /// is accessible and operational. Used by worker health checks.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns Ok(()) by default. Backends should override to perform actual
+    /// connectivity checks (e.g., database ping, Redis PING command).
+    async fn ping(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage
@@ -732,5 +745,9 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
 
     async fn recover_stale_locks(&self) -> Result<u64> {
         (**self).recover_stale_locks().await
+    }
+
+    async fn ping(&self) -> Result<()> {
+        (**self).ping().await
     }
 }

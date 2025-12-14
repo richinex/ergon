@@ -172,13 +172,15 @@ struct WarehouseLoadResult {
 struct RetailETLPipeline {
     pipeline_id: String,
     run_date: String,
+    generation_timestamp: String,
 }
 
 impl RetailETLPipeline {
-    fn new(pipeline_id: String, run_date: String) -> Self {
+    fn new(pipeline_id: String, run_date: String, generation_timestamp: String) -> Self {
         Self {
             pipeline_id,
             run_date,
+            generation_timestamp,
         }
     }
 
@@ -593,7 +595,7 @@ impl RetailETLPipeline {
 
         Ok(AnalyticsReport {
             report_id: self.pipeline_id.clone(),
-            generated_at: chrono::Utc::now().to_rfc3339(),
+            generated_at: self.generation_timestamp.clone(),
             total_revenue,
             total_transactions,
             unique_customers,
@@ -670,8 +672,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pipeline_id = format!("ETL-{}", uuid::Uuid::new_v4());
     let run_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let generation_timestamp = chrono::Utc::now().to_rfc3339();
 
-    let pipeline = Arc::new(RetailETLPipeline::new(pipeline_id.clone(), run_date));
+    let pipeline = Arc::new(RetailETLPipeline::new(
+        pipeline_id.clone(),
+        run_date,
+        generation_timestamp,
+    ));
     let flow_id = uuid::Uuid::new_v4();
 
     println!("Pipeline ID: {}", pipeline_id);

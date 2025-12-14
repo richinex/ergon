@@ -364,7 +364,7 @@ impl ExecutionContext {
                         // If child failed, don't return cached result - let it fail again
                         tracing::debug!("Signal indicates failure for step {}, not caching", step);
                     } else {
-                        tracing::warn!("Failed to deserialize signal payload for step {}", step);
+                        tracing::debug!("Failed to deserialize signal payload for step {}", step);
                     }
                 } else {
                     tracing::debug!("No signal params found for step {} yet", step);

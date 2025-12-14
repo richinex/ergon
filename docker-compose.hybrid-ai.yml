@@ -1,0 +1,55 @@
+# Docker Compose for Hybrid AI Example with External Worker
+#
+# This demonstrates the separation of concerns:
+# - Scheduler: ergon/examples/hybrid_ai_external_worker.rs
+# - Worker: ergon-worker/src/bin/hybrid-ai-worker.rs
+#
+# Usage:
+# 1. Start services:
+#    docker-compose -f docker-compose.hybrid-ai.yml up -d
+#
+# 2. Run the scheduler example:
+#    DATABASE_URL=postgres://ergon:ergon@localhost:5432/ergon \
+#    cargo run --example hybrid_ai_external_worker --features postgres
+#
+# 3. Stop services:
+#    docker-compose -f docker-compose.hybrid-ai.yml down
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ergon
+      POSTGRES_USER: ergon
+      POSTGRES_PASSWORD: ergon
+    ports:
+      - "5432:5432"
+    volumes:
+      - hybrid_ai_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ergon"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Hybrid AI Worker - processes ContentFlow and AuditLogFlow
+  hybrid-ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.hybrid-ai-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WORKER_ID: hybrid-ai-worker-1
+      DATABASE_URL: postgres://ergon:ergon@postgres:5432/ergon
+      LOG_LEVEL: info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "hybrid-ai-worker"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  hybrid_ai_data:

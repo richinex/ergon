@@ -40,31 +40,43 @@ impl OrderProcessor {
     async fn process_order(self: Arc<Self>) -> Result<OrderResult, String> {
         println!("[FLOW] Processing order {}", self.order_id);
 
+        // Generate timestamps at flow level for determinism
+        let validated_at = chrono::Utc::now().timestamp();
+        let charged_at = chrono::Utc::now().timestamp();
+        let reserved_at = chrono::Utc::now().timestamp();
+        let completed_at = chrono::Utc::now().timestamp();
+
         // Step 1: Validate order
-        let validation = self.clone().validate_order().await?;
+        let validation = self.clone().validate_order(validated_at).await?;
 
         // Step 2: Charge payment (CRITICAL - must run exactly once!)
-        let payment = self.clone().charge_payment(validation).await?;
+        let payment = self.clone().charge_payment(validation, charged_at).await?;
 
         // Step 3: Reserve inventory (will fail first 2 times, worker auto-retries)
-        let inventory = self.clone().reserve_inventory(payment).await?;
+        let inventory = self.clone().reserve_inventory(payment, reserved_at).await?;
 
         // Step 4: Send confirmation
-        let result = self.clone().send_confirmation(inventory).await?;
+        let result = self
+            .clone()
+            .send_confirmation(inventory, completed_at)
+            .await?;
 
         println!("[FLOW] Order {} completed successfully", self.order_id);
         Ok(result)
     }
 
     #[step]
-    async fn validate_order(self: Arc<Self>) -> Result<ValidationResult, String> {
+    async fn validate_order(
+        self: Arc<Self>,
+        validated_at: i64,
+    ) -> Result<ValidationResult, String> {
         println!("  [Step 1/4] Validating order {}", self.order_id);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         Ok(ValidationResult {
             order_id: self.order_id.clone(),
             customer_id: self.customer_id.clone(),
-            validated_at: chrono::Utc::now().timestamp(),
+            validated_at,
         })
     }
 
@@ -72,6 +84,7 @@ impl OrderProcessor {
     async fn charge_payment(
         self: Arc<Self>,
         validation: ValidationResult,
+        charged_at: i64,
     ) -> Result<PaymentResult, String> {
         println!(
             "  [Step 2/4] Charging payment for order {}",
@@ -97,7 +110,7 @@ impl OrderProcessor {
         Ok(PaymentResult {
             transaction_id: format!("TXN-{}", self.order_id),
             amount_charged: self.amount,
-            charged_at: chrono::Utc::now().timestamp(),
+            charged_at,
         })
     }
 
@@ -105,6 +118,7 @@ impl OrderProcessor {
     async fn reserve_inventory(
         self: Arc<Self>,
         payment: PaymentResult,
+        reserved_at: i64,
     ) -> Result<InventoryResult, String> {
         let count = INVENTORY_RESERVE_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -131,7 +145,7 @@ impl OrderProcessor {
 
         Ok(InventoryResult {
             reservation_id: format!("RES-{}", self.order_id),
-            reserved_at: chrono::Utc::now().timestamp(),
+            reserved_at,
         })
     }
 
@@ -139,6 +153,7 @@ impl OrderProcessor {
     async fn send_confirmation(
         self: Arc<Self>,
         inventory: InventoryResult,
+        completed_at: i64,
     ) -> Result<OrderResult, String> {
         println!(
             "  [Step 4/4] Sending confirmation email for reservation {}",
@@ -150,7 +165,7 @@ impl OrderProcessor {
         Ok(OrderResult {
             order_id: self.order_id.clone(),
             status: "completed".to_string(),
-            completed_at: chrono::Utc::now().timestamp(),
+            completed_at,
         })
     }
 }

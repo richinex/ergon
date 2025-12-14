@@ -112,11 +112,21 @@ struct OrderComplete {
 impl OrderFlow {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<OrderComplete, String> {
+        // Generate deterministic transaction_id at flow level using hash of order_id
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.order_id.hash(&mut hasher);
+        let transaction_id = format!("txn_{:x}", hasher.finish());
+
         // Step 1: Validate order
         let validation = self.clone().validate_order().await?;
 
         // Step 2: Charge payment
-        let payment = self.clone().charge_payment(validation).await?;
+        let payment = self
+            .clone()
+            .charge_payment(validation, transaction_id)
+            .await?;
 
         // Step 3: Fulfill order
         let fulfillment = self.clone().fulfill_order(payment.clone()).await?;
@@ -167,6 +177,7 @@ impl OrderFlow {
     async fn charge_payment(
         self: Arc<Self>,
         validation: ValidationResult,
+        transaction_id: String,
     ) -> Result<PaymentResult, String> {
         // Simulate payment gateway call
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -179,7 +190,7 @@ impl OrderFlow {
 
         Ok(PaymentResult {
             order_id: self.order_id,
-            transaction_id: format!("txn_{}", Uuid::new_v4()),
+            transaction_id,
             amount: validation.price,
         })
     }

@@ -168,9 +168,16 @@ impl OrderFlow {
             return Err("Payment gateway timeout - will retry".to_string());
         }
 
+        // Generate deterministic transaction ID from order_id
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.order_id.hash(&mut hasher);
+        let deterministic_id = hasher.finish();
+
         Ok(PaymentResult {
             order_id: self.order_id,
-            transaction_id: format!("txn_{}", Uuid::new_v4()),
+            transaction_id: format!("txn_{:016x}", deterministic_id),
             amount: validation.price,
         })
     }

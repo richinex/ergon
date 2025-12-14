@@ -51,14 +51,25 @@ impl OrderProcessor {
     async fn process_order(self: Arc<Self>) -> Result<OrderResult, String> {
         println!("\n[PARENT FLOW] Processing order: {}", self.order_id);
 
+        // Generate non-deterministic values at flow level
+        let validated_at = chrono::Utc::now().timestamp();
+        let transaction_id = format!("TXN-{}", uuid::Uuid::new_v4());
+        let reservation_id = format!("RES-{}", uuid::Uuid::new_v4());
+
         // Step 1: Validate order
-        let validation = self.clone().validate_order().await?;
+        let validation = self.clone().validate_order(validated_at).await?;
 
         // Step 2: Process payment (this will schedule a CHILD FLOW!)
-        let payment_result = self.clone().process_payment(validation).await?;
+        let payment_result = self
+            .clone()
+            .process_payment(validation, transaction_id)
+            .await?;
 
         // Step 3: Reserve inventory (this will schedule another CHILD FLOW!)
-        let inventory_result = self.clone().reserve_inventory(payment_result).await?;
+        let inventory_result = self
+            .clone()
+            .reserve_inventory(payment_result, reservation_id)
+            .await?;
 
         // Step 4: Finalize order
         let result = self.clone().finalize_order(inventory_result).await?;
@@ -68,7 +79,10 @@ impl OrderProcessor {
     }
 
     #[step]
-    async fn validate_order(self: Arc<Self>) -> Result<ValidationResult, String> {
+    async fn validate_order(
+        self: Arc<Self>,
+        validated_at: i64,
+    ) -> Result<ValidationResult, String> {
         println!("  [Step] Validating order {}", self.order_id);
 
         // Call helper method (not tracked as separate step)
@@ -83,7 +97,7 @@ impl OrderProcessor {
 
         Ok(ValidationResult {
             order_id: self.order_id.clone(),
-            validated_at: chrono::Utc::now().timestamp(),
+            validated_at,
         })
     }
 
@@ -91,6 +105,7 @@ impl OrderProcessor {
     async fn process_payment(
         self: Arc<Self>,
         validation: ValidationResult,
+        transaction_id: String,
     ) -> Result<PaymentInfo, String> {
         println!(
             "  [Step] Processing payment for order {}",
@@ -106,7 +121,7 @@ impl OrderProcessor {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         Ok(PaymentInfo {
-            transaction_id: format!("TXN-{}", uuid::Uuid::new_v4()),
+            transaction_id,
             amount: self.total_amount,
             status: "completed".to_string(),
         })
@@ -116,6 +131,7 @@ impl OrderProcessor {
     async fn reserve_inventory(
         self: Arc<Self>,
         payment: PaymentInfo,
+        reservation_id: String,
     ) -> Result<InventoryReservation, String> {
         println!(
             "  [Step] Reserving inventory (payment: {})",
@@ -129,7 +145,7 @@ impl OrderProcessor {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         Ok(InventoryReservation {
-            reservation_id: format!("RES-{}", uuid::Uuid::new_v4()),
+            reservation_id,
             items: self.items.clone(),
         })
     }
@@ -187,8 +203,12 @@ impl PaymentFlow {
             self.transaction_id
         );
 
-        let auth = self.clone().authorize_payment().await?;
-        let capture = self.clone().capture_payment(auth).await?;
+        // Generate non-deterministic values at flow level
+        let auth_code = format!("AUTH-{}", uuid::Uuid::new_v4());
+        let capture_id = format!("CAP-{}", uuid::Uuid::new_v4());
+
+        let auth = self.clone().authorize_payment(auth_code).await?;
+        let capture = self.clone().capture_payment(auth, capture_id).await?;
         let result = self.clone().confirm_payment(capture).await?;
 
         println!(
@@ -199,7 +219,7 @@ impl PaymentFlow {
     }
 
     #[step]
-    async fn authorize_payment(self: Arc<Self>) -> Result<AuthResult, String> {
+    async fn authorize_payment(self: Arc<Self>, auth_code: String) -> Result<AuthResult, String> {
         println!(
             "    [Step] Authorizing ${:.2} via {}",
             self.amount, self.payment_method
@@ -207,18 +227,22 @@ impl PaymentFlow {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         Ok(AuthResult {
-            auth_code: format!("AUTH-{}", uuid::Uuid::new_v4()),
+            auth_code,
             authorized_amount: self.amount,
         })
     }
 
     #[step(inputs(auth = "authorize_payment"))]
-    async fn capture_payment(self: Arc<Self>, auth: AuthResult) -> Result<CaptureResult, String> {
+    async fn capture_payment(
+        self: Arc<Self>,
+        auth: AuthResult,
+        capture_id: String,
+    ) -> Result<CaptureResult, String> {
         println!("    [Step] Capturing payment (auth: {})", auth.auth_code);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         Ok(CaptureResult {
-            capture_id: format!("CAP-{}", uuid::Uuid::new_v4()),
+            capture_id,
             captured_amount: auth.authorized_amount,
         })
     }

@@ -1,0 +1,97 @@
+# Ergon Worker Distributed Setup
+# Demonstrates horizontal scaling with multiple workers
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ergon
+      POSTGRES_USER: ergon
+      POSTGRES_PASSWORD: ergon
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ergon"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Worker 1 - General purpose with timers
+  worker-1:
+    build:
+      context: .
+      dockerfile: ergon-worker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WORKER_ID: worker-1
+      STORAGE_TYPE: postgres
+      DATABASE_URL: postgres://ergon:ergon@postgres:5432/ergon
+      POLL_INTERVAL_MS: 100
+      MAX_CONCURRENT_FLOWS: 50
+      LOG_LEVEL: info
+      HEALTH_PORT: 8080
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # Worker 2 - High throughput
+  worker-2:
+    build:
+      context: .
+      dockerfile: ergon-worker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WORKER_ID: worker-2
+      STORAGE_TYPE: postgres
+      DATABASE_URL: postgres://ergon:ergon@postgres:5432/ergon
+      POLL_INTERVAL_MS: 50
+      MAX_CONCURRENT_FLOWS: 100
+      LOG_LEVEL: info
+      HEALTH_PORT: 8080
+    ports:
+      - "8082:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # Worker 3 - Conservative
+  worker-3:
+    build:
+      context: .
+      dockerfile: ergon-worker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WORKER_ID: worker-3
+      STORAGE_TYPE: postgres
+      DATABASE_URL: postgres://ergon:ergon@postgres:5432/ergon
+      POLL_INTERVAL_MS: 200
+      MAX_CONCURRENT_FLOWS: 25
+      LOG_LEVEL: debug
+      HEALTH_PORT: 8080
+    ports:
+      - "8083:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  postgres_data:
