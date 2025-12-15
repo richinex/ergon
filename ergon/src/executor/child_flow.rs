@@ -108,16 +108,15 @@ where
         // 2. Child type
         // 3. Child data hash
         // This ensures each unique child invocation gets a stable, unique step ID
-        let step = if let Some(parent_step) = ctx.get_enclosing_step() {
-            // Hash the parent step + child type + child data to get a stable child step ID
+        // Generate a stable step ID based on child invocation
+        // CRITICAL: We hash ONLY child_type + child_data, ignoring enclosing_step entirely
+        // This is because parallel DAG execution creates race conditions where enclosing_step
+        // gets polluted with non-deterministic values from parallel steps
+        let step = {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            parent_step.hash(&mut hasher);
             self.child_type.hash(&mut hasher);
             self.child_bytes.hash(&mut hasher);
             (hasher.finish() & 0x7FFFFFFF) as i32
-        } else {
-            // Fallback to counter if not within a step (shouldn't happen in normal usage)
-            ctx.next_step()
         };
 
         // Log invocation start - this creates the invocation in storage

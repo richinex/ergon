@@ -223,12 +223,6 @@ pub fn dag(input: TokenStream) -> TokenStream {
             // Execute registry and handle framework/infrastructure errors
             match __registry.execute().await {
                 Ok(_) => {
-                    // DAG execution complete - reset enclosing_step to -1 for flow-level operations
-                    // This prevents leftover step hashes from polluting child flow invocations
-                    if let Ok(__ctx) = ergon::EXECUTION_CONTEXT.try_with(|ctx| ctx.clone()) {
-                        __ctx.set_enclosing_step(-1);
-                    }
-
                     // Handle is parameterized by Result<T, UserError>
                     // resolve() returns Result<Result<T, UserError>, ExecutionError>
                     // Flatten and convert user errors to ExecutionError::User with downcasting support
