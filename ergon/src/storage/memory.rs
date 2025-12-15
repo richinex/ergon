@@ -29,8 +29,6 @@ pub struct InMemoryExecutionLog {
     flow_queue: dashmap::DashMap<Uuid, super::ScheduledFlow>,
     /// Concurrent storage for signal parameters keyed by (flow_id, step, signal_name)
     signal_params: dashmap::DashMap<(Uuid, i32, String), Vec<u8>>,
-    /// Concurrent storage for step-child mappings keyed by (flow_id, parent_step)
-    step_child_mappings: dashmap::DashMap<(Uuid, i32), i32>,
     /// Index mapping flow_id to task_id for fast lookup during resume_flow
     flow_task_map: dashmap::DashMap<Uuid, Uuid>,
     /// Channel for pending flows (mimics Redis Stream)
@@ -48,7 +46,6 @@ impl InMemoryExecutionLog {
             invocations: dashmap::DashMap::new(),
             flow_queue: dashmap::DashMap::new(),
             signal_params: dashmap::DashMap::new(),
-            step_child_mappings: dashmap::DashMap::new(),
             flow_task_map: dashmap::DashMap::new(),
             pending_tx,
             pending_rx: Arc::new(tokio::sync::Mutex::new(pending_rx)),
@@ -245,7 +242,6 @@ impl ExecutionLog for InMemoryExecutionLog {
         self.invocations.clear();
         self.flow_queue.clear();
         self.signal_params.clear();
-        self.step_child_mappings.clear();
         self.flow_task_map.clear();
 
         // Drain the channel by receiving all pending messages
@@ -570,28 +566,6 @@ impl ExecutionLog for InMemoryExecutionLog {
         }
 
         Ok(false)
-    }
-
-    async fn store_step_child_mapping(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-        child_step: i32,
-    ) -> Result<()> {
-        self.step_child_mappings
-            .insert((flow_id, parent_step), child_step);
-        Ok(())
-    }
-
-    async fn get_child_step_for_parent(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-    ) -> Result<Option<i32>> {
-        Ok(self
-            .step_child_mappings
-            .get(&(flow_id, parent_step))
-            .map(|v| *v))
     }
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {

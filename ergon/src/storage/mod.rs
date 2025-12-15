@@ -445,42 +445,6 @@ pub trait ExecutionLog: Send + Sync {
     // step corresponds to the parent step, so on replay we can skip the step body
     // and return the child's cached result directly.
 
-    /// Store a mapping from a parent step to its child invocation step.
-    ///
-    /// This is called when `invoke().result()` is invoked within a `#[step]` wrapper.
-    /// It records that the parent step is waiting for a child invocation at child_step.
-    ///
-    /// # Default Implementation
-    ///
-    /// Returns Ok by default (no-op). Storage backends that support child flows
-    /// should override this method.
-    async fn store_step_child_mapping(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-        child_step: i32,
-    ) -> Result<()> {
-        let _ = (flow_id, parent_step, child_step);
-        Ok(())
-    }
-
-    /// Get the child step for a parent step, if one exists.
-    ///
-    /// Returns the child step number if the parent step has a pending child invocation,
-    /// or None if the parent step has no child.
-    ///
-    /// # Default Implementation
-    ///
-    /// Returns None by default.
-    async fn get_child_step_for_parent(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-    ) -> Result<Option<i32>> {
-        let _ = (flow_id, parent_step);
-        Ok(None)
-    }
-
     // ===== Cleanup Operations =====
     // Periodic cleanup to prevent unbounded growth of completed flow data.
 
@@ -712,27 +676,6 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
 
     async fn get_waiting_signals(&self) -> Result<Vec<SignalInfo>> {
         (**self).get_waiting_signals().await
-    }
-
-    async fn store_step_child_mapping(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-        child_step: i32,
-    ) -> Result<()> {
-        (**self)
-            .store_step_child_mapping(flow_id, parent_step, child_step)
-            .await
-    }
-
-    async fn get_child_step_for_parent(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-    ) -> Result<Option<i32>> {
-        (**self)
-            .get_child_step_for_parent(flow_id, parent_step)
-            .await
     }
 
     async fn cleanup_completed(&self, older_than: Duration) -> Result<u64> {

@@ -109,9 +109,8 @@ where
         // 3. Child data hash
         // This ensures each unique child invocation gets a stable, unique step ID
         // Generate a stable step ID based on child invocation
-        // CRITICAL: We hash ONLY child_type + child_data, ignoring enclosing_step entirely
-        // This is because parallel DAG execution creates race conditions where enclosing_step
-        // gets polluted with non-deterministic values from parallel steps
+        // Child invocations ONLY happen at flow level (not inside steps)
+        // Hash child_type + child_data for deterministic, unique step IDs
         let step = {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             self.child_type.hash(&mut hasher);
@@ -132,15 +131,6 @@ where
                 retry_policy: None,
             })
             .await;
-
-        // NEW: Record step-child mapping for proper replay handling
-        // This enables the #[step] macro to detect pending children and avoid
-        // re-executing the step body (which would cause side effects to run twice)
-        if let Some(parent_step) = ctx.get_enclosing_step() {
-            let _ = storage
-                .store_step_child_mapping(parent_id, parent_step, step)
-                .await;
-        }
 
         // Generate deterministic child UUID based on parent + child_type + child_data_hash
         // This ensures uniqueness regardless of step counter state (important on replay
@@ -213,7 +203,10 @@ where
 
                         // Parse type_name and message from formatted string
                         let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
-                            (error_msg[..colon_pos].to_string(), error_msg[colon_pos + 2..].to_string())
+                            (
+                                error_msg[..colon_pos].to_string(),
+                                error_msg[colon_pos + 2..].to_string(),
+                            )
                         } else {
                             ("unknown".to_string(), error_msg)
                         };
@@ -295,7 +288,10 @@ where
 
                 // Parse type_name and message from formatted string
                 let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
-                    (error_msg[..colon_pos].to_string(), error_msg[colon_pos + 2..].to_string())
+                    (
+                        error_msg[..colon_pos].to_string(),
+                        error_msg[colon_pos + 2..].to_string(),
+                    )
                 } else {
                     ("unknown".to_string(), error_msg)
                 };

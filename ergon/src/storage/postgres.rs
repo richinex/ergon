@@ -1025,49 +1025,6 @@ impl ExecutionLog for PostgresExecutionLog {
         Ok(true)
     }
 
-    async fn store_step_child_mapping(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-        child_step: i32,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO step_child_mappings (flow_id, parent_step, child_step, created_at)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT(flow_id, parent_step)
-             DO UPDATE SET child_step = EXCLUDED.child_step, created_at = EXCLUDED.created_at",
-        )
-        .bind(flow_id)
-        .bind(parent_step)
-        .bind(child_step)
-        .bind(Utc::now().timestamp_millis())
-        .execute(&self.pool)
-        .await?;
-
-        debug!(
-            "Stored step-child mapping: flow={}, parent_step={}, child_step={}",
-            flow_id, parent_step, child_step
-        );
-        Ok(())
-    }
-
-    async fn get_child_step_for_parent(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-    ) -> Result<Option<i32>> {
-        let child_step: Option<i32> = sqlx::query_scalar(
-            "SELECT child_step FROM step_child_mappings
-             WHERE flow_id = $1 AND parent_step = $2",
-        )
-        .bind(flow_id)
-        .bind(parent_step)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(child_step)
-    }
-
     fn work_notify(&self) -> Option<&Arc<Notify>> {
         self.work_notify.as_ref()
     }

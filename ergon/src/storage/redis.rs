@@ -380,11 +380,6 @@ impl RedisExecutionLog {
         })
     }
 
-    /// Builds the Redis key for step-child mapping.
-    fn step_child_mapping_key(flow_id: Uuid, parent_step: i32) -> String {
-        format!("ergon:step_child:{}:{}", flow_id, parent_step)
-    }
-
     /// Helper to parse invocation from Redis hash data.
     fn parse_invocation(&self, data: HashMap<String, Vec<u8>>) -> Result<Invocation> {
         // Helper to get string field
@@ -1797,51 +1792,6 @@ impl ExecutionLog for RedisExecutionLog {
         }
 
         Ok(total_claimed)
-    }
-
-    async fn store_step_child_mapping(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-        child_step: i32,
-    ) -> Result<()> {
-        let mut conn = self.get_connection().await?;
-        let mapping_key = Self::step_child_mapping_key(flow_id, parent_step);
-
-        // Store the child step number as a simple string value
-        let _: () = conn
-            .set(&mapping_key, child_step)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        Ok(())
-    }
-
-    async fn get_child_step_for_parent(
-        &self,
-        flow_id: Uuid,
-        parent_step: i32,
-    ) -> Result<Option<i32>> {
-        let mut conn = self.get_connection().await?;
-        let mapping_key = Self::step_child_mapping_key(flow_id, parent_step);
-
-        // Check if key exists first
-        let exists: bool = conn
-            .exists(&mapping_key)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        if !exists {
-            return Ok(None);
-        }
-
-        // Get the child step number
-        let child_step: i32 = conn
-            .get(&mapping_key)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        Ok(Some(child_step))
     }
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {

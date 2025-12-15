@@ -704,41 +704,6 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Set enclosing step so invoke().result() and timers/signals know their parent
                     __ctx.set_enclosing_step(__step);
 
-                    // NEW: Check if this step has a pending child invocation
-                    // This handles the replay case where:
-                    // 1. Step called invoke().result() and suspended (WaitingForSignal)
-                    // 2. Child completed and signaled the parent
-                    // 3. Flow is being replayed - we need to skip re-executing the body
-                    //    to avoid running side effects twice
-                    if let Ok(Some(__child_step)) = __ctx.storage().get_child_step_for_parent(__ctx.flow_id(), __step).await {
-                        // Get child invocation to check status and get signal name
-                        let __child_inv_opt = __ctx.storage().get_invocation(__ctx.flow_id(), __child_step).await.ok().flatten();
-                        if let Some(__child_inv) = __child_inv_opt {
-                            // Use timer_name as signal name (contains the signal token)
-                            let __signal_name = __child_inv.timer_name().unwrap_or("");
-                            // Check if the child's signal arrived
-                            if let Ok(Some(_)) = __ctx.storage().get_signal_params(__ctx.flow_id(), __child_step, __signal_name).await {
-                                // Child completed! Check if this step has cached result
-                            match __ctx.get_cached_result::<#return_type, _>(
-                                __step, __class_name, #method_name_str, &__params
-                            ).await {
-                                Ok(Some(__cached_result)) => {
-                                    // Step was completed after child signaled, return cached result
-                                    // Restore enclosing step before returning
-                                    if let Some(__prev) = __prev_enclosing_step {
-                                        __ctx.set_enclosing_step(__prev);
-                                    }
-                                    return Some(__cached_result);
-                                }
-                                Ok(None) | Err(_) => {
-                                    // No cached result yet, continue to execute body
-                                    // This happens when child signaled but step hasn't completed yet
-                                }
-                            }
-                            }
-                        }
-                    }
-
                     // Handle AWAIT call type
                     if matches!(__call_type, ergon::CallType::Await) {
                         let _ = __ctx.log_step_start(
