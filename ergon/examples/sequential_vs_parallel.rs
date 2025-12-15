@@ -153,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(|w| Box::pin(w.clone().run_parallel()))
         .await
     {
-        FlowOutcome::Completed(_) => {},
+        FlowOutcome::Completed(_) => {}
         FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
 
@@ -170,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(|w| Box::pin(w.clone().run_sequential()))
         .await
     {
-        FlowOutcome::Completed(_) => {},
+        FlowOutcome::Completed(_) => {}
         FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
 
@@ -182,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let executor3 = Executor::new(Uuid::new_v4(), workflow3.clone(), storage3);
     match executor3.execute(|w| Box::pin(w.clone().run_dag())).await {
-        FlowOutcome::Completed(_) => {},
+        FlowOutcome::Completed(_) => {}
         FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
 

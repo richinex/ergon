@@ -195,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let executor = Executor::new(Uuid::new_v4(), workflow.clone(), storage);
     match executor.execute(|w| Box::pin(w.clone().run())).await {
-        FlowOutcome::Completed(_) => {},
+        FlowOutcome::Completed(_) => {}
         FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
 

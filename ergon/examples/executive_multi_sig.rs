@@ -43,10 +43,7 @@ impl CorporateInbox {
 
     /// Simulates an executive signing the document
     async fn sign(&self, signal_name: &str, signer_name: &str) {
-        println!(
-            "   [SIGNER] {} has signed '{}'",
-            signer_name, signal_name
-        );
+        println!("   [SIGNER] {} has signed '{}'", signer_name, signal_name);
         let data = ergon::core::serialize_value(&signer_name.to_string()).unwrap();
         self.signals
             .write()

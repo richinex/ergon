@@ -683,7 +683,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(|p| Box::pin(p.clone().run_etl_pipeline()))
         .await
     {
-        FlowOutcome::Completed(Ok(_)) => {},
+        FlowOutcome::Completed(Ok(_)) => {}
         FlowOutcome::Completed(Err(e)) => return Err(e.into()),
         FlowOutcome::Suspended(reason) => {
             return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())

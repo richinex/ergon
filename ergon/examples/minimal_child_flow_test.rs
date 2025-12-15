@@ -176,7 +176,6 @@ impl ParentFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     let storage = Arc::new(SqliteExecutionLog::new(":memory:").await?);
     storage.reset().await?;
 
