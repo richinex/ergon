@@ -223,6 +223,12 @@ pub fn dag(input: TokenStream) -> TokenStream {
             // Execute registry and handle framework/infrastructure errors
             match __registry.execute().await {
                 Ok(_) => {
+                    // DAG execution complete - reset enclosing_step to -1 for flow-level operations
+                    // This prevents leftover step hashes from polluting child flow invocations
+                    if let Ok(__ctx) = ergon::EXECUTION_CONTEXT.try_with(|ctx| ctx.clone()) {
+                        __ctx.set_enclosing_step(-1);
+                    }
+
                     // Handle is parameterized by Result<T, UserError>
                     // resolve() returns Result<Result<T, UserError>, ExecutionError>
                     // Flatten and convert user errors to ExecutionError::User with downcasting support
@@ -234,8 +240,15 @@ pub fn dag(input: TokenStream) -> TokenStream {
                                 use ::ergon::kind::*;
                                 let __is_retryable = (__user_error).error_kind().is_retryable(&__user_error);
 
+                                // Get type name before any potential boxing/erasure
+                                // Using a helper function to capture the concrete type via inference
+                                fn type_name_of<T: ?Sized>(_: &T) -> &'static str {
+                                    std::any::type_name::<T>()
+                                }
+                                let __type_name = type_name_of(&__user_error);
+
                                 ergon::ExecutionError::User {
-                                    type_name: std::any::type_name_of_val(&__user_error).to_string(),
+                                    type_name: __type_name.to_string(),
                                     message: __user_error.to_string(),
                                     retryable: __is_retryable,
                                 }

@@ -79,7 +79,9 @@ pub(super) async fn complete_child_flow<S: ExecutionLog>(
             is_retryable: None, // Not applicable for success
         }
     } else {
-        // Error case - check if child's error was retryable
+        // Error case - use the error_msg which now contains properly formatted error
+        // After our worker.rs fix, error_msg will be like:
+        // "child_flow_custom_errors::CreditCheckError: Credit score 580..."
         let error_msg = error_msg.unwrap_or("Unknown error");
         let error_bytes = crate::core::serialize_value(&error_msg).unwrap_or_default();
 

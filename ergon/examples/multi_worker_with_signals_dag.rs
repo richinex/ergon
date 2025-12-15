@@ -804,7 +804,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚════════════════════════════════════════════════════════════╝\n");
     println!("Scenario: 3 concurrent orders, 4 workers, DAG-PARALLEL execution with SIGNAL-based approvals\n");
 
-    let storage = Arc::new(SqliteExecutionLog::new("complex_dag_signals.db").await?);
+    let storage = Arc::new(SqliteExecutionLog::new("data/complex_dag_signals.db").await?);
+    // let storage = Arc::new(ergon::storage::InMemoryExecutionLog::new());
     storage.reset().await?;
 
     // Create signal source for manager approvals

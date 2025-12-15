@@ -166,10 +166,27 @@ where
                     if payload.success {
                         return Ok(crate::core::deserialize_value(&payload.data)?);
                     } else {
+                        // Deserialize error message string
+                        // After worker.rs fix, this will be properly formatted like:
+                        // "child_flow_custom_errors::CreditCheckError: Credit score 580..."
                         let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                        // Return child error as Failed - retryability is determined by
-                        // ExecutionError::is_retryable() or user's custom error From impl
-                        return Err(ExecutionError::Failed(error_msg));
+
+                        // Parse type_name and message from formatted string
+                        // Format is "type_name: message"
+                        let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
+                            let type_name = error_msg[..colon_pos].to_string();
+                            let message = error_msg[colon_pos + 2..].to_string();
+                            (type_name, message)
+                        } else {
+                            // Fallback if format doesn't match
+                            ("unknown".to_string(), error_msg)
+                        };
+
+                        return Err(ExecutionError::User {
+                            type_name,
+                            message,
+                            retryable: payload.is_retryable.unwrap_or(true),
+                        });
                     }
                 }
             }
@@ -192,10 +209,21 @@ where
                     if payload.success {
                         return Ok(crate::core::deserialize_value(&payload.data)?);
                     } else {
+                        // Deserialize error message string
                         let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                        // Return child error as Failed - retryability is determined by
-                        // ExecutionError::is_retryable() or user's custom error From impl
-                        return Err(ExecutionError::Failed(error_msg));
+
+                        // Parse type_name and message from formatted string
+                        let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
+                            (error_msg[..colon_pos].to_string(), error_msg[colon_pos + 2..].to_string())
+                        } else {
+                            ("unknown".to_string(), error_msg)
+                        };
+
+                        return Err(ExecutionError::User {
+                            type_name,
+                            message,
+                            retryable: payload.is_retryable.unwrap_or(true),
+                        });
                     }
                 }
                 // Otherwise continue to suspend below
@@ -263,10 +291,21 @@ where
             if payload.success {
                 return Ok(crate::core::deserialize_value(&payload.data)?);
             } else {
+                // Deserialize error message string
                 let error_msg: String = crate::core::deserialize_value(&payload.data)?;
-                // Return child error as Failed - retryability is determined by
-                // ExecutionError::is_retryable() or user's custom error From impl
-                return Err(ExecutionError::Failed(error_msg));
+
+                // Parse type_name and message from formatted string
+                let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
+                    (error_msg[..colon_pos].to_string(), error_msg[colon_pos + 2..].to_string())
+                } else {
+                    ("unknown".to_string(), error_msg)
+                };
+
+                return Err(ExecutionError::User {
+                    type_name,
+                    message,
+                    retryable: payload.is_retryable.unwrap_or(true),
+                });
             }
         }
 

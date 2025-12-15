@@ -516,17 +516,21 @@ impl<S: ExecutionLog + 'static> Registry<S> {
 
                             // Convert user's error type E to ExecutionError
                             let converted_result = result.map(|_| ()).map_err(|e| {
+                                // Capture concrete type name BEFORE boxing to preserve type info
+                                // Using type_name::<E>() gives us the concrete error type (e.g., "CreditCheckError")
+                                // instead of the trait object type (e.g., "dyn core::error::Error + Send + Sync")
+                                let type_name = std::any::type_name::<E>().to_string();
+
                                 let boxed: BoxError = e.into();
+
+                                // Capture message from boxed error (BoxError implements Display)
+                                let message = boxed.to_string();
 
                                 // Try to downcast to ExecutionError first (framework errors)
                                 match boxed.downcast::<ExecutionError>() {
                                     Ok(exec_err) => *exec_err,
-                                    Err(boxed) => {
-                                        // User error - wrap in ExecutionError::User
-                                        let type_name =
-                                            std::any::type_name_of_val(&*boxed).to_string();
-                                        let message = boxed.to_string();
-
+                                    Err(_boxed) => {
+                                        // User error - wrap in ExecutionError::User with captured metadata
                                         // Note: Defaulting to retryable=true because the flow macro
                                         // has already checked retryability and stored the flag in storage.
                                         // This conversion happens during task panic recovery where we
