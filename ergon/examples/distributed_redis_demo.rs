@@ -196,25 +196,13 @@ struct NotificationResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n");
-    println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║      Ergon Redis Distributed Execution Demo             ║");
-    println!("╚══════════════════════════════════════════════════════════╝");
-    println!();
-
     let redis_url = "redis://127.0.0.1:6379";
 
     // Create Redis storage
-    println!("Connecting to Redis at {}...", redis_url);
     let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
 
     // Clear any previous data
     storage.reset().await?;
-    println!("Connected and cleared previous data\n");
-
-    // ===== SCHEDULER =====
-    println!("PHASE 1: Scheduling Jobs");
-    println!("─────────────────────────────────────────────────────────");
 
     let scheduler = Scheduler::new(storage.clone());
 
@@ -226,12 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(pipeline, flow_id).await?;
-        println!(
-            "   Scheduled PIPELINE-{:03} (task_id: {})",
-            i,
-            task_id.to_string().split('-').next().unwrap_or("")
-        );
+        scheduler.schedule(pipeline, flow_id).await?;
     }
 
     // Schedule notification tasks
@@ -242,19 +225,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(notification, flow_id).await?;
-        println!(
-            "   Scheduled NOTIF-{:03} (task_id: {})",
-            i,
-            task_id.to_string().split('-').next().unwrap_or("")
-        );
+        scheduler.schedule(notification, flow_id).await?;
     }
-
-    println!("\nTotal jobs scheduled: 8 (5 pipelines + 3 notifications)\n");
-
-    // ===== WORKERS =====
-    println!("PHASE 2: Starting Workers");
-    println!("─────────────────────────────────────────────────────────");
 
     // Start 3 workers concurrently
     let mut worker_handles = vec![];
@@ -262,8 +234,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         let storage_clone = storage.clone();
         let worker_id = format!("worker-{}", i);
-
-        println!("   Starting {}", worker_id);
 
         let handle = tokio::spawn(async move {
             let worker = Worker::new(storage_clone.clone(), &worker_id)
@@ -289,24 +259,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_handles.push(handle);
     }
 
-    println!("\nPHASE 3: Processing Jobs");
-    println!("─────────────────────────────────────────────────────────\n");
-
     // Wait for all workers to complete
     for handle in worker_handles {
         handle.await?;
     }
-
-    // ===== RESULTS =====
-    println!("\n");
-    println!("PHASE 4: Final Results");
-    println!("─────────────────────────────────────────────────────────");
-    println!("Workers have processed jobs for 15 seconds");
-    println!("Check the output above to see completed flows\n");
-
-    println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║                  Demo Complete!                          ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
 
     Ok(())
 }

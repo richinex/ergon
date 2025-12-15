@@ -395,12 +395,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
-    println!("\nStarting Order Processing API with Ergon + Redis...\n");
-
     // Setup Redis storage
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    println!("Connecting to Redis at: {}", redis_url);
 
     let storage = Arc::new(RedisExecutionLog::new(&redis_url).await?);
 
@@ -417,7 +414,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Start background workers to process flows
-    println!("Starting 2 background workers...");
     for worker_id in 0..2 {
         let storage_clone = storage.clone();
         tokio::spawn(async move {
@@ -448,24 +444,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start the server on port 3001
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await?;
-    println!("Server running on http://localhost:3001");
-    println!("\nAPI Endpoints:");
-    println!("  POST   /orders          - Submit a new order");
-    println!("  GET    /orders/:id      - Get order status");
-    println!("  POST   /orders/:id/retry - Retry a failed order");
-    println!("  GET    /health          - Health check");
-    println!("\nTry:");
-    println!(
-        r#"  curl -X POST http://localhost:3001/orders -H "Content-Type: application/json" -d '{{"item": "laptop", "quantity": 2, "customer_email": "user@example.com"}}'"#
-    );
-    println!("\nPress Ctrl+C to shutdown\n");
 
     // Setup graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-
-    println!("Server shutdown complete");
 
     Ok(())
 }

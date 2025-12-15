@@ -21,7 +21,7 @@
 //! cargo run --example idempotency_patterns --features=sqlite
 //! ```
 
-use ergon::executor::{ExecutionError, Executor, FlowOutcome};
+use ergon::executor::{ExecutionError, Executor};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -230,10 +230,6 @@ impl OrderProcessingFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║          Idempotency Patterns Example                    ║");
-    println!("╚═══════════════════════════════════════════════════════════╝");
-
     // Initialize services
     PAYMENT_SERVICE
         .set(PaymentService::new())
@@ -254,39 +250,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // First execution - uses flow_id_1
     let flow_id_1 = Uuid::new_v4();
-    println!(
-        ">>> First Execution (flow_id: {})",
-        &flow_id_1.to_string()[..8]
-    );
     let executor1 = Executor::new(flow_id_1, order.clone(), storage.clone());
-    let outcome1 = executor1
+    executor1
         .execute(|f| Box::pin(Arc::new(f.clone()).process()))
         .await;
-
-    match outcome1 {
-        FlowOutcome::Completed(Ok(result)) => println!("\n[SUCCESS] First execution: {}", result),
-        FlowOutcome::Completed(Err(e)) => println!("\n[ERROR] First execution failed: {}", e),
-        FlowOutcome::Suspended(reason) => println!("\n[SUSPENDED] First execution: {:?}", reason),
-    }
 
     // Second execution - uses DIFFERENT flow_id_2
     // This forces steps to re-execute (no cache from first execution)
     // But uses SAME business key (order_id) for idempotency keys
     let flow_id_2 = Uuid::new_v4();
-    println!(
-        "\n\n>>> Second Execution (flow_id: {})",
-        &flow_id_2.to_string()[..8]
-    );
     let executor2 = Executor::new(flow_id_2, order.clone(), storage.clone());
-    let outcome2 = executor2
+    executor2
         .execute(|f| Box::pin(Arc::new(f.clone()).process()))
         .await;
-
-    match outcome2 {
-        FlowOutcome::Completed(Ok(result)) => println!("\n[SUCCESS] Second execution: {}", result),
-        FlowOutcome::Completed(Err(e)) => println!("\n[ERROR] Second execution failed: {}", e),
-        FlowOutcome::Suspended(reason) => println!("\n[SUSPENDED] Second execution: {:?}", reason),
-    }
 
     storage.close().await?;
     Ok(())

@@ -166,13 +166,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
     let scheduler = Scheduler::new(storage.clone());
 
-    println!("\n=== Test: SEQUENTIAL with Multiple .invoke() Calls ===\n");
-
     let order = Order {
         id: "ORD-001".into(),
     };
-    let task_id = scheduler.schedule(order, Uuid::new_v4()).await?;
-    println!("[{}] Scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    scheduler.schedule(order, Uuid::new_v4()).await?;
 
     let worker =
         Worker::new(storage.clone(), "worker").with_poll_interval(Duration::from_millis(50));
@@ -187,6 +184,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     storage.close().await?;
 
-    println!("\n=== Test Complete ===");
     Ok(())
 }

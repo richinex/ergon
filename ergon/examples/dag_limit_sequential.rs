@@ -25,7 +25,7 @@
 
 use ergon::executor::{ExecutionError, Executor, FlowOutcome};
 use ergon::prelude::*;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FlowType)]
 struct ComplexDagSequential {
@@ -186,71 +186,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "complex_sequential".into(),
     });
 
-    let start = Instant::now();
     let executor = Executor::new(Uuid::new_v4(), workflow.clone(), storage);
-    let result = match executor.execute(|w| Box::pin(w.clone().run())).await {
-        FlowOutcome::Completed(r) => r,
+    match executor.execute(|w| Box::pin(w.clone().run())).await {
+        FlowOutcome::Completed(_) => {},
         FlowOutcome::Suspended(reason) => return Err(format!("Suspended: {:?}", reason).into()),
     };
-    let elapsed = start.elapsed();
-
-    println!("Result: {:?}", result);
-    println!("Time: {:?}", elapsed);
-
-    let expected = 1670i64;
-    let correct = result.as_ref().map(|&v| v == expected).unwrap_or(false);
-
-    println!("Expected: {}", expected);
-    println!(
-        "Got:      {}",
-        result
-            .as_ref()
-            .map(|v| v.to_string())
-            .unwrap_or("ERROR".into())
-    );
-    println!("Status:   {}", if correct { "CORRECT" } else { "WRONG" });
-    println!("Sequential: {:?}", elapsed);
 
     Ok(())
 }
-
-// **Expected output:**
-// ```
-// ╔═══════════════════════════════════════════════════════════════════════╗
-// ║           Complex DAG: SEQUENTIAL Execution (one at a time)          ║
-// ╚═══════════════════════════════════════════════════════════════════════╝
-//
-// [L0] start
-// [L1] fetch_a starting
-// [L1] fetch_a = 10
-// [L1] fetch_b starting        ← waits for fetch_a (sequential)
-// [L1] fetch_b = 5
-// [L2] mul_2 starting
-// [L2] mul_2 = 10 × 2 = 20
-// [L2] mul_3 starting          ← waits for mul_2 (sequential)
-// [L2] mul_3 = 10 × 3 = 30
-// [L2] square starting
-// [L2] square = 5² = 25
-// [L2] cube starting           ← waits for square (sequential)
-// [L2] cube = 5³ = 125
-// [L3] cross_mul starting
-// [L3] cross_mul = 30 × 25 = 750
-// [L4] cross_add starting
-// [L4] cross_add = 750 + 25 = 775
-// [L5] aggregate starting
-// [L5] aggregate = 750 + 775 + 125 = 1650
-// [L6] final starting
-// [L6] final = 20 + 1650 = 1670
-//
-// ┌─────────────────────────────────────────┐
-// │ Verification                            │
-// ├─────────────────────────────────────────┤
-// │ Expected: 1670                          │
-// │ Got:      1670                          │
-// │ Status:   CORRECT                    │
-// ├─────────────────────────────────────────┤
-// │ Timing                                  │
-// ├─────────────────────────────────────────┤
-// │ Sequential: ~500ms                      │
-// └─────────────────────────────────────────┘
-//

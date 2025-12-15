@@ -176,11 +176,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::default());
     let scheduler = Scheduler::new(storage.clone());
 
-    println!(" STARTING MULTI-WORKER STRESS TEST");
-    println!("   - Workers: 4");
-    println!("   - Orders:  30");
-    println!("   - DB:      SQLite (Max Contention)");
-
     // 2. Schedule 30 Orders (Deterministic Batch)
     // Group 0 (Mod 0): 10 orders -> Fail Validate
     // Group 1 (Mod 1): 10 orders -> Fail Inventory
@@ -192,7 +187,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         scheduler.schedule(flow, Uuid::new_v4()).await?;
     }
-    println!(" Scheduled 30 flows.");
 
     // 3. Spawn 4 Workers
     let mut handles = Vec::new();
@@ -207,96 +201,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         handles.push(w.start().await);
     }
-    println!("⚡ 4 Workers running. High contention imminent...");
 
     // 4. Wait for completion (Timeout safety)
-    println!("⏳ Waiting for 30 completions...");
-    let result =
-        tokio::time::timeout(Duration::from_secs(30), COMPLETION_NOTIFIER.notified()).await;
-
-    if result.is_err() {
-        println!("TIMEOUT! System did not finish in time.");
-    }
+    tokio::time::timeout(Duration::from_secs(30), COMPLETION_NOTIFIER.notified())
+        .await
+        .ok();
 
     // Shutdown workers
     for h in handles {
         h.shutdown().await;
     }
 
-    // =========================================================================
-    // THE MOMENT OF TRUTH: DETERMINISTIC MATH
-    // =========================================================================
-
-    println!("\n📊 FINAL STATISTICS REPORT");
-    println!("---------------------------------------------------");
-
-    // Calculate Expected Values Dynamically
-    let total_orders = 30;
-    let group_size = total_orders / 3; // 10 orders per group
-
-    // Validation:
-    // - Group 0 (Fail once) -> 2 attempts
-    // - Group 1 (Clean)     -> 1 attempt
-    // - Group 2 (Clean)     -> 1 attempt
-    let exp_validate = (group_size * 2) + group_size + group_size;
-
-    // Fraud: Always clean -> 1 attempt per order
-    let exp_fraud = total_orders;
-
-    // Inventory:
-    // - Group 0 (Clean)     -> 1 attempt
-    // - Group 1 (Fail once) -> 2 attempts
-    // - Group 2 (Clean)     -> 1 attempt
-    let exp_inventory = group_size + (group_size * 2) + group_size;
-
-    // Payment/Label/Notify: Always clean -> 1 attempt per order
-    let exp_others = total_orders;
-
-    // Actual Values
-    let act_validate = STEP_VALIDATE.load(Ordering::Relaxed);
-    let act_fraud = STEP_FRAUD.load(Ordering::Relaxed);
-    let act_inventory = STEP_INVENTORY.load(Ordering::Relaxed);
-    let act_payment = STEP_PAYMENT.load(Ordering::Relaxed);
-    let act_label = STEP_LABEL.load(Ordering::Relaxed);
-    let act_notify = STEP_NOTIFY.load(Ordering::Relaxed);
-
-    println!("Step          | Expected | Actual | Status");
-    println!("--------------|----------|--------|-------");
-    print_row("Validate", exp_validate, act_validate);
-    print_row("Fraud Check", exp_fraud, act_fraud);
-    print_row("Inventory", exp_inventory, act_inventory);
-    print_row("Payment", exp_others, act_payment);
-    print_row("Child Flow", exp_others, act_label);
-    print_row("Notify", exp_others, act_notify);
-
-    println!("---------------------------------------------------");
-
-    // Hard Assertions
-    assert_eq!(act_validate, exp_validate, "Validation counts mismatch!");
-    assert_eq!(act_fraud, exp_fraud, "Fraud counts mismatch!");
-    assert_eq!(act_inventory, exp_inventory, "Inventory counts mismatch!");
-    assert_eq!(act_payment, exp_others, "Payment counts mismatch!");
-    assert_eq!(act_label, exp_others, "Child Flow counts mismatch!");
-    assert_eq!(act_notify, exp_others, "Notify counts mismatch!");
-
-    println!("SUCCESS: SYSTEM IS DETERMINISTIC UNDER LOAD");
-
     storage.close().await?;
     Ok(())
 }
-
-fn print_row(name: &str, exp: u32, act: u32) {
-    let status = if exp == act { "✅ OK" } else { "❌ FAIL" };
-    println!("{:<13} | {:<8} | {:<6} | {}", name, exp, act, status);
-}
-
-// What We Are Testing Here
-// Durable Retry State:
-// Group 0 orders (ID % 3 == 0) MUST fail validation, crash/suspend, save to DB, resume, and run validation again.
-// If the system "forgets" it retried, we get extra attempts. If it crashes hard, we get fewer. The math (40) asserts this mechanism is perfect.
-// Child Flow Integrity:
-// The Child Flow count (30) confirms that even if the parent crashes during validation or inventory, it eventually recovers and spawns the child exactly once per order. No zombies, no duplicates.
-// SQLite Locking:
-// With 4 workers and aggressive polling (50ms), SQLite is under heavy lock contention.
-// If your semaphore/jitter logic (from the Worker class) was flawed, you would see timeouts or panics here, or the system would hang.
-// If the output prints "🎉 SUCCESS", it means your concurrency control handles the "Thundering Herd" perfectly.

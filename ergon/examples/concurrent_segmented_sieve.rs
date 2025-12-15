@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 use tokio::sync::Notify;
 
 // =============================================================================
@@ -144,22 +143,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(ergon::storage::InMemoryExecutionLog::default());
     let scheduler = Scheduler::new(storage.clone());
 
-    println!("⚡ STARTING ERGON PRIME SIEVE BENCHMARK");
-    println!("   Target: {}", LARGEST_PRIME);
-    println!("   Segment Size: {}", SEGMENT_SIZE);
-
-    let start_time = Instant::now();
-
     // 2. Pre-calculate Base Primes (Sequential Step)
     // We need primes up to sqrt(10,000,000) ~= 3162
     let sqrt_limit = (LARGEST_PRIME as f64).sqrt() as u32;
     let base_primes = simple_sieve(sqrt_limit);
-    println!("   Base Primes calculated: {}", base_primes.len());
 
     // 3. Scatter: Schedule Flows
     // This is equivalent to `go primesBetween(...)` in the Go example
     let mut low = 0;
-    let mut segments_count = 0;
 
     while low < LARGEST_PRIME {
         let mut high = low + SEGMENT_SIZE;
@@ -176,9 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scheduler.schedule(flow, uuid::Uuid::new_v4()).await?;
 
         low += SEGMENT_SIZE;
-        segments_count += 1;
     }
-    println!("   Scheduled {} concurrent segments.", segments_count);
 
     // 4. Start Workers (Simulating `runtime.NumCPU()` cores)
     // We spin up 8 concurrent workers to consume the segments
@@ -198,28 +187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Gather: Wait for completion
     DONE_NOTIFIER.notified().await;
 
-    let elapsed = start_time.elapsed();
-
     // 6. Cleanup
     for h in worker_handles {
         h.shutdown().await;
-    }
-
-    println!("\n📊 RESULTS");
-    println!("-----------------------------");
-    println!("Total Time:       {:?}", elapsed);
-    println!(
-        "Primes Found:     {}",
-        TOTAL_PRIMES_FOUND.load(Ordering::Relaxed)
-    );
-
-    // Validation
-    // Known count for 10,000,000 is 664,579
-    let found = TOTAL_PRIMES_FOUND.load(Ordering::Relaxed);
-    if found == 664_579 {
-        println!("Correctness:      ✅ PASS");
-    } else {
-        println!("Correctness:      ❌ FAIL (Expected 664,579)");
     }
 
     Ok(())

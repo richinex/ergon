@@ -72,14 +72,10 @@ impl LightweightFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Ergon Backpressure Control Example ===\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("backpressure_demo.db").await?);
     storage.reset().await?;
 
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("1. Scheduling high-load scenario (50 flows)...\n");
 
     // Schedule many heavy computation flows
     for i in 1..=30 {
@@ -96,18 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scheduler.schedule(flow, Uuid::new_v4()).await?;
     }
 
-    println!("   Scheduled 30 heavy computation flows");
-    println!("   Scheduled 20 lightweight flows");
-    println!("   Total: 50 flows\n");
-
-    println!("2. Starting workers with different configurations...\n");
-
     // Worker 1: No backpressure limit (default behavior)
-    println!("   Worker 1 Configuration:");
-    println!("     - No concurrent flow limit");
-    println!("     - Natural rate limiting via poll interval");
-    println!("     - Can spawn many tasks simultaneously\n");
-
     let worker1 = Worker::new(storage.clone(), "unlimited-worker")
         .with_poll_interval(Duration::from_millis(50));
     worker1
@@ -117,14 +102,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(|flow: Arc<LightweightFlow>| flow.execute())
         .await;
     let handle1 = worker1.start().await;
-    println!("   ✓ Started unlimited-worker\n");
 
     // Worker 2: With backpressure limit
-    println!("   Worker 2 Configuration:");
-    println!("     - Max 10 concurrent flows (semaphore limit)");
-    println!("     - Explicit backpressure control");
-    println!("     - Waits for slot when limit reached\n");
-
     let worker2 = Worker::new(storage.clone(), "limited-worker")
         .with_poll_interval(Duration::from_millis(50))
         .with_max_concurrent_flows(10); // Limit to 10 concurrent
@@ -135,34 +114,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(|flow: Arc<LightweightFlow>| flow.execute())
         .await;
     let handle2 = worker2.start().await;
-    println!("   ✓ Started limited-worker\n");
-
-    println!("3. Observing backpressure behavior...\n");
-    println!("   unlimited-worker: Picks up flows rapidly");
-    println!("   limited-worker: Controlled by semaphore\n");
 
     // Let workers process
-    println!("   Processing flows (this will take a few seconds)...\n");
     tokio::time::sleep(Duration::from_secs(5)).await;
-
-    println!("4. Shutting down workers...\n");
 
     handle1.shutdown().await;
     handle2.shutdown().await;
 
-    println!("   All workers stopped");
-
-    println!("\n5. Verifying results...\n");
-
     let incomplete = storage.get_incomplete_flows().await?;
     let completed_count = 50 - incomplete.len();
 
-    println!("   Completed: {}/50 flows", completed_count);
+    println!("Completed: {}/50 flows", completed_count);
     if !incomplete.is_empty() {
-        println!("   Incomplete: {} flows", incomplete.len());
+        println!("Incomplete: {} flows", incomplete.len());
     }
-
-    println!("\n=== Example Complete ===");
 
     storage.close().await?;
     Ok(())

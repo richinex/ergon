@@ -141,11 +141,6 @@ impl CreditApplication {
 
     #[flow]
     async fn run_application(self: Arc<Self>) -> Result<LoanApplicationState, String> {
-        println!(
-            "\n🚀 Starting Credit Application for {}",
-            self.application_id
-        );
-
         let mut state = self.clone().check_credit_score().await?;
 
         state = self.clone().decide_workflow(state).await?;
@@ -204,6 +199,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     DONE_NOTIFIER.notified().await;
 
     handle.shutdown().await;
-    println!("\n✨ Credit Application Simulation complete.");
     Ok(())
 }

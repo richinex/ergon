@@ -285,10 +285,6 @@ struct ProcessingReport {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║        Parallel File Processing Flow Example              ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     // Create sample input files
     setup_sample_files().await?;
 
@@ -302,10 +298,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // The scheduler does NOT wait for completion. It returns immediately.
     // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 1: Scheduling File Processing (API Server)           ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let scheduler = Scheduler::new(storage.clone());
 
@@ -322,20 +314,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output_file: output.to_string(),
         };
         let task_id = scheduler.schedule(processor, Uuid::new_v4()).await?;
-        println!(
-            "   ✓ {} scheduled (task_id: {})",
-            input,
-            &task_id.to_string()[..8]
-        );
         task_ids.push(task_id);
     }
-
-    println!("\n   → In production: Return HTTP 202 Accepted");
-    println!(
-        "   → Response body: {{\"task_ids\": [{:?}, ...]}}",
-        &task_ids[0].to_string()[..8]
-    );
-    println!("   → Client polls GET /api/tasks/:id for status\n");
 
     // ============================================================
     // PART 2: Worker Service (Separate Process)
@@ -345,10 +325,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // Workers are completely decoupled from the scheduler.
     // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 2: Starting Workers (Separate Service)               ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let start = Instant::now();
 
@@ -385,8 +361,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_handles.push(handle);
     }
 
-    println!("   ✓ 3 workers started and polling for work\n");
-
     // ============================================================
     // PART 3: Client Status Monitoring (Demo Only)
     // ============================================================
@@ -396,11 +370,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This demonstrates that workflows actually execute, but in production
     // the scheduler process would NOT do this polling.
     // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-    println!("   → Simulating client polling GET /api/tasks/:id...\n");
 
     // Wait for all workers to complete
     for handle in worker_handles {
@@ -438,8 +407,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn setup_sample_files() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Setting up sample data files...\n");
-
     // Create data directory
     tokio::fs::create_dir_all("data").await?;
 
@@ -474,6 +441,5 @@ async fn setup_sample_files() -> Result<(), Box<dyn std::error::Error>> {
     tokio::fs::write("data/sales_2024_q2.csv", q2_data).await?;
     tokio::fs::write("data/sales_2024_q3.csv", q3_data).await?;
 
-    println!("Created sample CSV files in 'data/' directory");
     Ok(())
 }

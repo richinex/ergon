@@ -81,7 +81,6 @@ impl OrderProcessor {
             .send_confirmation(inventory, completed_at)
             .await?;
 
-        println!("[FLOW] Order {} completed successfully", self.order_id);
         Ok(result)
     }
 
@@ -234,9 +233,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id = Uuid::new_v4();
     scheduler.schedule(order.clone(), flow_id).await?;
 
-    println!("Scheduled order: {}", order.order_id);
-    println!("Amount to charge: ${:.2}", order.amount);
-
     // ========================================================================
     // Worker with Automatic Retry
     // ========================================================================
@@ -258,29 +254,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     worker.await?;
-
-    // ========================================================================
-    // FINAL RESULTS
-    // ========================================================================
-
-    let invocations = storage.get_invocations_for_flow(flow_id).await?;
-    let flow_invocation = invocations.iter().find(|i| i.step() == 0);
-
-    if let Some(flow) = flow_invocation {
-        println!("Flow Status: {:?}", flow.status());
-    }
-
-    for inv in &invocations {
-        if inv.step() > 0 {
-            println!("  {} (completed)", inv.method_name());
-        }
-    }
-
-    let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
-    let inventory_count = INVENTORY_RESERVE_COUNT.load(Ordering::SeqCst);
-
-    println!("Payment charged:     {} time(s)", payment_count);
-    println!("Inventory reserved:  {} time(s)", inventory_count);
 
     Ok(())
 }

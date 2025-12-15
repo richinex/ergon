@@ -305,16 +305,9 @@ impl DocumentApprovalFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║     External Signal with Stdin Example                   ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
-
-    // Use StdinSignalSource (instead of SimulatedUserInputSource)
     let signal_source = Arc::new(StdinSignalSource::new());
 
-    // Start worker with signal processing - Worker automatically handles signal delivery
     let worker = Worker::new(storage.clone(), "approval-worker");
     worker
         .register(|flow: Arc<DocumentApprovalFlow>| flow.process())
@@ -322,8 +315,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = worker.with_signals(signal_source.clone()).start().await;
 
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("=== Scheduling Document for Approval ===\n");
 
     let doc1 = DocumentSubmission {
         document_id: "DOC-001".to_string(),
@@ -339,15 +330,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id = Uuid::new_v4();
     scheduler.schedule(flow1, flow_id).await?;
 
-    // Keep running until user terminates
-    println!("\n[INFO] Flow is waiting for your approval signals via stdin");
-    println!("[INFO] Press Ctrl+C to exit\n");
-
     tokio::signal::ctrl_c().await?;
 
     worker.shutdown().await;
     storage.close().await?;
 
-    println!("\n[INFO] Shutdown complete");
     Ok(())
 }

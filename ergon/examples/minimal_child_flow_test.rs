@@ -176,10 +176,6 @@ impl ParentFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║           Minimal Child Flow Test (SQLite)               ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
-    println!("MINIMAL test: ONE step, NO retries, NO DAG, NO errors\n");
 
     let storage = Arc::new(SqliteExecutionLog::new(":memory:").await?);
     storage.reset().await?;
@@ -201,51 +197,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(Duration::from_secs(5)).await;
     handle.shutdown().await;
-
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║                         Results                           ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
-    println!(
-        "Parent start count:    {}",
-        PARENT_START_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "Parent step count:     {}",
-        PARENT_STEP_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "Child executions:      {}",
-        CHILD_EXEC_COUNT.load(Ordering::Relaxed)
-    );
-
-    println!("\nExpected (with atomic steps refactoring):");
-    println!("  Parent starts:    2 (initial + resume after child)");
-    println!("  Parent step:      1 (atomic - executes once)");
-    println!("  Child executions: 1 (actual work)");
-
-    let parent_count = PARENT_START_COUNT.load(Ordering::Relaxed);
-    let parent_step = PARENT_STEP_COUNT.load(Ordering::Relaxed);
-    let child_count = CHILD_EXEC_COUNT.load(Ordering::Relaxed);
-
-    println!("\nAnalysis:");
-    if parent_count == 2 && parent_step == 2 && child_count == 1 {
-        println!("✅ PERFECT: This is the MINIMAL expected behavior");
-        println!("   - Parent suspends when invoking child (start #1)");
-        println!("   - Parent resumes when child completes (start #2)");
-        println!("   - Child executes once");
-        println!("   - Parent step runs twice (invoke + cached result)");
-    } else {
-        println!("⚠️  UNEXPECTED BEHAVIOR:");
-        if parent_count != 2 {
-            println!("   - Parent starts: {} (expected 2)", parent_count);
-        }
-        if parent_step != 2 {
-            println!("   - Parent step: {} (expected 2)", parent_step);
-        }
-        if child_count != 1 {
-            println!("   - Child executions: {} (expected 1)", child_count);
-        }
-    }
 
     Ok(())
 }

@@ -432,10 +432,6 @@ fn ts() -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║   External Signals with Custom Error Types Example       ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
-
     // Setup storage
     let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
 
@@ -455,7 +451,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     // Test 1: Approved Loan (Good Credit)
     // ========================================================================
-    println!("=== Test 1: Approved Loan (Good Credit) ===\n");
 
     let app1 = LoanApplication {
         application_id: "APP-001".to_string(),
@@ -490,7 +485,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(10) {
-            println!("[WARN] Timeout waiting for Test 1");
             break;
         }
         match storage.get_scheduled_flow(task_id_1).await? {
@@ -507,7 +501,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     // Test 2: Rejected Loan (Business Decision)
     // ========================================================================
-    println!("\n=== Test 2: Rejected Loan (Business Decision) ===\n");
 
     let app2 = LoanApplication {
         application_id: "APP-002".to_string(),
@@ -542,27 +535,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(20) {
-            println!("\n[TIMEOUT] Test 2 did not complete");
-            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_2).await {
-                println!(
-                    "[INFO] Final status: {:?}, retry_count: {}",
-                    scheduled.status, scheduled.retry_count
-                );
-            }
             break;
         }
         match storage.get_scheduled_flow(task_id_2).await? {
             Some(scheduled) => {
                 if matches!(scheduled.status, TaskStatus::Failed) {
-                    println!(
-                        "\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent"
-                    );
-                    println!("           Signal step succeeded and was cached (no re-suspension on retry)");
                     break;
                 }
             }
             None => {
-                println!("\n[COMPLETE] Test 2 flow removed from queue");
                 break;
             }
         }
@@ -572,7 +553,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     // Test 3: Ineligible Applicant (Low Credit - Error)
     // ========================================================================
-    println!("\n=== Test 3: Ineligible Applicant (Low Credit - Error) ===\n");
 
     let app3 = LoanApplication {
         application_id: "APP-003".to_string(),
@@ -607,7 +587,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     // Test 4: Invalid Application (Error)
     // ========================================================================
-    println!("\n=== Test 4: Invalid Application (Error) ===\n");
 
     let app4 = LoanApplication {
         application_id: "APP-004".to_string(),
@@ -642,21 +621,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shutdown
     tokio::time::sleep(Duration::from_secs(1)).await;
     worker.shutdown().await;
-
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Example Complete - Demonstrates:                        ║");
-    println!("║  • Custom error types for domain-specific failures       ║");
-    println!("║  • Signal outcomes as DATA (approved/rejected)           ║");
-    println!("║  • Worker integration with .with_signals()               ║");
-    println!("║  • Proper error vs outcome distinction                   ║");
-    println!("╚═══════════════════════════════════════════════════════════╝");
-
-    println!("\n[INFO] Key Takeaways:");
-    println!("   1. Signal outcomes (approved/rejected) are Ok(LoanDecision)");
-    println!("   2. Technical failures are Err(LoanError)");
-    println!("   3. Flow decides what outcomes mean (rejection = BusinessRejection error)");
-    println!("   4. Retryable::is_retryable() controls retry behavior");
-    println!("   5. Custom errors provide rich context for error handling\n");
 
     storage.close().await?;
     Ok(())

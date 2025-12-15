@@ -25,7 +25,7 @@
 use ergon::executor::{ExecutionError, InvokeChild, Worker};
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -84,34 +84,6 @@ async fn write_analytics_event(
     Ok(result.last_insert_rowid())
 }
 
-async fn query_analytics_events(
-    pool: &SqlitePool,
-    order_id: &str,
-) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT event_type, metadata
-        FROM analytics_events
-        WHERE order_id = ?
-        ORDER BY created_at ASC
-        "#,
-    )
-    .bind(order_id)
-    .fetch_all(pool)
-    .await?;
-
-    let events = rows
-        .into_iter()
-        .map(|row| {
-            let event_type: String = row.get("event_type");
-            let metadata: String = row.get("metadata");
-            (event_type, metadata)
-        })
-        .collect();
-
-    Ok(events)
-}
-
 // =============================================================================
 // Parent Flow - Order Processing (Parallel)
 // =============================================================================
@@ -146,7 +118,7 @@ impl OrderProcessing {
         .map_err(|e| e.to_string())?;
 
         pool.close().await;
-        println!("[Step 1] ✅ Payment validated: ${:.2}", self.amount);
+        println!("[Step 1] Payment validated: ${:.2}", self.amount);
         Ok(())
     }
 
@@ -170,7 +142,7 @@ impl OrderProcessing {
         .map_err(|e| e.to_string())?;
 
         pool.close().await;
-        println!("[Step 2] ✅ Inventory reserved: {} items", self.items.len());
+        println!("[Step 2] Inventory reserved: {} items", self.items.len());
         Ok(())
     }
 
@@ -178,28 +150,28 @@ impl OrderProcessing {
     #[step(depends_on = "reserve_inventory")]
     async fn process_shipment(self: Arc<Self>, result: String) -> Result<String, String> {
         println!("[Step 3a] Processing shipment for order {}", self.order_id);
-        println!("[Step 3a] ✅ Shipment created: {}", result);
+        println!("[Step 3a] Shipment created: {}", result);
         Ok(result)
     }
 
     #[step(depends_on = "reserve_inventory")]
     async fn process_revenue_analytics(self: Arc<Self>) -> Result<(), String> {
         println!("[Step 3b] Revenue analytics processing complete");
-        println!("[Step 3b] ✅ Revenue analytics written");
+        println!("[Step 3b] Revenue analytics written");
         Ok(())
     }
 
     #[step(depends_on = "reserve_inventory")]
     async fn process_inventory_analytics(self: Arc<Self>) -> Result<(), String> {
         println!("[Step 3c] Inventory analytics processing complete");
-        println!("[Step 3c] ✅ Inventory analytics written");
+        println!("[Step 3c] Inventory analytics written");
         Ok(())
     }
 
     #[step(depends_on = "reserve_inventory")]
     async fn process_notification(self: Arc<Self>) -> Result<(), String> {
         println!("[Step 4] Notification to {} complete", self.customer_email);
-        println!("[Step 4] ✅ Notification sent");
+        println!("[Step 4] Notification sent");
         Ok(())
     }
 
@@ -443,10 +415,6 @@ impl NotificationSender {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔═══════════════════════════════════════════════════════════════╗");
-    println!("║      Parallel DB Writes - E-commerce Order Processing        ║");
-    println!("╚═══════════════════════════════════════════════════════════════╝\n");
-
     // Setup databases
     let ergon_db = "data/ergon_write_db_parallel.db";
     let analytics_db = "data/analytics_parallel.db";
@@ -454,16 +422,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(ergon_db);
     let _ = std::fs::remove_file(analytics_db);
 
-    println!("📦 Setting up databases...");
     let analytics_pool = setup_analytics_db(analytics_db).await?;
     let storage = Arc::new(SqliteExecutionLog::new(ergon_db).await?);
-    println!("✅ Databases ready\n");
-
-    println!("═══════════════════════════════════════════════════════════════\n");
 
     // Create order
     let order_id = format!("ORD-{}", &Uuid::new_v4().to_string()[..8]);
-    println!("🛒 Processing order: {}\n", order_id);
 
     let order = OrderProcessing {
         order_id: order_id.clone(),
@@ -475,8 +438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Schedule and process
     let scheduler = Scheduler::new(storage.clone());
-    let task_id = scheduler.schedule(order, Uuid::new_v4()).await?;
-    println!("📋 Scheduled task: {}\n", &task_id.to_string()[..8]);
+    scheduler.schedule(order, Uuid::new_v4()).await?;
 
     // Start worker
     let worker =
@@ -495,58 +457,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for completion
     tokio::time::sleep(Duration::from_secs(4)).await;
     handle.shutdown().await;
-
-    println!("\n═══════════════════════════════════════════════════════════════\n");
-
-    // Query and verify analytics events
-    println!("📊 Querying Analytics Database...\n");
-    let events = query_analytics_events(&analytics_pool, &order_id).await?;
-
-    println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Analytics Events (in order)                                 │");
-    println!("├─────────────────────────────────────────────────────────────┤");
-    for (i, (event_type, metadata)) in events.iter().enumerate() {
-        println!("│ {}. {:<30} │ {}", i + 1, event_type, metadata);
-    }
-    println!("└─────────────────────────────────────────────────────────────┘\n");
-
-    // Verify expected events (order may vary for parallel writes)
-    let expected_events = [
-        "payment_validated",
-        "inventory_reserved",
-        "shipment_created",
-        "revenue_tracked",
-        "inventory_tracked",
-        "notification_sent",
-    ];
-
-    let actual_events: Vec<String> = events.iter().map(|(e, _)| e.clone()).collect();
-    let all_present = expected_events
-        .iter()
-        .all(|e| actual_events.contains(&e.to_string()));
-
-    println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Verification                                                │");
-    println!("├─────────────────────────────────────────────────────────────┤");
-    println!("│ Expected events: 6                                          │");
-    println!(
-        "│ Found events:    {}                                          │",
-        events.len()
-    );
-    println!(
-        "│ Status:          {:<42} │",
-        if all_present && events.len() == 6 {
-            "✅ All events written correctly"
-        } else {
-            "❌ Missing or extra events"
-        }
-    );
-    println!("└─────────────────────────────────────────────────────────────┘\n");
-
-    println!("💡 Key Insight:");
-    println!("   Parallel execution runs independent analytics writes concurrently.");
-    println!("   Steps 3a, 3b, and 3c execute simultaneously after step 2 completes.");
-    println!("   The order of parallel events in the DB may vary between runs.\n");
 
     // Cleanup
     storage.close().await?;

@@ -574,7 +574,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for order in &orders {
         scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
-        println!("   - {} scheduled", order.order_id);
     }
 
     // Start 1 worker (testing for logic bugs independent of concurrency)
@@ -592,47 +591,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handle = worker.start().await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     handle.shutdown().await;
-
-    println!(
-        "  validate_customer:   {}",
-        VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  check_fraud:         {}",
-        CHECK_FRAUD_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  reserve_inventory:   {}",
-        RESERVE_INVENTORY_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  process_payment:     {}",
-        PROCESS_PAYMENT_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  generate_label:      {} (child flow invocations)",
-        GENERATE_LABEL_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  notify_customer:     {}",
-        NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed)
-    );
-
-    for i in 1..=3 {
-        let order_id = format!("ORD-{:03}", i);
-        if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
-            println!(
-                "  {}: validate={}, fraud={}, inventory={}, payment={}, label={}, notify={}",
-                order_id,
-                attempts.validate_customer.load(Ordering::Relaxed),
-                attempts.check_fraud.load(Ordering::Relaxed),
-                attempts.reserve_inventory.load(Ordering::Relaxed),
-                attempts.process_payment.load(Ordering::Relaxed),
-                attempts.generate_label.load(Ordering::Relaxed),
-                attempts.notify_customer.load(Ordering::Relaxed)
-            );
-        }
-    }
 
     storage.close().await?;
     Ok(())

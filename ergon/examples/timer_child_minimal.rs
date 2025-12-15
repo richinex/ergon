@@ -131,9 +131,6 @@ impl ParentTask {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nMinimal Timer + Child Flow + Error Test");
-    println!("========================================\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("timer_child_minimal.db").await?);
     storage.reset().await?;
 
@@ -149,9 +146,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let scheduler = ergon::executor::Scheduler::new(storage.clone());
-
-    // Test 1: Child succeeds
-    println!("=== Test 1: Child Succeeds ===");
     let task1 = ParentTask {
         test_name: "Test1".to_string(),
         child_should_fail: false,
@@ -162,13 +156,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(10) {
-            println!("[TIMEOUT] Test 1 did not complete");
             break;
         }
         match storage.get_scheduled_flow(task_id_1).await? {
             Some(scheduled) => {
                 if matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
-                    println!("Test 1 final status: {:?}\n", scheduled.status);
                     break;
                 }
             }
@@ -176,9 +168,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-
-    // Test 2: Child fails with non-retryable error
-    println!("=== Test 2: Child Fails (Non-Retryable) ===");
     let task2 = ParentTask {
         test_name: "Test2".to_string(),
         child_should_fail: true,
@@ -189,13 +178,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(10) {
-            println!("[TIMEOUT] Test 2 did not complete");
             break;
         }
         match storage.get_scheduled_flow(task_id_2).await? {
             Some(scheduled) => {
                 if matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
-                    println!("Test 2 final status: {:?}\n", scheduled.status);
                     break;
                 }
             }
@@ -203,8 +190,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-
-    println!("=== All Tests Complete ===\n");
 
     worker.shutdown().await;
     storage.close().await?;

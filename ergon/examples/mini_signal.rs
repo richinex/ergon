@@ -128,8 +128,3 @@ impl Document {
         Ok(())
     }
 }
-
-// Output:
-// Waiting for approval...
-// Approved
-// Published

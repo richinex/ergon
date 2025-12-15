@@ -574,7 +574,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for order in &orders {
         scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
-        println!("   - {} scheduled", order.order_id);
     }
 
     // Start 1 worker
@@ -589,99 +588,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let handle = worker.start().await;
-    tokio::time::sleep(Duration::from_secs(10)).await; // Increased timeout to allow for retries
+    tokio::time::sleep(Duration::from_secs(10)).await;
     handle.shutdown().await;
-
-    println!(
-        "  validate_customer:   {}",
-        VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  check_fraud:         {}",
-        CHECK_FRAUD_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  reserve_inventory:   {}",
-        RESERVE_INVENTORY_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  process_payment:     {}",
-        PROCESS_PAYMENT_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  generate_label:      {} (child flow invocations)",
-        GENERATE_LABEL_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  notify_customer:     {}",
-        NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed)
-    );
-
-    for i in 1..=3 {
-        let order_id = format!("ORD-{:03}", i);
-        if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
-            println!(
-                "  {}: validate={}, fraud={}, inventory={}, payment={}, label={}, notify={}",
-                order_id,
-                attempts.validate_customer.load(Ordering::Relaxed),
-                attempts.check_fraud.load(Ordering::Relaxed),
-                attempts.reserve_inventory.load(Ordering::Relaxed),
-                attempts.process_payment.load(Ordering::Relaxed),
-                attempts.generate_label.load(Ordering::Relaxed),
-                attempts.notify_customer.load(Ordering::Relaxed)
-            );
-        }
-    }
 
     storage.close().await?;
     Ok(())
 }
-
-// This example serves as a proof-of-concept for the core promises of the Ergon framework. Specifically, it demonstrates Durable Execution.
-
-// By running this code (especially with your "trip wire" modifications), you proved four critical features of the library:
-
-// 1. Fault Tolerance (The "Trip Wires")
-
-// This is the most important lesson. In a standard Rust program, if validate_customer returns an Err, the program crashes or the request fails immediately.
-
-// What it showed: When ORD-001 failed validation, the worker didn't panic. It caught the error, checked if it was Retryable, waited (backoff), and tried again.
-
-// The Business Value: You don't need to write while loop retry logic inside your business code. The framework handles transient failures (like network blips) automatically.
-
-// 2. Concurrency on a Single Worker
-
-// You ran this with 1 Worker thread, yet 3 orders made progress simultaneously.
-
-// What it showed: Look at your logs. ORD-003 was validating while ORD-002 was waiting on a timer.
-
-// The Mechanism: This demonstrates Rust's async/await power combined with Ergon's scheduler. The worker picks up a flow, runs it until it hits an await (like a database call or a timer), parks it, and picks up the next flow.
-
-// 3. "Durable" State
-
-// Between "Attempt #1" (failure) and "Attempt #2" (success) for ORD-001, the flow completely stopped running.
-
-// What it showed: The state of the flow (variables like self.amount, self.customer_id) was saved to SQLite. When the retry happened 1.7 seconds later, Ergon re-loaded that state from the database and resumed exactly where it left off.
-
-// The implication: If you had killed the process (Ctrl+C) right after the failure and restarted it 5 minutes later, it still would have resumed and executed Attempt #2.
-
-// 4. Flow Composition (Child Flows)
-
-// You saw CHILD[...] logs separate from ORDER[...] logs.
-
-// What it showed: You can break complex logic into smaller, reusable flows (LabelGenerator). The parent flow suspended execution, waited for the child flow to finish independently, and then got the result back.
-
-// Summary
-
-// The example was designed to prove that you can write code that looks like a simple sequence of steps:
-
-// code
-// Rust
-// download
-// content_copy
-// expand_less
-// validate()?;
-// check_fraud()?;
-// reserve()?;
-
-// ...but at runtime, that code becomes a resilient, retrying, database-backed workflow that survives crashes and errors without you writing extra infrastructure code.

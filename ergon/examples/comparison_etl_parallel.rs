@@ -675,10 +675,6 @@ impl RetailETLPipeline {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==========================================================");
-    println!("    COMPREHENSIVE ETL PIPELINE - Retail Sales Analytics");
-    println!("==========================================================\n");
-
     let storage = Arc::new(InMemoryExecutionLog::new());
     storage.reset().await?;
 
@@ -693,18 +689,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let flow_id = uuid::Uuid::new_v4();
 
-    println!("Pipeline ID: {}", pipeline_id);
-    println!("Flow ID: {}", flow_id);
-    println!("\nStarting ETL execution...\n");
-
-    let start = std::time::Instant::now();
     let executor = Executor::new(flow_id, pipeline, Arc::clone(&storage));
 
-    let (result, elapsed) = match executor
+    match executor
         .execute(|p| Box::pin(p.clone().run_etl_pipeline()))
         .await
     {
-        FlowOutcome::Completed(Ok(result)) => (result, start.elapsed()),
+        FlowOutcome::Completed(Ok(_)) => {},
         FlowOutcome::Completed(Err(e)) => return Err(e.into()),
         FlowOutcome::Suspended(reason) => {
             return Err(format!("Flow suspended unexpectedly: {:?}", reason).into())
@@ -732,122 +723,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let json_output = serde_json::to_string_pretty(&report)?;
     let json_filename = "workflow_parallel.json";
     std::fs::write(json_filename, json_output)?;
-
-    println!("\n==========================================================");
-    println!("                    EXECUTION RESULTS");
-    println!("==========================================================");
-    println!("\nWarehouse Load Status:");
-    println!("  Success: {}", result.success);
-    println!("  Records Loaded: {}", result.records_loaded);
-    println!("  Load Duration: {}ms", result.load_duration_ms);
-    println!("  Target Table: {}", result.warehouse_table);
-    println!("\nJSON Report saved to: {}", json_filename);
-    println!("\nTotal Pipeline Execution Time: {:?}", elapsed);
-
-    println!("\n==========================================================");
-    println!("                    PIPELINE METRICS");
-    println!("==========================================================");
-
-    let invocations = storage.get_invocations_for_flow(flow_id).await?;
-    println!("\nTotal Steps Executed: {}", invocations.len());
-    println!("\nStep Execution Details (with timestamps):");
-
-    let step_groups = vec![
-        (
-            "EXTRACT",
-            vec![
-                "extract_customer_data",
-                "extract_sales_data",
-                "extract_product_data",
-            ],
-        ),
-        (
-            "TRANSFORM-SILVER",
-            vec!["validate_customers", "cleanse_sales", "enrich_product_data"],
-        ),
-        (
-            "TRANSFORM-GOLD",
-            vec![
-                "join_sales_with_products",
-                "aggregate_by_region",
-                "calculate_customer_metrics",
-            ],
-        ),
-        (
-            "LOAD",
-            vec!["generate_analytics_report", "persist_to_warehouse"],
-        ),
-    ];
-
-    for (phase, steps) in &step_groups {
-        println!("\n  {} Phase:", phase);
-        let mut phase_invocations: Vec<_> = steps
-            .iter()
-            .filter_map(|step_name| {
-                invocations
-                    .iter()
-                    .find(|i| i.method_name().starts_with(step_name))
-                    .map(|inv| (step_name, inv))
-            })
-            .collect();
-
-        phase_invocations.sort_by_key(|(_, inv)| inv.timestamp());
-
-        for (step_name, inv) in phase_invocations {
-            println!(
-                "    {:<35} - {:?} at {}",
-                step_name,
-                inv.status(),
-                inv.timestamp().format("%H:%M:%S%.3f")
-            );
-        }
-    }
-
-    println!("\n==========================================================");
-    println!("                 PARALLELISM ANALYSIS");
-    println!("==========================================================");
-
-    // Analyze which steps ran in parallel
-    let extract_steps: Vec<_> = invocations
-        .iter()
-        .filter(|inv| {
-            inv.method_name().starts_with("extract_customer_data")
-                || inv.method_name().starts_with("extract_sales_data")
-                || inv.method_name().starts_with("extract_product_data")
-        })
-        .collect();
-
-    if extract_steps.len() == 3 {
-        let timestamps: Vec<_> = extract_steps.iter().map(|inv| inv.timestamp()).collect();
-        let min_time = timestamps.iter().min().unwrap();
-        let max_time = timestamps.iter().max().unwrap();
-        let time_diff = (*max_time - *min_time).num_milliseconds();
-
-        println!("\nEXTRACT Phase (3 independent steps):");
-        println!("  Start time spread: {}ms", time_diff);
-    }
-
-    // Analyze silver layer parallelism
-    let silver_steps: Vec<_> = invocations
-        .iter()
-        .filter(|inv| {
-            inv.method_name().starts_with("validate_customers")
-                || inv.method_name().starts_with("cleanse_sales")
-                || inv.method_name().starts_with("enrich_product_data")
-        })
-        .collect();
-
-    if silver_steps.len() == 3 {
-        let timestamps: Vec<_> = silver_steps.iter().map(|inv| inv.timestamp()).collect();
-        let min_time = timestamps.iter().min().unwrap();
-        let max_time = timestamps.iter().max().unwrap();
-        let time_diff = (*max_time - *min_time).num_milliseconds();
-
-        println!("\nTRANSFORM-SILVER Phase (3 independent steps):");
-        println!("  Start time spread: {}ms", time_diff);
-    }
-
-    println!("\n==========================================================\n");
 
     Ok(())
 }

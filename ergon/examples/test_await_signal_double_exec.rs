@@ -84,13 +84,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = Scheduler::new(storage.clone());
     let signal_source = Arc::new(MemorySignalSource::new());
 
-    eprintln!("\n=== Test: await_external_signal Double Execution ===\n");
-
     let flow = TestFlow {
         id: "TEST-001".into(),
     };
-    let task_id = scheduler.schedule(flow, Uuid::new_v4()).await?;
-    eprintln!("[{}] Scheduled: {}\n", ts(), &task_id.to_string()[..8]);
+    scheduler.schedule(flow, Uuid::new_v4()).await?;
 
     let worker = Worker::new(storage.clone(), "worker")
         .with_poll_interval(Duration::from_millis(50))
@@ -104,7 +101,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Send signal
-    eprintln!("[{}] Sending signal\n", ts());
     signal_source.send_signal("test_signal", "Hello!").await;
 
     // Wait for completion
@@ -113,6 +109,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     storage.close().await?;
 
-    eprintln!("\n=== Test Complete ===");
     Ok(())
 }

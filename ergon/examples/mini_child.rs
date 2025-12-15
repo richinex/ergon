@@ -97,7 +97,3 @@ impl Shipment {
         Ok(tracking)
     }
 }
-
-// Output:
-// Created label: TRK-ORD-001
-// Order shipped: TRK-ORD-001

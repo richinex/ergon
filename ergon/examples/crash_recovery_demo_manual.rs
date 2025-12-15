@@ -27,7 +27,6 @@
 //! cargo run --example crash_recovery_demo_manual
 //! ```
 
-use ergon::core::InvocationStatus;
 use ergon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -71,7 +70,6 @@ impl OrderProcessor {
             .send_confirmation(inventory, completed_at)
             .await?;
 
-        println!("[FLOW] Order {} completed successfully", self.order_id);
         Ok(result)
     }
 
@@ -224,9 +222,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flow_id = Uuid::new_v4();
     scheduler.schedule(order.clone(), flow_id).await?;
 
-    println!("📋 Scheduled order: {}", order.order_id);
-    println!("💰 Amount to charge: ${:.2}\n", order.amount);
-
     // ========================================================================
     // PHASE 1: First worker processes until crash
     // ========================================================================
@@ -245,7 +240,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(Duration::from_millis(600)).await;
 
         // Worker will have encountered the error and stopped processing
-        println!("Worker-1 stopped after encountering error\n");
         handle.shutdown().await;
     });
 
@@ -253,32 +247,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check what happened
     tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let invocations = storage.get_invocations_for_flow(flow_id).await?;
-
-    for inv in &invocations {
-        if inv.step() > 0 {
-            // Skip flow itself (step 0)
-            match inv.status() {
-                InvocationStatus::Complete => {
-                    println!("  {} (completed)", inv.method_name());
-                }
-                InvocationStatus::Pending => {
-                    println!("  {} (pending)", inv.method_name());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
-    println!("\nPayment charged: {} time(s)", payment_count);
-
-    if payment_count == 1 {
-        println!("   Good! Customer charged exactly once");
-    } else {
-        println!("   ERROR! Duplicate charge detected!");
-    }
 
     // ========================================================================
     // PHASE 2: Demonstrate manual retry/recovery (in production: automatic)
@@ -309,29 +277,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     worker2.await?;
-
-    // ========================================================================
-    // FINAL RESULTS
-    // ========================================================================
-
-    let invocations = storage.get_invocations_for_flow(flow_id).await?;
-    let flow_invocation = invocations.iter().find(|i| i.step() == 0);
-
-    if let Some(flow) = flow_invocation {
-        println!("Flow Status: {:?}", flow.status());
-    }
-
-    for inv in &invocations {
-        if inv.step() > 0 {
-            println!("  {} (completed)", inv.method_name());
-        }
-    }
-
-    let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
-    let inventory_count = INVENTORY_RESERVE_COUNT.load(Ordering::SeqCst);
-
-    println!("Payment charged:     {} time(s)", payment_count);
-    println!("Inventory reserved:  {} time(s)", inventory_count);
 
     Ok(())
 }

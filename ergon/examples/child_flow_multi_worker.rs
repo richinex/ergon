@@ -321,20 +321,8 @@ fn timestamp() -> f64 {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║   Multi-Worker Parent-Child Flow Distribution (SQLite)    ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("multi_worker.db").await?);
     storage.reset().await?;
-
-    // ============================================================
-    // PART 1: API Server / Scheduler Process
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 1: Scheduling Orders (API Server)                    ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let scheduler = Scheduler::new(storage.clone());
 
@@ -354,19 +342,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let task_id_1 = scheduler.schedule(order1, Uuid::new_v4()).await?;
     let task_id_2 = scheduler.schedule(order2, Uuid::new_v4()).await?;
-    println!("   ✓ ORD-001 scheduled (task_id: {})", task_id_1);
-    println!("   ✓ ORD-002 scheduled (task_id: {})", task_id_2);
-
-    println!("\n   → In production: Return HTTP 202 Accepted with task_ids");
-    println!("   → Client polls GET /api/tasks/:id for status\n");
-
-    // ============================================================
-    // PART 2: Worker Service (Separate Process)
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 2: Starting 3 Workers (Separate Service)             ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let storage_clone = storage.clone();
     let worker1 = tokio::spawn(async move {
@@ -438,16 +413,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w2 = worker2.await?;
     let w3 = worker3.await?;
 
-    println!("   ✓ 3 workers started and polling for work\n");
-
-    // ============================================================
-    // PART 3: Client Status Monitoring (Demo Only)
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     // Wait for all flows to complete
     let timeout_duration = Duration::from_secs(10);
     let task_ids = vec![task_id_1, task_id_2];
@@ -472,27 +437,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     match wait_result {
-        Ok(_) => println!("\nAll orders completed successfully!\n"),
-        Err(_) => println!("\n[WARN] Timeout waiting for orders to complete\n"),
+        Ok(_) => {}
+        Err(_) => println!("[WARN] Timeout waiting for orders to complete"),
     }
-
-    // Print summary
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                       Summary                              ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
-    println!(
-        "Total inventory checks: {}",
-        INVENTORY_CHECKS.load(Ordering::SeqCst)
-    );
-    println!(
-        "Total payments processed: {}",
-        PAYMENT_PROCESSED.load(Ordering::SeqCst)
-    );
-    println!(
-        "Total labels generated: {}",
-        LABELS_GENERATED.load(Ordering::SeqCst)
-    );
 
     // Shutdown workers
     w1.shutdown().await;

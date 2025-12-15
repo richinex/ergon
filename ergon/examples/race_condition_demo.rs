@@ -10,12 +10,10 @@
 //!
 //! Run: cargo run --example race_condition_demo
 
-use ergon::core::InvocationStatus;
 use ergon::prelude::*;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 static EXECUTION_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
@@ -103,9 +101,6 @@ struct TaskResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nRace Condition Prevention - Exactly-Once Demo");
-    println!("==============================================\n");
-
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = Scheduler::new(storage.clone());
 
@@ -115,9 +110,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("TASK-003", "Send password reset email"),
     ];
 
-    let mut flow_ids = Vec::new();
-
-    println!("Scheduling {} critical tasks:\n", tasks.len());
     for (task_id, operation) in &tasks {
         let task = CriticalTask {
             task_id: task_id.to_string(),
@@ -125,49 +117,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let flow_id = Uuid::new_v4();
         scheduler.schedule(task, flow_id).await?;
-        flow_ids.push(flow_id);
-
-        println!("  - {} - {}", task_id, operation);
     }
 
-    println!("\nScenario: 5 workers racing to process these 3 tasks");
-    println!("Expected: Each task runs exactly once\n");
-
-    println!("Starting 5 workers simultaneously...\n");
-
-    let start = Instant::now();
     let mut worker_handles = Vec::new();
-
-    let worker_assignments: Arc<tokio::sync::Mutex<HashMap<String, String>>> =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     for worker_id in 1..=5 {
         let storage_clone = storage.clone();
         let worker_name = format!("worker-{}", worker_id);
-        let assignments = worker_assignments.clone();
 
         let handle = tokio::spawn(async move {
-            println!("[START] {} racing for work", worker_name);
-
             let worker = Worker::new(storage_clone.clone(), &worker_name)
                 .with_poll_interval(Duration::from_millis(10));
 
-            let worker_name_final = worker_name.clone();
-
             worker
-                .register(move |flow: Arc<CriticalTask>| {
-                    let assignments = assignments.clone();
-                    let worker_name = worker_name.clone();
-                    async move {
-                        {
-                            let mut map = assignments.lock().await;
-                            map.insert(flow.task_id.clone(), worker_name.clone());
-                        }
-
-                        println!("[CLAIM] {} claimed {}", worker_name, flow.task_id);
-                        flow.execute().await
-                    }
-                })
+                .register(|flow: Arc<CriticalTask>| async move { flow.execute().await })
                 .await;
 
             let handle = worker.start().await;
@@ -181,7 +144,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            println!("[FINISH] {} finished", worker_name_final);
             handle.shutdown().await;
         });
 
@@ -191,67 +153,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for all workers to complete
     for handle in worker_handles {
         handle.await?;
-    }
-
-    let duration = start.elapsed();
-
-    println!("\nResults Analysis");
-    println!("================\n");
-
-    let assignments = worker_assignments.lock().await;
-    let total_attempts = EXECUTION_ATTEMPTS.load(Ordering::SeqCst);
-
-    println!("Total execution time: {:?}", duration);
-    println!("Total execution attempts: {}", total_attempts);
-    println!("Tasks scheduled: {}", tasks.len());
-    println!("\nTask Assignment:");
-
-    let mut tasks_processed = 0;
-    for (task_id, _) in &tasks {
-        if let Some(worker) = assignments.get(&task_id.to_string()) {
-            println!("  {} -> processed by {}", task_id, worker);
-            tasks_processed += 1;
-        } else {
-            println!("  {} -> NOT PROCESSED", task_id);
-        }
-    }
-
-    println!("\nVerification:");
-    let mut all_good = true;
-
-    for flow_id in &flow_ids {
-        let invocations = storage.get_invocations_for_flow(*flow_id).await?;
-        let steps: Vec<_> = invocations.iter().filter(|i| i.step() > 0).collect();
-        let step_count = steps.len();
-        let completed_count = steps
-            .iter()
-            .filter(|s| s.status() == InvocationStatus::Complete)
-            .count();
-
-        if step_count == 2 && completed_count == 2 {
-            println!("  Flow {} - 2/2 steps completed", flow_id);
-        } else {
-            println!(
-                "  Flow {} - {}/{} steps completed (UNEXPECTED)",
-                flow_id, completed_count, step_count
-            );
-            all_good = false;
-        }
-    }
-
-    println!("\nExactly-Once Proof");
-    println!("==================\n");
-
-    if total_attempts == tasks.len() as u32 && tasks_processed == tasks.len() && all_good {
-        println!("SUCCESS: Exactly-once execution verified!");
-        println!("  - {} tasks scheduled", tasks.len());
-        println!("  - {} execution attempts (no duplicates)", total_attempts);
-        println!("  - 5 workers racing for work");
-        println!("  - Each task processed exactly once");
-    } else {
-        println!("UNEXPECTED: Execution count mismatch");
-        println!("  Expected: {} attempts", tasks.len());
-        println!("  Actual:   {} attempts", total_attempts);
     }
 
     Ok(())

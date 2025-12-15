@@ -217,10 +217,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = ergon::executor::Scheduler::new(storage.clone());
     let dashboard = Arc::new(ModeratorDashboard::new());
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ Trust & Safety Pipeline (SQLite Backed)                   ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     // 2. Schedule the 3 Flows
     // Safe
     let flow_approve = ContentFlow {
@@ -264,16 +260,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Wait for the AI to finish analysis and suspend
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        println!("\n   [SYSTEM] Notification: POST-AMBIGUOUS requires review.");
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
         // Human clicks "Approve"
         dashboard.submit_review("POST-AMBIGUOUS", true).await;
     });
 
     // 5. THE FIX: Wait until the Database says "No more work"
-    println!("\n   [MAIN] Monitoring database for completion...");
-
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -281,15 +272,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pending_work = storage.get_incomplete_flows().await?;
 
         if pending_work.is_empty() {
-            println!("   [MAIN] All flows completed successfully.");
             break;
-        } else {
-            // Optional: Print what is still running for debugging
-            println!("   [MAIN] Still running: {} flows", pending_work.len());
         }
     }
 
     handle.shutdown().await;
-    println!("\nModeration pipeline complete.");
     Ok(())
 }

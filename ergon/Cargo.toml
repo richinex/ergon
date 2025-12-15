@@ -84,10 +84,6 @@ name = "distributed_worker_timer_tracing_redis"
 required-features = ["redis"]
 
 [[example]]
-name = "child_flow_custom_errors_redis"
-required-features = ["redis"]
-
-[[example]]
 name = "complex_1_worker_dag_redis"
 required-features = ["redis"]
 
@@ -98,7 +94,6 @@ required-features = ["redis"]
 
 [[example]]
 name = "observability_demo"
-required-features = ["redis"]
 
 
 [[example]]

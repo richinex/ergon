@@ -106,3 +106,4 @@ ergon/data
 output/
 data/
 *.txt
+ergon/examples/outputs

@@ -47,15 +47,10 @@ impl ComputeTask {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Ergon In-Memory Distributed Worker Example ===\n");
-
     // Create in-memory storage (no files!)
     let storage = Arc::new(InMemoryExecutionLog::new());
 
-    println!("1. Creating scheduler with in-memory storage...");
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("2. Scheduling compute tasks...\n");
 
     // Schedule multiple tasks
     for i in 1..=5 {
@@ -65,15 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(task, flow_id).await?;
-        println!(
-            "   Scheduled TASK-{:03} (task_id: {})",
-            i,
-            task_id.to_string().split('-').next().unwrap_or("")
-        );
+        let _task_id = scheduler.schedule(task, flow_id).await?;
     }
-
-    println!("\n3. Starting workers...\n");
 
     // Start worker 1
     let worker1 =
@@ -82,7 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(|flow: Arc<ComputeTask>| flow.compute())
         .await;
     let handle1 = worker1.start().await;
-    println!("   Started worker-1");
 
     // Start worker 2
     let worker2 =
@@ -91,32 +78,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(|flow: Arc<ComputeTask>| flow.compute())
         .await;
     let handle2 = worker2.start().await;
-    println!("   Started worker-2\n");
-
-    println!("4. Workers processing tasks...\n");
 
     // Let workers process
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    println!("\n5. Shutting down workers...\n");
-
     handle1.shutdown().await;
     handle2.shutdown().await;
-
-    println!("   All workers stopped");
-
-    println!("\n6. Verifying results...\n");
 
     // Check incomplete flows
     let incomplete = storage.get_incomplete_flows().await?;
     if incomplete.is_empty() {
-        println!("   ✓ All tasks completed successfully!");
+        println!("All tasks completed successfully");
     } else {
-        println!("   ⚠ {} tasks incomplete", incomplete.len());
+        println!("{} tasks incomplete", incomplete.len());
     }
-
-    println!("\n=== Example Complete ===");
-    println!("\nNote: All data was stored in-memory. No files were created!");
 
     Ok(())
 }

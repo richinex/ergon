@@ -74,7 +74,7 @@ impl FibonacciFlow {
         let result = Self::compute_next_chunk(start, 24);
 
         println!(
-            "   [Step 1] ✅ Saved Checkpoint: F({}) = {}",
+            "   [Step 1] Saved Checkpoint: F({}) = {}",
             result.index, result.curr
         );
         Ok(result)
@@ -88,7 +88,7 @@ impl FibonacciFlow {
         let result = Self::compute_next_chunk(prev_state, 25);
 
         println!(
-            "   [Step 2] ✅ Saved Checkpoint: F({}) = {}",
+            "   [Step 2] Saved Checkpoint: F({}) = {}",
             result.index, result.curr
         );
         Ok(result)
@@ -102,7 +102,7 @@ impl FibonacciFlow {
         let result = Self::compute_next_chunk(prev_state, 25);
 
         println!(
-            "   [Step 3] ✅ Saved Checkpoint: F({}) = {}",
+            "   [Step 3] Saved Checkpoint: F({}) = {}",
             result.index, result.curr
         );
         Ok(result)
@@ -115,15 +115,13 @@ impl FibonacciFlow {
 
         let result = Self::compute_next_chunk(prev_state, 25);
 
-        println!("   [Step 4] 🏁 FINAL RESULT: F({})", result.index);
+        println!("   [Step 4] FINAL RESULT: F({})", result.index);
         Ok(result.curr)
     }
 
     /// Main Orchestrator
     #[flow]
     async fn run(self: Arc<Self>) -> Result<u128, String> {
-        println!("🚀 Starting Durable Fibonacci Calculation...");
-
         // 1. Run Chunk 1 -> Returns Checkpoint A
         let cp_a = self.clone().chunk_1().await?;
 
@@ -166,6 +164,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     DONE_NOTIFIER.notified().await;
     handle.shutdown().await;
 
-    println!("\n✨ Calculation finished successfully.");
     Ok(())
 }

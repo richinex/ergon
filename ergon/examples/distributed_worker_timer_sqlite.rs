@@ -185,15 +185,10 @@ impl TrialExpiryNotification {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nDistributed Worker with Timers Example (SQLite)");
-    println!("================================================\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("distributed_timer_demo.db").await?);
     storage.reset().await?;
 
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("Starting workers with timer processing...\n");
 
     // Start worker 1 with timer processing enabled
     let worker1 = Worker::new(storage.clone(), "worker-1")
@@ -208,7 +203,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(move |flow: Arc<TrialExpiryNotification>| flow.send_expiry_notice())
         .await;
     let handle1 = worker1.start().await;
-    println!("  Started worker-1");
 
     // Start worker 2 with timer processing enabled
     let worker2 = Worker::new(storage.clone(), "worker-2")
@@ -223,12 +217,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(move |flow: Arc<TrialExpiryNotification>| flow.send_expiry_notice())
         .await;
     let handle2 = worker2.start().await;
-    println!("  Started worker-2\n");
 
     // Give both workers time to initialize and start polling
     tokio::time::sleep(Duration::from_millis(500)).await;
-
-    println!("Scheduling flows...\n");
 
     // Track task IDs and their descriptions for worker distribution analysis
     let mut flow_info: Vec<(Uuid, String)> = Vec::new();
@@ -244,7 +235,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let flow_id = Uuid::new_v4();
         let task_id = scheduler.schedule(order, flow_id).await?;
         flow_info.push((task_id, format!("Order ORD-{:03}", i)));
-        println!("  Scheduled order ORD-{:03}", i);
     }
 
     // Schedule trial expiry flows
@@ -257,10 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let flow_id = Uuid::new_v4();
         let task_id = scheduler.schedule(trial, flow_id).await?;
         flow_info.push((task_id, format!("Trial expiry user-{}", i)));
-        println!("  Scheduled trial expiry for user-{}", i);
     }
-
-    println!("\nWorkers processing flows and timers...\n");
 
     // Give workers time to pick up flows from queue
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -279,45 +266,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await
     {
-        Ok(_) => println!("All flows completed!\n"),
+        Ok(_) => {}
         Err(_) => {
-            println!("Timeout waiting for flows to complete\n");
             let incomplete = storage.get_incomplete_flows().await?;
-            println!("Incomplete flows: {}", incomplete.len());
+            println!("Timeout - Incomplete flows: {}", incomplete.len());
             for inv in incomplete {
                 println!("  - {} ({})", inv.id(), inv.class_name());
             }
         }
     }
-    println!("Shutting down workers...\n");
 
     handle1.shutdown().await;
-    println!("  Worker-1 stopped");
-
     handle2.shutdown().await;
-    println!("  Worker-2 stopped");
-
-    println!("\nVerifying results...\n");
-
-    let incomplete = storage.get_incomplete_flows().await?;
-    if incomplete.is_empty() {
-        println!("  All flows completed successfully");
-    } else {
-        println!("  {} flows incomplete", incomplete.len());
-        for inv in incomplete {
-            println!("    - {} ({})", inv.id(), inv.class_name());
-        }
-    }
-
-    println!("\nWorker Distribution:\n");
-
-    // Show which worker completed which flow
-    for (task_id, description) in flow_info {
-        if let Some(scheduled_flow) = storage.get_scheduled_flow(task_id).await? {
-            let worker = scheduled_flow.locked_by.as_deref().unwrap_or("unknown");
-            println!("  {} -> {}", description, worker);
-        }
-    }
 
     storage.close().await?;
     Ok(())

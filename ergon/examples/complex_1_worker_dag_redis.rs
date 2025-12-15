@@ -629,8 +629,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for order in &orders {
-        let task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
-        println!("   - {} scheduled (task_id: {})", order.order_id, task_id);
+        let _task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
     }
 
     // Start 1 worker (testing for concurrency vs logic bugs)

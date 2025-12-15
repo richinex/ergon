@@ -153,16 +153,10 @@ impl EmailTask {
 }
 
 async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Ergon Redis Distributed Scheduler ===\n");
-    println!("Redis URL: {}\n", redis_url);
-
     // Create Redis storage (network-accessible!)
     let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
 
-    println!("1. Creating scheduler...");
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("2. Scheduling jobs for distributed execution...\n");
 
     // Schedule data processing jobs
     for i in 1..=3 {
@@ -173,12 +167,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(job, flow_id).await?;
-        println!(
-            "   Scheduled JOB-{:03} (task_id: {})",
-            i,
-            task_id.to_string().split('-').next().unwrap_or("")
-        );
+        scheduler.schedule(job, flow_id).await?;
     }
 
     // Schedule email tasks
@@ -190,31 +179,15 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(email, flow_id).await?;
-        println!(
-            "   Scheduled email to user{} (task_id: {})",
-            i,
-            task_id.to_string().split('-').next().unwrap_or("")
-        );
+        scheduler.schedule(email, flow_id).await?;
     }
-
-    println!("\n3. Scheduler complete! Workers can now pick up jobs.\n");
-    println!("Next steps:");
-    println!("  - Start workers on any machine with network access to Redis");
-    println!("  - Run: cargo run --example distributed_redis --features redis -- --mode worker --id <worker-name>\n");
 
     Ok(())
 }
 
 async fn run_worker(redis_url: &str, worker_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Ergon Redis Distributed Worker ===\n");
-    println!("Worker ID: {}", worker_id);
-    println!("Redis URL: {}\n", redis_url);
-
     // Create Redis storage (same Redis, different machine!)
     let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
-
-    println!("1. Starting worker...");
 
     // Create worker with faster polling for demo
     let worker =
@@ -226,29 +199,12 @@ async fn run_worker(redis_url: &str, worker_id: &str) -> Result<(), Box<dyn std:
         .await;
     worker.register(|flow: Arc<EmailTask>| flow.send()).await;
 
-    println!("2. Worker registered to handle:");
-    println!("   - DataProcessor flows");
-    println!("   - EmailTask flows");
-    println!("\n3. Worker polling Redis queue...\n");
-
     let handle = worker.start().await;
 
     // Run for 30 seconds (demo mode)
-    println!("Worker running for 30 seconds (Ctrl+C to stop)...\n");
     tokio::time::sleep(Duration::from_secs(30)).await;
 
-    println!("\n4. Shutting down worker...");
     handle.shutdown().await;
-
-    println!("   Worker stopped gracefully\n");
-
-    // Show final status
-    let incomplete = storage.get_incomplete_flows().await?;
-    if incomplete.is_empty() {
-        println!("=== All queued flows completed! ===");
-    } else {
-        println!("=== {} flows still pending ===", incomplete.len());
-    }
 
     Ok(())
 }

@@ -160,7 +160,6 @@ impl OrderProcessor {
             .send_confirmation(inventory, completed_at)
             .await?;
 
-        println!("[FLOW] Order {} completed successfully", self.order_id);
         Ok(result)
     }
 
@@ -295,9 +294,6 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nDistributed Worker Failover Demo");
-    println!("===================================\n");
-
     // Use in-memory storage (works same for Redis/SQLite)
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = Scheduler::new(storage.clone());
@@ -309,16 +305,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         customer_id: "CUST-VIP-001".to_string(),
     };
     let flow_id = Uuid::new_v4();
-    let task_id = scheduler.schedule(order.clone(), flow_id).await?;
-
-    println!("Scheduled order: {}", order.order_id);
-    println!("Amount to charge: ${:.2}", order.amount);
-    println!("Starting workers...\n");
+    scheduler.schedule(order.clone(), flow_id).await?;
 
     // Worker-A: Will crash during Step 3 (panic simulates hard crash)
     let storage_a = storage.clone();
     let worker_a = tokio::spawn(async move {
-        println!("[Worker-A] Starting up...");
         let worker =
             Worker::new(storage_a, "Worker-A").with_poll_interval(Duration::from_millis(50));
 
@@ -335,11 +326,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // After Worker-A crashes (panic in spawned task), shut it down
         // This simulates the worker process dying
         if WORKER_A_CRASHED.load(Ordering::SeqCst) {
-            println!("[Worker-A] Detected crash, shutting down immediately!");
             handle.shutdown().await;
         } else {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            println!("[Worker-A] Shutting down gracefully");
             handle.shutdown().await;
         }
     });
@@ -347,7 +336,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Worker-B: Will pick up after Worker-A crashes
     let storage_b = storage.clone();
     let worker_b = tokio::spawn(async move {
-        println!("[Worker-B] Starting up...");
         let worker =
             Worker::new(storage_b, "Worker-B").with_poll_interval(Duration::from_millis(50));
 
@@ -358,14 +346,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::time::sleep(Duration::from_secs(8)).await;
 
-        println!("[Worker-B] Shutting down gracefully");
         handle.shutdown().await;
     });
 
     // Worker-C: Backup worker (won't process in this demo but shows distributed setup)
     let storage_c = storage.clone();
     let worker_c = tokio::spawn(async move {
-        println!("[Worker-C] Starting up (standby mode)...");
         let worker =
             Worker::new(storage_c, "Worker-C").with_poll_interval(Duration::from_millis(50));
 
@@ -376,38 +362,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::time::sleep(Duration::from_secs(8)).await;
 
-        println!("[Worker-C] Shutting down gracefully");
         handle.shutdown().await;
     });
 
     // Wait for all workers
     let _ = tokio::join!(worker_a, worker_b, worker_c);
-
-    // Final results
-    println!("\nFinal Results");
-    println!("=============\n");
-
-    let invocations = storage.get_invocations_for_flow(flow_id).await?;
-    let flow_invocation = invocations.iter().find(|i| i.step() == 0);
-
-    if let Some(flow) = flow_invocation {
-        println!("Flow Status: {:?}", flow.status());
-    }
-
-    let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
-    let inventory_count = INVENTORY_RESERVE_COUNT.load(Ordering::SeqCst);
-
-    println!("\nExecution Statistics:");
-    println!("  Payment charged: {} time(s)", payment_count);
-    println!("  Inventory attempts: {} time(s)", inventory_count);
-
-    // Show which worker handled the flow
-    println!("\nWorker Distribution:");
-    if let Some(scheduled_flow) = storage.get_scheduled_flow(task_id).await? {
-        let worker = scheduled_flow.locked_by.as_deref().unwrap_or("unknown");
-        println!("  Order ORD-99999 completed by: {}", worker);
-        println!("  (Note: Worker-A crashed, so Worker-B or Worker-C took over)");
-    }
 
     Ok(())
 }

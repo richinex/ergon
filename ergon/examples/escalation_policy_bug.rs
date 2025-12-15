@@ -68,7 +68,7 @@ impl IncidentFlow {
     #[step]
     async fn notify_tier_1(self: Arc<Self>) -> Result<(), String> {
         println!(
-            "   [BOT] ⚠️  Tier 1 Paged (SMS/Email): Server '{}' is down!",
+            "   [BOT] Tier 1 Paged (SMS/Email): Server '{}' is down!",
             self.server_name
         );
         Ok(())
@@ -76,19 +76,19 @@ impl IncidentFlow {
 
     #[step]
     async fn notify_tier_2(self: Arc<Self>) -> Result<(), String> {
-        println!("   [BOT] 📣 Tier 1 didn't respond! Paging Tier 2 (Phone Call)!");
+        println!("   [BOT] Tier 1 didn't respond! Paging Tier 2 (Phone Call)!");
         Ok(())
     }
 
     #[step]
     async fn notify_vp(self: Arc<Self>) -> Result<(), String> {
-        println!("   [BOT] 🚨 Tier 2 didn't respond! Paging VP of Engineering (Siren)!");
+        println!("   [BOT] Tier 2 didn't respond! Paging VP of Engineering (Siren)!");
         Ok(())
     }
 
     #[step]
     async fn wait_for_human(self: Arc<Self>, seconds: u64) -> Result<(), String> {
-        println!("   [BOT] ⏳ Waiting {} seconds for response...", seconds);
+        println!("   [BOT] Waiting {} seconds for response...", seconds);
         // This suspends the flow durably.
         schedule_timer_named(Duration::from_secs(seconds), "escalation_timer")
             .await
@@ -103,11 +103,11 @@ impl IncidentFlow {
         println!("   [BOT] Checking status for signal tag: {}", signal_name);
 
         if self.incident_id.ends_with("-FIXED") {
-            println!("   [BOT] ✅ ACK Received! Cancelling escalation.");
+            println!("   [BOT] ACK Received! Cancelling escalation.");
             return Ok(true);
         }
 
-        println!("   [BOT] ❌ No ACK received yet.");
+        println!("   [BOT] No ACK received yet.");
         Ok(false)
     }
 
@@ -122,8 +122,6 @@ impl IncidentFlow {
 
     #[flow]
     async fn run_policy(self: Arc<Self>) -> Result<String, String> {
-        println!("🚀 Starting Escalation Policy for: {}", self.incident_id);
-
         let result = self.clone().execute_logic().await;
 
         Self::mark_complete();
@@ -179,10 +177,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = ergon::executor::Scheduler::new(storage.clone());
     let pager = Arc::new(PagerSystem::new());
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ Durable Escalation Policy (Dead Man's Switch)             ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     // 1. Scenario: Everyone ignores it (Full Escalation)
     let inc1 = IncidentFlow {
         incident_id: "INC-001-IGNORE".to_string(),
@@ -211,56 +205,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     DONE_NOTIFIER.notified().await;
 
     handle.shutdown().await;
-    println!("\n✨ Escalation simulation complete.");
     Ok(())
 }
-
-// That is exactly right. You found the core mechanism for "Step Identity."
-
-// In step.rs, this block of code is the "fingerprint" generator:
-
-// code
-// Rust
-// download
-// content_copy
-// expand_less
-// // Serialize parameters first - needed for step ID hash
-// let __params = #params_tuple;
-
-// // Get stable step ID using hash of both method name AND parameters
-// let __step = {
-//     let __params_bytes = ergon::serialize_value(&__params)
-//         .expect("Failed to serialize step parameters");
-//     let mut __hash_input = #step_name_str.as_bytes().to_vec();
-//     __hash_input.extend_from_slice(&__params_bytes); // <--- CRITICAL LINE
-//     (seahash::hash(&__hash_input) & 0x7FFFFFFF) as i32
-// };
-// Why this caused the "Fast-Forward" bug
-
-// In your previous escalation_policy example, you called:
-
-// wait_for_human(2)
-
-// wait_for_human(2)
-
-// Since the function name (wait_for_human) and the parameters (2) were identical, the hash was identical.
-
-// Step 1 runs: Hashes to ID 12345. Saves result to DB.
-
-// Step 2 runs: Hashes to ID 12345. Checks DB. Sees 12345 is done. Returns immediately.
-
-// Why adding stage fixed it
-
-// By changing the call to:
-
-// wait_for_human(2, "L1")
-
-// wait_for_human(2, "L2")
-
-// The parameters are now different bytes.
-
-// Step 1: Hashes to 998877.
-
-// Step 2: Hashes to 112233.
-
-// The framework now sees them as two completely different events in history, even though they use the same function code. This is Function Purity applied to distributed execution: Same Inputs = Same Identity.

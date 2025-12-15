@@ -93,7 +93,6 @@ impl OrderWorkflow {
     async fn wait_for_processing(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("[{}] Waiting 2 seconds before payment...", format_time());
         schedule_timer_named(Duration::from_secs(2), "payment-delay").await?;
-        println!("[{}] Payment delay timer fired!", format_time());
         Ok(())
     }
 
@@ -107,7 +106,6 @@ impl OrderWorkflow {
     async fn wait_for_shipping(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("[{}] Waiting 3 seconds before shipping...", format_time());
         schedule_timer_named(Duration::from_secs(3), "shipping-delay").await?;
-        println!("[{}] Shipping delay timer fired!", format_time());
         Ok(())
     }
 
@@ -124,7 +122,6 @@ impl OrderWorkflow {
             format_time()
         );
         schedule_timer(Duration::from_secs(1)).await?;
-        println!("[{}] Confirmation delay timer fired!", format_time());
         Ok(())
     }
 
@@ -146,13 +143,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    println!("=== Ergon Durable Timer Demo ===\n");
-    println!("This demo shows timers that:");
-    println!("  - Pause workflow execution for specified durations");
-    println!("  - Survive process crashes");
-    println!("  - Work across distributed workers");
-    println!("  - Fire exactly once via optimistic concurrency\n");
-
     // Create SQLite storage for durability
     let storage = Arc::new(SqliteExecutionLog::new("timer_demo.db").await?);
     storage.reset().await?;
@@ -172,8 +162,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let worker_handle = worker.start().await;
 
-    println!("[{}] Worker with timer processing started\n", format_time());
-
     // Schedule the order flow
     let order = OrderWorkflow {
         order_id: "ORD-12345".to_string(),
@@ -182,9 +170,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let flow_id = uuid::Uuid::new_v4();
     let _task_id = scheduler.schedule(order, flow_id).await?;
-
-    println!("Total expected duration: ~6 seconds (2s + 3s + 1s)\n");
-    println!("Starting order processing...\n");
 
     let start = std::time::Instant::now();
 
@@ -216,10 +201,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         String::from("Order not found")
     };
 
-    println!("\n=== Results ===");
     println!("Result: {}", result);
     println!("Total time: {:?}", elapsed);
-    println!("Expected: ~6 seconds");
 
     if elapsed.as_secs() >= 5 && elapsed.as_secs() <= 7 {
         println!("[OK] Timers worked correctly!");
@@ -227,12 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[WARNING] Unexpected timing (might be system load)");
     }
 
-    // Gracefully shutdown the worker
-    println!("\n[{}] Shutting down worker...", format_time());
     worker_handle.shutdown().await;
-
-    println!("\n=== Demo Complete ===");
-    println!("Check timer_demo.db to see persisted timer state");
 
     Ok(())
 }

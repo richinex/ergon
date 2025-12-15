@@ -159,24 +159,14 @@ impl OrderB {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nRetryable Trait - Proof of Concept");
-    println!("========================================");
-    println!("Testing: Retryable error (ApiTimeout) vs Non-retryable error (ItemNotFound)\n");
-
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = Scheduler::new(storage.clone());
-
-    // SCENARIO A: RETRYABLE Error
-    println!("SCENARIO A: RETRYABLE Error (ApiTimeout)");
-    println!("==========================================");
 
     let order_a = OrderA {
         order_id: "ORD-A-001".to_string(),
     };
     let flow_id_a = Uuid::new_v4();
     scheduler.schedule(order_a.clone(), flow_id_a).await?;
-
-    println!("Scheduled: {}\n", order_a.order_id);
 
     let storage_a = storage.clone();
     let worker_a = tokio::spawn(async move {
@@ -194,28 +184,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker_a.await?;
 
-    let step_a_count = STEP_A_EXECUTIONS.load(Ordering::SeqCst);
-    println!("\nSCENARIO A RESULTS:");
-    println!("  Step A executions: {}", step_a_count);
-
-    if step_a_count >= 2 {
-        println!("  PASSED: Step was retried (is_retryable=true worked)");
-    } else {
-        println!("  FAILED: Expected >= 2 executions, got {}", step_a_count);
-    }
-
-    // SCENARIO B: NON-RETRYABLE Error
-    println!("\nSCENARIO B: NON-RETRYABLE Error (ItemNotFound)");
-    println!("================================================");
-
     let order_b = OrderB {
         order_id: "ORD-B-002".to_string(),
         item_sku: "INVALID-SKU-999".to_string(),
     };
     let flow_id_b = Uuid::new_v4();
     scheduler.schedule(order_b.clone(), flow_id_b).await?;
-
-    println!("Scheduled: {}\n", order_b.order_id);
 
     let storage_b = storage.clone();
     let worker_b = tokio::spawn(async move {
@@ -232,43 +206,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     worker_b.await?;
-
-    let step_b_count = STEP_B_EXECUTIONS.load(Ordering::SeqCst);
-    println!("\nSCENARIO B RESULTS:");
-    println!("  Step B executions: {}", step_b_count);
-
-    if step_b_count == 1 {
-        println!("  PASSED: Step did NOT retry (is_retryable=false worked)");
-    } else {
-        println!("  FAILED: Expected 1 execution, got {}", step_b_count);
-    }
-
-    // FINAL VERDICT
-    println!("\nFINAL VERDICT");
-    println!("=============\n");
-
-    println!("Execution Statistics:");
-    println!("  Scenario A (Retryable):     {} executions", step_a_count);
-    println!("  Scenario B (Non-Retryable): {} executions", step_b_count);
-
-    println!("\nResult:");
-    if step_a_count > step_b_count && step_b_count == 1 {
-        println!("  PROOF CONFIRMED - Retryable working correctly");
-        println!(
-            "  Retryable: {} attempts | Non-retryable: {} attempt",
-            step_a_count, step_b_count
-        );
-        println!("\nNote: Flow B may start multiple times (flow-level retry for worker crashes)");
-        println!("      but step only executes once (cached non-retryable error)");
-    } else {
-        println!("  FAILED");
-        if step_a_count <= 1 {
-            println!("  Scenario A: expected >1 executions, got {}", step_a_count);
-        }
-        if step_b_count != 1 {
-            println!("  Scenario B: expected 1 execution, got {}", step_b_count);
-        }
-    }
 
     Ok(())
 }

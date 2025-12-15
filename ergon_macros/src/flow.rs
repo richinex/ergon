@@ -143,21 +143,9 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             {
-                #[allow(unused_imports)]
-                use ::ergon::kind::*;
-
-                let (__should_cache, __is_retryable_opt) = match __result.as_ref().err() {
-                    Some(__e) => {
-                        let __is_retryable = (*__e).error_kind().is_retryable(__e);
-                        (!__is_retryable, Some(__is_retryable)) // should_cache = !is_retryable
-                    }
-                    None => (true, None),
-                };
-
-                // Store the is_retryable flag before caching (for worker retry decision)
-                if let Some(__is_ret) = __is_retryable_opt {
-                    let _ = __ctx.update_step_retryability(__step, __is_ret).await;
-                }
+                // Note: Don't call is_retryable() here - the step/child flow already did it
+                // and stored the result. This avoids redundant trait method calls.
+                let __should_cache = __result.is_ok();
 
                 if __should_cache {
                     let _ = __ctx.log_step_completion(__step, &__result).await;

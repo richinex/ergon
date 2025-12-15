@@ -232,7 +232,7 @@ impl LoanApplication {
             self.requested_amount
         );
 
-        // ✨ Step 1: Credit Check using Level 3 invoke() API
+        // Step 1: Credit Check using Level 3 invoke() API
         println!(
             "[{}] APPLICATION[{}]: Invoking credit check...",
             format_time(),
@@ -276,7 +276,7 @@ impl LoanApplication {
             }
         };
 
-        // ✨ Step 2: Income Verification using Level 3 invoke() API
+        // Step 2: Income Verification using Level 3 invoke() API
         println!(
             "[{}] APPLICATION[{}]: Invoking income verification...",
             format_time(),
@@ -347,7 +347,7 @@ impl LoanApplication {
 struct CreditCheck {
     applicant_name: String,
     simulate_error: Option<String>,
-    // ✨ NO parent_flow_id field!
+    // NO parent_flow_id field!
 }
 
 impl InvokableFlow for CreditCheck {
@@ -427,7 +427,7 @@ impl CreditCheck {
             result.score
         );
 
-        // ✨ Just return - worker auto-signals parent!
+        // Just return - worker auto-signals parent!
         Ok(result)
     }
 
@@ -448,7 +448,7 @@ impl CreditCheck {
 struct IncomeVerification {
     applicant_name: String,
     simulate_error: Option<String>,
-    // ✨ NO parent_flow_id field!
+    // NO parent_flow_id field!
 }
 
 impl InvokableFlow for IncomeVerification {
@@ -512,7 +512,7 @@ impl IncomeVerification {
             result.annual_income
         );
 
-        // ✨ Just return - worker auto-signals parent!
+        // Just return - worker auto-signals parent!
         Ok(result)
     }
 
@@ -543,16 +543,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("child_custom_errors.db").await?);
     storage.reset().await?;
 
-    // ============================================================
-    // PART 1: API Server / Scheduler Process
-    // ============================================================
-    // In production: POST /api/loan-applications -> returns 202 with task_id
-    // ============================================================
-
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 1: Scheduling Loan Applications (API Server)         ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     let scheduler = ergon::executor::Scheduler::new(storage.clone());
     let mut task_ids = Vec::new();
 
@@ -564,7 +554,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         simulate_error: None,
     };
     let task_id = scheduler.schedule(app1, Uuid::new_v4()).await?;
-    println!("   ✓ APP-001 scheduled (task_id: {})", task_id);
     task_ids.push(task_id);
 
     // Test 2: Credit Score Too Low (Permanent Error)
@@ -575,7 +564,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         simulate_error: Some("low_credit_score".to_string()),
     };
     let task_id = scheduler.schedule(app2, Uuid::new_v4()).await?;
-    println!("   ✓ APP-002 scheduled (task_id: {})", task_id);
     task_ids.push(task_id);
 
     // Test 3: Insufficient Income (Permanent Error)
@@ -586,7 +574,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         simulate_error: Some("insufficient_income".to_string()),
     };
     let task_id = scheduler.schedule(app3, Uuid::new_v4()).await?;
-    println!("   ✓ APP-003 scheduled (task_id: {})", task_id);
     task_ids.push(task_id);
 
     // Test 4: Bureau Timeout (Retryable Error)
@@ -598,19 +585,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         simulate_error: Some("bureau_timeout".to_string()),
     };
     let task_id = scheduler.schedule(app4, Uuid::new_v4()).await?;
-    println!("   ✓ APP-004 scheduled (task_id: {})", task_id);
     task_ids.push(task_id);
-
-    println!("\n   → In production: Return HTTP 202 Accepted with task_ids");
-    println!("   → Client polls GET /api/tasks/:id for status\n");
-
-    // ============================================================
-    // PART 2: Worker Service (Separate Process)
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 2: Starting Worker (Separate Service)                ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let worker = Worker::new(storage.clone(), "loan-worker")
         .with_timers()
@@ -626,15 +601,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let worker = worker.start().await;
-    println!("   ✓ Worker started and polling for work\n");
-
-    // ============================================================
-    // PART 3: Client Status Monitoring (Demo Only)
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     // Wait for all flows to complete
     let timeout_duration = Duration::from_secs(20);
@@ -659,14 +625,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     match wait_result {
-        Ok(_) => println!("\nAll loan applications processed!\n"),
-        Err(_) => println!("\n[WARN] Timeout waiting for applications to complete\n"),
+        Ok(_) => {}
+        Err(_) => println!("[WARN] Timeout waiting for applications to complete"),
     }
-
-    println!(
-        "Total credit check attempts: {}",
-        CREDIT_CHECK_ATTEMPTS.load(Ordering::SeqCst)
-    );
 
     worker.shutdown().await;
     storage.close().await?;

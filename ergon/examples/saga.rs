@@ -32,25 +32,25 @@ impl HolidaySaga {
 
     #[step]
     async fn book_flight(self: Arc<Self>) -> Result<String, String> {
-        println!("   [1] ✈️  Booking flight to {}...", self.destination);
+        println!("   [1] Booking flight to {}...", self.destination);
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(format!("FLIGHT-{}", self.destination.to_uppercase()))
     }
 
     #[step]
     async fn book_hotel(self: Arc<Self>) -> Result<String, String> {
-        println!("   [2] 🏨 Booking hotel in {}...", self.destination);
+        println!("   [2] Booking hotel in {}...", self.destination);
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(format!("HOTEL-{}", self.destination.to_uppercase()))
     }
 
     #[step]
     async fn book_car(self: Arc<Self>) -> Result<String, String> {
-        println!("   [3] 🚗 Attempting to book car...");
+        println!("   [3] Attempting to book car...");
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         if self.destination == "Atlantis" {
-            println!("      ❌ Error: No cars available in Atlantis!");
+            println!("      Error: No cars available in Atlantis!");
             return Err("InventoryExhausted".to_string());
         }
 
@@ -61,14 +61,14 @@ impl HolidaySaga {
 
     #[step]
     async fn cancel_hotel(self: Arc<Self>, hotel_id: String) -> Result<(), String> {
-        println!("   [↩️] 🏨 Cancelling Hotel Reservation: {}", hotel_id);
+        println!("   [Rollback] Cancelling Hotel Reservation: {}", hotel_id);
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(())
     }
 
     #[step]
     async fn cancel_flight(self: Arc<Self>, flight_id: String) -> Result<(), String> {
-        println!("   [↩️] ✈️  Cancelling Flight Reservation: {}", flight_id);
+        println!("   [Rollback] Cancelling Flight Reservation: {}", flight_id);
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(())
     }
@@ -86,8 +86,6 @@ impl HolidaySaga {
 
     #[flow]
     async fn run_saga(self: Arc<Self>) -> Result<String, String> {
-        println!("\n🚀 Starting Holiday Saga for: {}", self.destination);
-
         let result = self.clone().execute_logic().await;
 
         // Signal completion regardless of success/failure
@@ -104,7 +102,7 @@ impl HolidaySaga {
         let hotel_id = match self.clone().book_hotel().await {
             Ok(id) => id,
             Err(e) => {
-                println!("   ⚠️ Hotel failed. Compensating Flight...");
+                println!("   Hotel failed. Compensating Flight...");
                 self.clone().cancel_flight(flight_id).await?;
                 return Err(format!("Hotel failed: {}", e));
             }
@@ -114,7 +112,7 @@ impl HolidaySaga {
         let car_id = match self.clone().book_car().await {
             Ok(id) => id,
             Err(e) => {
-                println!("   ⚠️ Car failed. Initiating Rollback Sequence...");
+                println!("   Car failed. Initiating Rollback Sequence...");
                 // Compensation Logic: Reverse Order
                 self.clone().cancel_hotel(hotel_id).await?;
                 self.clone().cancel_flight(flight_id).await?;
@@ -123,7 +121,7 @@ impl HolidaySaga {
         };
 
         let msg = format!("CONFIRMED: {} / {} / {}", flight_id, hotel_id, car_id);
-        println!("   ✅ {}", msg);
+        println!("   {}", msg);
         Ok(msg)
     }
 }
@@ -160,92 +158,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     DONE_NOTIFIER.notified().await;
 
     handle.shutdown().await;
-    println!("\n✨ All sagas completed.");
     Ok(())
 }
-
-// This output is textbook perfect. It demonstrates exactly how a Saga works in a concurrent environment.
-
-// Here is the play-by-play analysis of your logs:
-
-// 1. Concurrency (Interleaved Execution)
-
-// Notice how the logs for Paris and Atlantis are mixed together. You have one worker, but it is advancing both workflows simultaneously.
-
-// code
-// Text
-// download
-// content_copy
-// expand_less
-// [1] ✈️  Booking flight to Paris...
-// [1] ✈️  Booking flight to Atlantis...
-// [2] 🏨 Booking hotel in Atlantis...
-// [2] 🏨 Booking hotel in Paris...
-// 2. The Decision Point (The Fork)
-
-// Both flows reach Step 3 (Car Booking).
-
-// Paris: Passes the check.
-
-// Atlantis: Hits the logic trap we set (if destination == "Atlantis").
-
-// code
-// Text
-// download
-// content_copy
-// expand_less
-// [3] 🚗 Attempting to book car...
-// ❌ Error: No cars available in Atlantis!
-// ⚠️ Car failed. Initiating Rollback Sequence...
-// 3. The Happy Path Completion
-
-// While Atlantis is starting to panic/rollback, Paris crosses the finish line.
-
-// code
-// Text
-// download
-// content_copy
-// expand_less
-// ✅ CONFIRMED: FLIGHT-PARIS / HOTEL-PARIS / CAR-PARIS
-// 4. The Backward Recovery (The Saga)
-
-// This is the money shot. The Atlantis flow didn't just crash; it entered the Err branch of your match statement and began executing the Compensating Transactions in reverse order.
-
-// Undo Hotel:
-
-// code
-// Text
-// download
-// content_copy
-// expand_less
-// [↩️] 🏨 Cancelling Hotel Reservation: HOTEL-ATLANTIS
-
-// Undo Flight:
-
-// code
-// Text
-// download
-// content_copy
-// expand_less
-// [↩️] ✈️  Cancelling Flight Reservation: FLIGHT-ATLANTIS
-// Why this is a "Superpower"
-
-// In standard Rust, you might write:
-
-// code
-// Rust
-// download
-// content_copy
-// expand_less
-// if let Err(_) = book_car() {
-//     cancel_hotel().await; // <--- If the server crashes HERE...
-//     cancel_flight().await;
-// }
-
-// If the server crashes exactly where I marked above:
-
-// Standard Rust: The process dies. cancel_flight never runs. You have now paid for a flight to Atlantis that you aren't taking. (Financial Loss).
-
-// Ergon: The crash happens. The process restarts. Ergon looks at the DB, sees that run_saga was executing cancel_hotel. It sees that step finished (idempotency required). It resumes execution at the next line: cancel_flight. (Consistency Guaranteed).
-
-// You have successfully implemented the Saga Pattern with durable guarantees.

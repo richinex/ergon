@@ -93,7 +93,6 @@ impl OrderProcessor {
             .send_confirmation(inventory, completed_at)
             .await?;
 
-        println!("[FLOW] Order {} completed successfully", self.order_id);
         Ok(result)
     }
 
@@ -227,9 +226,6 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nRetry Policy with Crash Recovery Demo");
-    println!("======================================\n");
-
     let db = "data/test.db";
     let _ = std::fs::remove_file(db);
 
@@ -244,13 +240,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let flow_id = Uuid::new_v4();
     scheduler.schedule(order.clone(), flow_id).await?;
-
-    println!("Scheduled order: {}", order.order_id);
-    println!("Amount to charge: ${:.2}", order.amount);
-    println!("Retry Policy: STANDARD (3 attempts, exponential backoff)\n");
-
-    println!("Processing Order with Automatic Retry");
-    println!("======================================\n");
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {
@@ -268,46 +257,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     worker.await?;
-
-    println!("\nFinal Results");
-    println!("=============\n");
-
-    let invocations = storage.get_invocations_for_flow(flow_id).await?;
-
-    let flow_inv = invocations.iter().find(|i| i.step() == 0);
-    if let Some(flow) = flow_inv {
-        println!("Flow Status: {:?}", flow.status());
-        if let Some(result) = flow.return_value() {
-            println!("Flow Result bytes: {} bytes", result.len());
-            match ergon::core::deserialize_value::<Result<OrderResult, String>>(result) {
-                Ok(Ok(order_result)) => println!("Flow returned Ok: {:?}", order_result),
-                Ok(Err(error)) => println!("Flow returned Err: {}", error),
-                Err(e) => println!("Could not deserialize: {}", e),
-            }
-        } else {
-            println!("Flow has no return value yet");
-        }
-    }
-
-    println!("\nAll Steps:");
-    for inv in &invocations {
-        if inv.step() > 0 {
-            println!("  {} (status: {:?})", inv.method_name(), inv.status());
-            if let Some(policy) = inv.retry_policy() {
-                println!(
-                    "    Retry Policy: max_attempts={}, backoff={}x",
-                    policy.max_attempts, policy.backoff_multiplier
-                );
-            }
-        }
-    }
-
-    let payment_count = PAYMENT_CHARGE_COUNT.load(Ordering::SeqCst);
-    let inventory_attempts = INVENTORY_ATTEMPT_COUNT.load(Ordering::SeqCst);
-
-    println!("\nExecution Statistics:");
-    println!("  Payment charged:     {} time(s)", payment_count);
-    println!("  Inventory attempts:  {} time(s)", inventory_attempts);
 
     Ok(())
 }

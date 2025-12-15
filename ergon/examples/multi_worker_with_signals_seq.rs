@@ -775,17 +775,9 @@ fn timestamp() -> f64 {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let total_start = std::time::Instant::now();
-
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║ Complex Multi-Worker DAG + Signals (SQLite)               ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-    println!("Scenario: 3 concurrent orders, 4 workers, SEQUENTIAL execution with SIGNAL-based approvals\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("complex_dag_signals.db").await?);
     storage.reset().await?;
 
-    // Create signal source for manager approvals
     let signal_source = Arc::new(SimulatedApprovalSource::new());
 
     let scheduler = Scheduler::new(storage.clone());
@@ -815,23 +807,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
-    // ============================================================
-    // PART 1: API Server / Scheduler Process
-    // ============================================================
-    // In production, this would be an HTTP endpoint that:
-    //   POST /api/orders -> schedules workflow -> returns 202 Accepted with task_id
-    //
-    // The scheduler does NOT wait for completion. It returns immediately.
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 1: Scheduling Orders (API Server)                    ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     let mut task_ids = Vec::new();
     for order in &orders {
         let task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
-        println!("   ✓ {} scheduled (task_id: {})", order.order_id, task_id);
         task_ids.push(task_id);
 
         // Simulate manager approving each order after a delay
@@ -848,26 +826,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await;
         });
     }
-
-    println!("\n   → In production: Return HTTP 202 Accepted");
-    println!(
-        "   → Response body: {{\"task_ids\": [{:?}, ...]}}",
-        task_ids[0]
-    );
-    println!("   → Client polls GET /api/tasks/:id for status\n");
-
-    // ============================================================
-    // PART 2: Worker Service (Separate Process)
-    // ============================================================
-    // In production, workers run in separate pods/containers/services.
-    // They continuously poll the shared storage for work.
-    //
-    // Workers are completely decoupled from the scheduler.
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 2: Starting Workers (Separate Service)               ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let workers: Vec<_> = (1..=4)
         .map(|i| {
@@ -910,13 +868,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the scheduler process would NOT do this polling.
     // ============================================================
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-    println!("   → Simulating client polling GET /api/tasks/:id...\n");
-
     let timeout_duration = Duration::from_secs(30);
-    let wait_result = tokio::time::timeout(timeout_duration, async {
+    tokio::time::timeout(timeout_duration, async {
         loop {
             let mut all_complete = true;
             for &task_id in &task_ids {
@@ -935,239 +888,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok::<(), Box<dyn std::error::Error>>(())
     })
-    .await;
-
-    match wait_result {
-        Ok(_) => println!("\nAll flows completed successfully!\n"),
-        Err(_) => {
-            println!("\n[WARN] Timeout waiting for flows to complete\n");
-            let incomplete = storage.get_incomplete_flows().await?;
-            println!("Incomplete flows: {}", incomplete.len());
-            for inv in &incomplete {
-                println!("  - {} ({})", inv.id(), inv.class_name());
-            }
-        }
-    }
+    .await
+    .ok();
 
     // Shutdown all workers
     for handle in workers {
         handle.await?.shutdown().await;
     }
 
-    // Print summary
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                       Summary                              ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
-    println!("Step Execution Counts:");
-    println!(
-        "  validate_customer:    {}",
-        VALIDATE_CUSTOMER_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  check_fraud:          {}",
-        CHECK_FRAUD_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  reserve_inventory:    {}",
-        RESERVE_INVENTORY_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  await_manager_approval: {} (SIGNAL steps)",
-        AWAIT_APPROVAL_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  process_payment:      {}",
-        PROCESS_PAYMENT_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  generate_label:       {} (child flow invocations)",
-        GENERATE_LABEL_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  notify_customer:      {}",
-        NOTIFY_CUSTOMER_COUNT.load(Ordering::Relaxed)
-    );
-
-    println!("\nPer-Order Step Attempts:");
-    for i in 1..=3 {
-        let order_id = format!("ORD-{:03}", i);
-        if let Some(attempts) = ORDER_ATTEMPTS.get(&order_id) {
-            println!(
-                "  {}: validate={}, fraud={}, inventory={}, approval={}, payment={}, label={}, notify={}",
-                order_id,
-                attempts.validate_customer.load(Ordering::Relaxed),
-                attempts.check_fraud.load(Ordering::Relaxed),
-                attempts.reserve_inventory.load(Ordering::Relaxed),
-                attempts.await_approval.load(Ordering::Relaxed),
-                attempts.process_payment.load(Ordering::Relaxed),
-                attempts.generate_label.load(Ordering::Relaxed),
-                attempts.notify_customer.load(Ordering::Relaxed)
-            );
-        }
-    }
-
-    let total_duration = total_start.elapsed();
-    println!("\n╔════════════════════════════════════════════════════════════╗");
-    println!("║                    Execution Timing                        ║");
-    println!("╚════════════════════════════════════════════════════════════╝");
-    println!("\nPer-Order Fulfillment Time:");
-    for i in 1..=3 {
-        let order_id = format!("ORD-{:03}", i);
-        if let Some(timing) = ORDER_TIMINGS.get(&order_id) {
-            println!("  {}: {:.3}s", order_id, *timing);
-        }
-    }
-    println!(
-        "\n  Total SEQUENTIAL execution: {:.3}s\n",
-        total_duration.as_secs_f64()
-    );
-
     storage.close().await?;
     Ok(())
 }
-
-// ➜  ergon git:(main) ✗ cargo run --example multi_worker_with_signals_seq
-//     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
-//      Running `target/debug/examples/multi_worker_with_signals_seq`
-
-// ╔════════════════════════════════════════════════════════════╗
-// ║ Complex Multi-Worker DAG + Signals (SQLite)               ║
-// ╚════════════════════════════════════════════════════════════╝
-
-// Scenario: 3 concurrent orders, 4 workers, SEQUENTIAL execution with SIGNAL-based approvals
-
-// ╔════════════════════════════════════════════════════════════╗
-// ║ PART 1: Scheduling Orders (API Server)                    ║
-// ╚════════════════════════════════════════════════════════════╝
-
-//    ✓ ORD-001 scheduled (task_id: 401af29a-8d16-46dd-8d28-ec5cf5da7cc2)
-//    ✓ ORD-002 scheduled (task_id: 9b330af3-a7fb-4070-92cb-3abbb078b102)
-//    ✓ ORD-003 scheduled (task_id: c25a5554-2038-4a7d-b862-f7fdee2376d6)
-
-//    → In production: Return HTTP 202 Accepted
-//    → Response body: {"task_ids": [401af29a-8d16-46dd-8d28-ec5cf5da7cc2, ...]}
-//    → Client polls GET /api/tasks/:id for status
-
-// ╔════════════════════════════════════════════════════════════╗
-// ║ PART 2: Starting Workers (Separate Service)               ║
-// ╚════════════════════════════════════════════════════════════╝
-
-//    ✓ 4 workers started and polling for work
-
-// ╔════════════════════════════════════════════════════════════╗
-// ║ PART 3: Monitoring Status (Client Would Poll API)         ║
-// ╚════════════════════════════════════════════════════════════╝
-
-//    → Simulating client polling GET /api/tasks/:id...
-
-// [1765440115.318] ORDER[ORD-001] Starting SEQUENTIAL fulfillment
-
-// [1765440115.318] ORDER[ORD-002] Starting SEQUENTIAL fulfillment
-
-// [1765440115.319] ORDER[ORD-003] Starting SEQUENTIAL fulfillment
-// [1765440115.319]   [ORD-001] validate_customer (execution #1)
-// [1765440115.319]   [ORD-003] validate_customer (execution #1)
-// [1765440115.320]   [ORD-002] validate_customer (execution #1)
-// [1765440115.420]      -> Customer validated
-// [1765440115.420]      -> Customer validated
-// [1765440115.422]      -> Customer validated
-// [1765440115.422]   [ORD-001] check_fraud (execution #1)
-// [1765440115.422]   [ORD-003] check_fraud (execution #1)
-// [1765440115.423]   [ORD-002] check_fraud (execution #1)
-// [1765440115.573]      -> No fraud detected
-// [1765440115.573]      -> No fraud detected
-// [1765440115.574]      -> No fraud detected
-// [1765440115.575]   [ORD-003] reserve_inventory (execution #1)
-// [1765440115.575]   [ORD-001] reserve_inventory (execution #1)
-// [1765440115.575]   [ORD-002] reserve_inventory (execution #1)
-// [1765440115.696]      -> Inventory reserved
-// [1765440115.696]      -> Inventory reserved
-// [1765440115.697]      -> Inventory reserved
-// [1765440115.698]   [ORD-001] await_manager_approval (execution #1)
-// [1765440115.699]   [ORD-003] await_manager_approval (execution #1)
-// [1765440115.699]   [ORD-002] await_manager_approval (execution #1)
-// [1765440117.317]   [SIGNAL] Manager decision received for 'order_approval_ORD-003'
-// [1765440117.317]   [SIGNAL] Manager decision received for 'order_approval_ORD-001'
-// [1765440117.317]   [SIGNAL] Manager decision received for 'order_approval_ORD-002'
-
-// [1765440117.325] ORDER[ORD-001] Starting SEQUENTIAL fulfillment
-
-// [1765440117.325] ORDER[ORD-003] Starting SEQUENTIAL fulfillment
-// [1765440117.326]   [ORD-001] await_manager_approval (execution #2)
-// [1765440117.327]      -> Manager APPROVED by manager@company.com - High-value order approved!
-// [1765440117.328]   [ORD-001] process_payment (execution #1)
-// [1765440117.328]   [ORD-003] await_manager_approval (execution #2)
-// [1765440117.329]      -> Manager APPROVED by manager@company.com - High-value order approved!
-// [1765440117.331]   [ORD-003] process_payment (execution #1)
-
-// [1765440117.427] ORDER[ORD-002] Starting SEQUENTIAL fulfillment
-// [1765440117.429]   [ORD-002] await_manager_approval (execution #2)
-// [1765440117.429]      -> Manager APPROVED by manager@company.com - High-value order approved!
-// [1765440117.430]   [ORD-002] process_payment (execution #1)
-// [1765440117.529]      -> Payment authorized
-// [1765440117.531]   [ORD-001] generate_shipping_label (execution #1)
-// [1765440117.532]      -> Payment authorized
-// [1765440117.532]   [ORD-003] generate_shipping_label (execution #1)
-// [1765440117.533]     CHILD[a370ebf5]: Generating label for order ORD-001
-// [1765440117.537]     CHILD[145c5b70]: Generating label for order ORD-003
-// [1765440117.631]      -> Payment authorized
-// [1765440117.633]   [ORD-002] generate_shipping_label (execution #1)
-// [1765440117.636]     CHILD[95d72223]: Generating label for order ORD-002
-// [1765440117.736]     CHILD[a370ebf5]: Label complete: TRACK-9112FFFF
-// [1765440117.737]     CHILD[145c5b70]: Label complete: TRACK-3846AE11
-
-// [1765440117.738] ORDER[ORD-001] Starting SEQUENTIAL fulfillment
-// [1765440117.740]   [ORD-001] generate_shipping_label (execution #2)
-// [1765440117.741]      -> Label generated: TRACK-9112FFFF
-// [1765440117.742]   [ORD-001] notify_customer (execution #1)
-
-// [1765440117.744] ORDER[ORD-003] Starting SEQUENTIAL fulfillment
-// [1765440117.746]   [ORD-003] generate_shipping_label (execution #2)
-// [1765440117.747]      -> Label generated: TRACK-3846AE11
-// [1765440117.750]   [ORD-003] notify_customer (execution #1)
-// [1765440117.837]     CHILD[95d72223]: Label complete: TRACK-B6B4BB80
-
-// [1765440117.840] ORDER[ORD-002] Starting SEQUENTIAL fulfillment
-// [1765440117.843]   [ORD-002] generate_shipping_label (execution #2)
-// [1765440117.843]      -> Customer notified (tracking: TRACK-9112FFFF)
-// [1765440117.844]      -> Label generated: TRACK-B6B4BB80
-// [1765440117.844] ORDER[ORD-001] SEQUENTIAL fulfillment complete in 0.106s
-
-// [1765440117.845]   [ORD-002] notify_customer (execution #1)
-// [1765440117.851]      -> Customer notified (tracking: TRACK-3846AE11)
-// [1765440117.851] ORDER[ORD-003] SEQUENTIAL fulfillment complete in 0.108s
-
-// [1765440117.946]      -> Customer notified (tracking: TRACK-B6B4BB80)
-// [1765440117.947] ORDER[ORD-002] SEQUENTIAL fulfillment complete in 0.107s
-
-// All flows completed successfully!
-
-// ╔════════════════════════════════════════════════════════════╗
-// ║                       Summary                              ║
-// ╚════════════════════════════════════════════════════════════╝
-
-// Step Execution Counts:
-//   validate_customer:    3
-//   check_fraud:          3
-//   reserve_inventory:    3
-//   await_manager_approval: 6 (SIGNAL steps)
-//   process_payment:      3
-//   generate_label:       6 (child flow invocations)
-//   notify_customer:      3
-
-// Per-Order Step Attempts:
-//   ORD-001: validate=1, fraud=1, inventory=1, approval=2, payment=1, label=2, notify=1
-//   ORD-002: validate=1, fraud=1, inventory=1, approval=2, payment=1, label=2, notify=1
-//   ORD-003: validate=1, fraud=1, inventory=1, approval=2, payment=1, label=2, notify=1
-
-// ╔════════════════════════════════════════════════════════════╗
-// ║                    Execution Timing                        ║
-// ╚════════════════════════════════════════════════════════════╝
-
-// Per-Order Fulfillment Time:
-//   ORD-001: 0.106s
-//   ORD-002: 0.107s
-//   ORD-003: 0.108s
-
-//   Total SEQUENTIAL execution: 3.019s

@@ -135,16 +135,11 @@ impl NotificationSender {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Ergon Distributed Worker Example ===\n");
-
     // Create shared storage
     let storage = Arc::new(SqliteExecutionLog::new("distributed_demo.db").await?);
     storage.reset().await?;
 
-    println!("1. Creating scheduler...");
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("2. Scheduling flows for distributed execution...\n");
 
     // Schedule some order processing flows
     for i in 1..=3 {
@@ -155,12 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(order, flow_id).await?;
-        println!(
-            "   Scheduled order ORD-{:03} (task_id: {})",
-            i,
-            task_id.to_string().split('-').next().unwrap_or("")
-        );
+        let _task_id = scheduler.schedule(order, flow_id).await?;
     }
 
     // Schedule some notification flows
@@ -171,15 +161,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(notification, flow_id).await?;
-        println!(
-            "   Scheduled notification to user{} (task_id: {})",
-            i,
-            task_id.to_string().split('-').next().unwrap_or("")
-        );
+        let _task_id = scheduler.schedule(notification, flow_id).await?;
     }
-
-    println!("\n3. Starting distributed workers...\n");
 
     // Start worker 1 (handles both flow types)
     let worker1 =
@@ -191,7 +174,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(|flow: Arc<NotificationSender>| flow.send())
         .await;
     let handle1 = worker1.start().await;
-    println!("   Started worker-1");
 
     // Start worker 2 (handles both flow types)
     let worker2 =
@@ -203,31 +185,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(|flow: Arc<NotificationSender>| flow.send())
         .await;
     let handle2 = worker2.start().await;
-    println!("   Started worker-2\n");
-
-    println!("4. Workers processing flows...\n");
 
     // Let workers process the flows
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    println!("\n5. Shutting down workers...\n");
-
     handle1.shutdown().await;
     handle2.shutdown().await;
-
-    println!("   All workers stopped");
-
-    println!("\n6. Verifying results...\n");
 
     // Check flow execution logs
     let incomplete = storage.get_incomplete_flows().await?;
     if incomplete.is_empty() {
-        println!("   ✓ All flows completed successfully!");
+        println!("All flows completed successfully");
     } else {
-        println!("   ⚠ {} flows incomplete", incomplete.len());
+        println!("{} flows incomplete", incomplete.len());
     }
-
-    println!("\n=== Example Complete ===");
 
     storage.close().await?;
     Ok(())

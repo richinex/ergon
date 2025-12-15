@@ -382,8 +382,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
-    println!("\nStarting Order Processing API with Ergon...\n");
-
     // Setup storage
     let db_path = "data/ergon_axum_orders.db";
     let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
@@ -398,7 +396,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Start background workers to process flows
-    println!("Starting 2 background workers...");
     for worker_id in 0..2 {
         let storage_clone = storage.clone();
         tokio::spawn(async move {
@@ -412,7 +409,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Workers run indefinitely
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    println!("Worker {} shutting down...", worker_id);
                     handle.shutdown().await;
                 }
             }
@@ -429,24 +425,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    println!("Server running on http://localhost:3000");
-    println!("\nAPI Endpoints:");
-    println!("  POST   /orders          - Submit a new order");
-    println!("  GET    /orders/:id      - Get order status");
-    println!("  POST   /orders/:id/retry - Retry a failed order");
-    println!("  GET    /health          - Health check");
-    println!("\nTry:");
-    println!(
-        r#"  curl -X POST http://localhost:3000/orders -H "Content-Type: application/json" -d '{{"item": "laptop", "quantity": 2, "customer_email": "user@example.com"}}'"#
-    );
-    println!("\nPress Ctrl+C to shutdown\n");
 
     // Setup graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-
-    println!("Server shutdown complete");
 
     Ok(())
 }

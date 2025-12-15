@@ -345,29 +345,9 @@ impl DocumentApprovalFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║     External Signal Abstraction Example                  ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
-
     let storage = Arc::new(SqliteExecutionLog::new("data/sig_abstraction.db").await?);
     let signal_source = Arc::new(SimulatedUserInputSource::new());
-
-    // ============================================================
-    // PART 1: API Server / Scheduler Process
-    // ============================================================
-    // In production, this would be an HTTP endpoint that:
-    //   POST /api/documents -> schedules workflow -> returns 202 Accepted with task_id
-    //
-    // The scheduler does NOT wait for completion. It returns immediately.
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 1: Scheduling Documents (API Server)                 ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("=== Test 1: Approved Document ===\n");
 
     let doc1 = DocumentSubmission {
         document_id: "DOC-001".to_string(),
@@ -382,9 +362,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let flow_id_1 = Uuid::new_v4();
     let task_id_1 = scheduler.schedule(flow1, flow_id_1).await?;
-    println!("   ✓ DOC-001 scheduled (task_id: {})", task_id_1);
-
-    println!("\n=== Test 2: Rejected by Manager ===\n");
 
     let doc2 = DocumentSubmission {
         document_id: "DOC-002".to_string(),
@@ -399,34 +376,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let flow_id_2 = Uuid::new_v4();
     let task_id_2 = scheduler.schedule(flow2, flow_id_2).await?;
-    println!("   ✓ DOC-002 scheduled (task_id: {})", task_id_2);
-
-    println!("\n   → In production: Return HTTP 202 Accepted");
-    println!(
-        "   → Response body: {{\"task_ids\": [\"{}\", ...]}}",
-        &task_id_1.to_string()[..8]
-    );
-    println!("   → Client polls GET /api/tasks/:id for status\n");
-
-    // ============================================================
-    // PART 2: Worker Service (Separate Process)
-    // ============================================================
-    // In production, workers run in separate pods/containers/services.
-    // They continuously poll the shared storage for work.
-    //
-    // Workers are completely decoupled from the scheduler.
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 2: Starting Worker (Separate Service)                ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let worker = Worker::new(storage.clone(), "document-processor");
     worker
         .register(|flow: Arc<DocumentApprovalFlow>| flow.process())
         .await;
     let worker = worker.with_signals(signal_source.clone()).start().await;
-    println!("   ✓ Worker started with signal processing enabled\n");
 
     // Simulate manager approving DOC-001 after 1 second
     let signal_source_clone = signal_source.clone();
@@ -458,29 +413,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(10) {
-            println!("\n[TIMEOUT] Test 1 did not complete within 10 seconds");
-            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_1).await {
-                println!(
-                    "[INFO] Final status: {:?}, retry_count: {}",
-                    scheduled.status, scheduled.retry_count
-                );
-            }
             break;
         }
         match storage.get_scheduled_flow(task_id_1).await? {
             Some(scheduled) => {
-                if matches!(scheduled.status, TaskStatus::Complete) {
-                    println!("\n[COMPLETE] Test 1 completed successfully");
-                    break;
-                } else if matches!(scheduled.status, TaskStatus::Failed) {
-                    println!("\n[ERROR] Test 1 failed unexpectedly");
+                if matches!(scheduled.status, TaskStatus::Complete)
+                    || matches!(scheduled.status, TaskStatus::Failed)
+                {
                     break;
                 }
             }
-            None => {
-                println!("\n[COMPLETE] Test 1 flow removed from queue (completed)");
-                break;
-            }
+            None => break,
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -503,74 +446,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Wait for flow to fail with permanent error
-    // Expected time: ~1-2 seconds (no retries, signal consumed once)
-    // We wait up to 10 seconds to be safe
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(20) {
-            println!("\n[TIMEOUT] Test 2 did not complete within 20 seconds");
-            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_2).await {
-                println!(
-                    "[INFO] Final status: {:?}, retry_count: {}",
-                    scheduled.status, scheduled.retry_count
-                );
-            }
             break;
         }
         match storage.get_scheduled_flow(task_id_2).await? {
             Some(scheduled) => {
-                if matches!(scheduled.status, TaskStatus::Failed) {
-                    println!(
-                        "\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent"
-                    );
-                    println!("           Signal step succeeded and was cached (no re-suspension on retry)");
-                    break;
-                } else if matches!(scheduled.status, TaskStatus::Complete) {
-                    println!("\n[ERROR] Test 2 completed unexpectedly (should have failed)");
+                if matches!(scheduled.status, TaskStatus::Failed)
+                    || matches!(scheduled.status, TaskStatus::Complete)
+                {
                     break;
                 }
             }
-            None => {
-                println!("\n[COMPLETE] Test 2 flow removed from queue");
-                break;
-            }
+            None => break,
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // Shutdown
     worker.shutdown().await;
-
-    println!("\n=== Summary ===\n");
-
-    println!("Step Execution Counts:");
-    println!(
-        "  validate_document:      {}",
-        VALIDATE_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  await_manager_approval: {} (SIGNAL steps)",
-        MANAGER_APPROVAL_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  await_legal_review:     {} (SIGNAL steps)",
-        LEGAL_REVIEW_COUNT.load(Ordering::Relaxed)
-    );
-    println!(
-        "  publish_document:       {}",
-        PUBLISH_COUNT.load(Ordering::Relaxed)
-    );
-
-    println!("\nFlow Results:");
-    match storage.get_scheduled_flow(task_id_1).await? {
-        Some(scheduled) => println!("  DOC-001: {:?}", scheduled.status),
-        None => println!("  DOC-001: Complete (removed from queue)"),
-    }
-    match storage.get_scheduled_flow(task_id_2).await? {
-        Some(scheduled) => println!("  DOC-002: {:?}", scheduled.status),
-        None => println!("  DOC-002: Complete (removed from queue)"),
-    }
-
     storage.close().await?;
     Ok(())
 }

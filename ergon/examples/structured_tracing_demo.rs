@@ -176,15 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create storage
     let storage = Arc::new(InMemoryExecutionLog::new());
 
-    println!("\n=== Structured Tracing Demo ===\n");
-
     if structured {
-        println!("✓ Structured tracing ENABLED");
-        println!("  - Worker loop spans will be created");
-        println!("  - Flow execution spans with structured fields");
-        println!("  - Timer processing spans (if timers enabled)");
-        println!("  - Rich debugging context for production\n");
-
         // Create worker with structured tracing
         let worker = Worker::new(storage.clone(), "worker-1")
             .with_structured_tracing() // Enable structured spans
@@ -198,12 +190,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
 
         let handle = worker.start().await;
-
-        println!("Worker started with STRUCTURED TRACING\n");
-        println!("Expected span hierarchy:");
-        println!("  worker_loop [worker.id=\"worker-1\"]");
-        println!("  └─ flow_execution [flow.id, flow.type, task.id]");
-        println!("     └─ (your flow steps execute here)\n");
 
         // Schedule some flows
         let scheduler = Scheduler::new(storage.clone());
@@ -235,11 +221,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         handle.shutdown().await;
         info!("Worker shut down gracefully");
     } else {
-        println!("✗ Structured tracing DISABLED (default)");
-        println!("  - Using basic log-style tracing only");
-        println!("  - Zero overhead - no span creation");
-        println!("  - Simple info/debug/warn/error messages\n");
-
         // Create worker WITHOUT structured tracing (default)
         let worker =
             Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(100));
@@ -252,8 +233,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
 
         let handle = worker.start().await;
-
-        println!("Worker started with BASIC TRACING (zero-cost)\n");
 
         // Schedule some flows
         let scheduler = Scheduler::new(storage.clone());
@@ -285,15 +264,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         handle.shutdown().await;
         info!("Worker shut down gracefully");
     }
-
-    println!("\n=== Demo Complete ===\n");
-    println!("Key Takeaways:");
-    println!("1. Structured tracing is OPT-IN via .with_structured_tracing()");
-    println!("2. Default workers have ZERO overhead (no span creation)");
-    println!("3. Structured spans provide rich context: worker.id, flow.id, flow.type, task.id");
-    println!("4. Follows typestate pattern just like timer processing");
-    println!("5. Can be combined: .with_timers().with_structured_tracing()");
-    println!("\nTry running with --structured flag to see the difference!");
 
     Ok(())
 }

@@ -175,9 +175,6 @@ struct AnalysisResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nSQLite Storage Benchmark");
-    println!("========================\n");
-
     let db_path = "/tmp/ergon_benchmark_sqlite.db";
     let _ = std::fs::remove_file(db_path);
 

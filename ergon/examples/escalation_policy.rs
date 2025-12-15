@@ -72,7 +72,7 @@ impl IncidentFlow {
     #[step]
     async fn notify_tier_1(self: Arc<Self>) -> Result<(), String> {
         println!(
-            "   [BOT] ⚠️  Tier 1 Paged (SMS/Email): Server '{}' is down!",
+            "   [BOT] Tier 1 Paged (SMS/Email): Server '{}' is down!",
             self.server_name
         );
         Ok(())
@@ -80,13 +80,13 @@ impl IncidentFlow {
 
     #[step]
     async fn notify_tier_2(self: Arc<Self>) -> Result<(), String> {
-        println!("   [BOT] 📣 Tier 1 didn't respond! Paging Tier 2 (Phone Call)!");
+        println!("   [BOT] Tier 1 didn't respond! Paging Tier 2 (Phone Call)!");
         Ok(())
     }
 
     #[step]
     async fn notify_vp(self: Arc<Self>) -> Result<(), String> {
-        println!("   [BOT] 🚨 Tier 2 didn't respond! Paging VP of Engineering (Siren)!");
+        println!("   [BOT] Tier 2 didn't respond! Paging VP of Engineering (Siren)!");
         Ok(())
     }
 
@@ -96,7 +96,7 @@ impl IncidentFlow {
     #[step]
     async fn wait_for_human(self: Arc<Self>, seconds: u64, stage: String) -> Result<(), String> {
         println!(
-            "   [BOT] ⏳ [{}] Waiting {} seconds for response...",
+            "   [BOT] [{}] Waiting {} seconds for response...",
             stage, seconds
         );
 
@@ -122,13 +122,13 @@ impl IncidentFlow {
 
         if self.incident_id.ends_with("-FIXED") {
             println!(
-                "   [BOT] ✅ [{}] ACK Received via '{}'! Cancelling escalation.",
+                "   [BOT] [{}] ACK Received via '{}'! Cancelling escalation.",
                 stage, signal_name
             );
             return Ok(true);
         }
 
-        println!("   [BOT] ❌ [{}] No ACK received yet.", stage);
+        println!("   [BOT] [{}] No ACK received yet.", stage);
         Ok(false)
     }
 
@@ -142,10 +142,6 @@ impl IncidentFlow {
 
     #[flow]
     async fn run_policy(self: Arc<Self>) -> Result<String, String> {
-        // Note: This println runs every replay.
-        // In a real app, prefer putting logic inside #[step] functions if you want it executed once.
-        println!("🚀 Starting Escalation Policy for: {}", self.incident_id);
-
         let result = self.clone().execute_logic().await;
 
         Self::mark_complete();
@@ -203,10 +199,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = ergon::executor::Scheduler::new(storage.clone());
     let pager = Arc::new(PagerSystem::new());
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ Durable Escalation Policy (Dead Man's Switch)             ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     // 1. Scenario: Everyone ignores it (Full Escalation)
     let inc1 = IncidentFlow {
         incident_id: "INC-001-IGNORE".to_string(),
@@ -235,6 +227,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     DONE_NOTIFIER.notified().await;
 
     handle.shutdown().await;
-    println!("\n✨ Escalation simulation complete.");
     Ok(())
 }

@@ -44,7 +44,7 @@ impl CorporateInbox {
     /// Simulates an executive signing the document
     async fn sign(&self, signal_name: &str, signer_name: &str) {
         println!(
-            "   [SIGNER] 🖋️  {} has signed '{}'",
+            "   [SIGNER] {} has signed '{}'",
             signer_name, signal_name
         );
         let data = ergon::core::serialize_value(&signer_name.to_string()).unwrap();
@@ -79,10 +79,10 @@ impl MultiSigTransfer {
     #[step]
     async fn request_signatures(self: Arc<Self>) -> Result<(), String> {
         println!(
-            "   [SYSTEM] 📢 Multi-sig request started for {} (${}M)",
+            "   [SYSTEM] Multi-sig request started for {} (${}M)",
             self.transfer_id, self.amount
         );
-        println!("   [SYSTEM] ✉️  Emails sent to: Legal, Finance, CEO.");
+        println!("   [SYSTEM] Emails sent to: Legal, Finance, CEO.");
         Ok(())
     }
 
@@ -90,7 +90,7 @@ impl MultiSigTransfer {
     async fn wait_for_approval(self: Arc<Self>, dept: String) -> Result<String, String> {
         let signal_name = format!("{}_{}", self.transfer_id, dept);
         println!(
-            "   [SYSTEM] ⏳ Flow suspended: Waiting for {} signature...",
+            "   [SYSTEM] Flow suspended: Waiting for {} signature...",
             dept
         );
 
@@ -104,8 +104,8 @@ impl MultiSigTransfer {
 
     #[step]
     async fn execute_transfer(self: Arc<Self>, sigs: Vec<String>) -> Result<(), String> {
-        println!("   [SYSTEM] 💰 ALL SIGNATURES RECEIVED: {:?}", sigs);
-        println!("   [SYSTEM] 🚀 Executing transfer {}...", self.transfer_id);
+        println!("   [SYSTEM] ALL SIGNATURES RECEIVED: {:?}", sigs);
+        println!("   [SYSTEM] Executing transfer {}...", self.transfer_id);
         Ok(())
     }
 
@@ -183,81 +183,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wait for flow to recognize all signals and finish
     DONE_NOTIFIER.notified().await;
-    println!("\n✨ Multi-sig workflow finalized successfully.");
     Ok(())
 }
-
-// This example is the "Chef's Kiss" for your library.
-
-// It demonstrates a subtle but critical feature of Durable Execution: Signal Queuing / The "Inbox" Pattern.
-
-// The "Out-of-Order" Magic
-
-// In your run_transfer function, you wrote the code sequentially:
-
-// code
-// Rust
-// download
-// content_copy
-// expand_less
-// let s1 = wait("Legal").await?;   // Line 1
-// let s2 = wait("Finance").await?; // Line 2
-// let s3 = wait("CEO").await?;     // Line 3
-
-// But in the main function, the events happened in reverse order:
-
-// CEO signed.
-
-// Finance signed.
-
-// Legal signed.
-
-// Why this didn't deadlock
-
-// If you wrote this with standard Rust channels (mpsc), this would deadlock or require complex select logic.
-// The code would be blocked on wait("Legal") and might drop the CEO's message if the buffer wasn't handled correctly.
-
-// In Ergon, here is what happened in the database:
-
-// Phase 1: Flow suspends at "Legal". Status: WAITING_FOR_SIGNAL(Legal).
-
-// Phase 2: CEO signs.
-
-// The Worker sees the signal TX-99_CEO.
-
-// It checks the DB. Is anyone waiting for TX-99_CEO? No.
-
-// Crucially: It stores the signal payload in the signal_params table anyway. It's in the inbox.
-
-// Phase 3: Finance signs. Stored in inbox.
-
-// Phase 4: Legal signs.
-
-// The Worker sees TX-99_Legal.
-
-// Matches the waiting flow.
-
-// Resumes the flow.
-
-// The "Fast Forward":
-
-// Flow moves to Line 2: wait("Finance").
-
-// Framework checks DB: "Do I have a signal for Finance?"
-
-// Yes! It arrived 800ms ago. Return immediately.
-
-// Flow moves to Line 3: wait("CEO").
-
-// Yes! It arrived 1000ms ago. Return immediately.
-
-// Flow completes.
-
-// Why this sells the library
-
-// You have decoupled Business Logic Order from Real World Time.
-
-// The developer writes simple, linear code: "I need A, B, and C."
-// The framework handles the chaotic reality: "C arrived first, then B, then A."
-
-// This is the definition of a robust abstraction. Great job.

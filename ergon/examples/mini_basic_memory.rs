@@ -75,7 +75,3 @@ impl Order {
         self.clone().charge().await
     }
 }
-
-// Output:
-// Validated ORD-001
-// Charged $99.99

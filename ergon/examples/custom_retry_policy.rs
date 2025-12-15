@@ -133,10 +133,6 @@ struct OrderResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nCustom Retry Policy Example");
-    println!("============================");
-    println!("Policy: QUICK_RETRY (5 attempts, 50ms initial, 1.2x backoff)\n");
-
     let db = "data/test_custom_retry.db";
     let _ = std::fs::remove_file(db);
 
@@ -148,8 +144,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let flow_id = Uuid::new_v4();
     let task_id = scheduler.schedule(order.clone(), flow_id).await?;
-
-    println!("Scheduled order: {}\n", order.order_id);
 
     let worker = Worker::new(storage.clone(), "custom-retry-worker")
         .with_poll_interval(Duration::from_millis(50));
@@ -189,8 +183,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let invocations = storage.get_invocations_for_flow(flow_id).await?;
     let flow_inv = invocations.iter().find(|i| i.step() == 0);
 
-    println!("\n=== Results ===\n");
-
     if let Some(flow) = flow_inv {
         println!("Flow status: {:?}", flow.status());
         if let Some(result) = flow.return_value() {
@@ -211,81 +203,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  DB writes: {} (expected: 2)", db_attempts);
     println!("  Batch processing: {} (expected: 1)", batch_attempts);
 
-    println!("\n=== How to Create Custom Retry Policies ===\n");
-    println!("Define a const RetryPolicy:");
-    println!("  const MY_POLICY: RetryPolicy = RetryPolicy {{");
-    println!("      max_attempts: 5,");
-    println!("      initial_delay: Duration::from_millis(100),");
-    println!("      max_delay: Duration::from_secs(10),");
-    println!("      backoff_multiplier: 2.0,");
-    println!("  }};");
-
-    println!("\nUse it in your flow:");
-    println!("  #[flow(retry = MY_POLICY)]");
-    println!("  async fn my_flow(self: Arc<Self>) -> Result<T, E> {{ ... }}");
-
-    println!("\nPredefined policies:");
-    println!("  - RetryPolicy::NONE (no retries)");
-    println!("  - RetryPolicy::STANDARD (3 attempts, 1s initial)");
-    println!("  - RetryPolicy::AGGRESSIVE (10 attempts, 100ms initial)");
-
     Ok(())
 }
-
-// ➜  ergon git:(modularize-worker) ✗ cargo run --example custom_retry_policy
-//     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
-//      Running `target/debug/examples/custom_retry_policy`
-
-// Custom Retry Policy Example
-// ============================
-// Policy: QUICK_RETRY (5 attempts, 50ms initial, 1.2x backoff)
-
-// Scheduled order: ORD-12345
-
-// [FLOW] Processing order ORD-12345
-//   [Step 1/3] API call attempt #1
-//     Network timeout (simulated)
-// [FLOW] Processing order ORD-12345
-//   [Step 1/3] API call attempt #2
-//     Network timeout (simulated)
-// [FLOW] Processing order ORD-12345
-//   [Step 1/3] API call attempt #3
-//     Network timeout (simulated)
-// [FLOW] Processing order ORD-12345
-//   [Step 1/3] API call attempt #4
-//     API call succeeded on attempt 4
-//   [Step 2/3] DB write attempt #1 (data: API-DATA-ORD-12345)
-//     Lock conflict (simulated)
-// [FLOW] Processing order ORD-12345
-//   [Step 2/3] DB write attempt #2 (data: API-DATA-ORD-12345)
-//     Lock conflict (simulated)
-// [ERROR] Flow failed
-
-// === Results ===
-
-// Flow status: Pending
-
-// Step execution counts:
-//   API calls: 4
-//   DB writes: 2
-//   Batch processing: 0
-
-// === How to Create Custom Retry Policies ===
-
-// Define a const RetryPolicy:
-//   const MY_POLICY: RetryPolicy = RetryPolicy {
-//       max_attempts: 5,
-//       initial_delay: Duration::from_millis(100),
-//       max_delay: Duration::from_secs(10),
-//       backoff_multiplier: 2.0,
-//   };
-
-// Use it in your flow:
-//   #[flow(retry = MY_POLICY)]
-//   async fn my_flow(self: Arc<Self>) -> Result<T, E> { ... }
-
-// Predefined policies:
-//   - RetryPolicy::NONE (no retries)
-//   - RetryPolicy::STANDARD (3 attempts, 1s initial)
-//   - RetryPolicy::AGGRESSIVE (10 attempts, 100ms initial)
-// ➜  ergon git:(modularize-worker) ✗

@@ -226,21 +226,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(level)
         .init();
 
-    println!("\nDistributed Worker with Timers AND Structured Tracing");
-    println!("======================================================\n");
-
-    info!("Initializing Redis storage");
     let redis_url = "redis://127.0.0.1:6379";
     let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
     storage.reset().await?;
 
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("Starting workers with TIMER PROCESSING + STRUCTURED TRACING...\n");
-    println!("Expected span hierarchy:");
-    println!("  worker_loop [worker.id]");
-    println!("  ├── timer_processing [worker.id, timers.found]");
-    println!("  └── flow_execution [worker.id, flow.id, flow.type, task.id]\n");
 
     // Start worker 1 with BOTH timer processing AND structured tracing
     let worker1 = Worker::new(storage.clone(), "worker-1")
@@ -256,7 +246,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(move |flow: Arc<TrialExpiryNotification>| flow.send_expiry_notice())
         .await;
     let handle1 = worker1.start().await;
-    info!("Started worker-1 with timers + structured tracing");
 
     // Start worker 2 with BOTH timer processing AND structured tracing
     let worker2 = Worker::new(storage.clone(), "worker-2")
@@ -272,12 +261,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(move |flow: Arc<TrialExpiryNotification>| flow.send_expiry_notice())
         .await;
     let handle2 = worker2.start().await;
-    info!("Started worker-2 with timers + structured tracing");
 
     // Give both workers time to initialize and start polling
     tokio::time::sleep(Duration::from_millis(500)).await;
-
-    println!("\nScheduling flows...\n");
 
     // Track task IDs and their descriptions for worker distribution analysis
     let mut flow_info: Vec<(Uuid, String)> = Vec::new();
@@ -293,7 +279,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let flow_id = Uuid::new_v4();
         let task_id = scheduler.schedule(order, flow_id).await?;
         flow_info.push((task_id, format!("Order ORD-{:03}", i)));
-        info!("Scheduled order ORD-{:03}", i);
     }
 
     // Schedule trial expiry flows
@@ -306,15 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let flow_id = Uuid::new_v4();
         let task_id = scheduler.schedule(trial, flow_id).await?;
         flow_info.push((task_id, format!("Trial expiry user-{}", i)));
-        info!("Scheduled trial expiry for user-{}", i);
     }
-
-    println!("\nWorkers processing flows and timers (with structured spans)...\n");
-    println!("Watch the logs for span hierarchy:\n");
-    println!("  - worker_loop spans for each iteration");
-    println!("  - timer_processing spans when checking timers");
-    println!("  - flow_execution spans with full context");
-    println!("  - All spans include structured fields for filtering\n");
 
     // Give workers time to pick up flows from queue
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -333,58 +310,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await
     {
-        Ok(_) => info!("All flows completed!"),
+        Ok(_) => {}
         Err(_) => {
-            warn!("Timeout waiting for flows to complete");
             let incomplete = storage.get_incomplete_flows().await?;
-            warn!("Incomplete flows: {}", incomplete.len());
-            for inv in incomplete {
-                warn!("  - {} ({})", inv.id(), inv.class_name());
-            }
+            warn!("Timeout - {} incomplete flows", incomplete.len());
         }
     }
-
-    println!("\nShutting down workers...\n");
 
     handle1.shutdown().await;
-    info!("Worker-1 stopped");
-
     handle2.shutdown().await;
-    info!("Worker-2 stopped");
-
-    println!("\nVerifying results...\n");
-
-    let incomplete = storage.get_incomplete_flows().await?;
-    if incomplete.is_empty() {
-        println!("  ✓ All flows completed successfully");
-    } else {
-        println!("  ✗ {} flows incomplete", incomplete.len());
-        for inv in incomplete {
-            println!("    - {} ({})", inv.id(), inv.class_name());
-        }
-    }
-
-    println!("\nWorker Distribution:\n");
-
-    // Show which worker completed which flow
-    for (task_id, description) in flow_info {
-        if let Some(scheduled_flow) = storage.get_scheduled_flow(task_id).await? {
-            let worker = scheduled_flow.locked_by.as_deref().unwrap_or("unknown");
-            println!("  {} -> {}", description, worker);
-        }
-    }
-
-    println!("\n=== Key Observations ===\n");
-    println!("1. Every operation has a span with structured context");
-    println!("2. Spans include: worker.id, flow.id, flow.type, task.id");
-    println!("3. Timer processing spans show coordination between workers");
-    println!("4. Flow execution spans track the full lifecycle");
-    println!("5. All spans can be filtered, aggregated, and analyzed");
-    println!("\n=== Performance Notes ===\n");
-    println!("- Structured tracing adds ~2-5% overhead");
-    println!("- Zero cost for workers without .with_structured_tracing()");
-    println!("- Spans integrate with OpenTelemetry for distributed tracing");
-    println!("- Production-ready for debugging complex distributed systems");
 
     Ok(())
 }

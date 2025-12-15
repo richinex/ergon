@@ -28,14 +28,25 @@ impl MyFlow {
         let shipping = self.clone().ship_order().await?;
         Ok(Receipt { payment, shipping })
     }
+
+    #[flow(retry = RetryPolicy::STANDARD)]
+    async fn process_with_retry(self: Arc<Self>) -> Result<Receipt, ExecutionError> {
+        // Flow-level retry policy applies to the entire workflow
+        let result = self.clone().external_operation().await?;
+        Ok(result)
+    }
 }
 ```
+
+**Flow attributes:**
+- `retry`: Configure retry behavior for the entire flow (e.g., `RetryPolicy::STANDARD`, `RetryPolicy::AGGRESSIVE`)
 
 **Generated code:**
 - State management for flow execution
 - Error handling and conversion
 - Integration with the executor
 - Automatic registration of steps
+- Retry policy integration
 
 <!-- TODO: Add flow lifecycle diagram here -->
 ![Flow Lifecycle](https://via.placeholder.com/800x300/2c3e50/ffffff?text=Flow+Lifecycle+and+State+Management)
@@ -53,24 +64,25 @@ impl MyFlow {
         self.payment_service.charge(self.amount).await
     }
 
-    #[step(retry_policy = RetryPolicy::AGGRESSIVE)]
-    async fn external_api_call(self: Arc<Self>) -> Result<Data, ApiError> {
-        // Aggressive retry for flaky external APIs
-        self.api_client.fetch().await
+    #[step(depends_on = "charge_payment")]
+    async fn send_confirmation(self: Arc<Self>) -> Result<(), String> {
+        // Sequential step - runs after charge_payment completes
+        self.email_service.send_receipt().await
     }
 }
 ```
 
 **Step attributes:**
-- `retry_policy`: Configure retry behavior (e.g., `RetryPolicy::STANDARD`, `RetryPolicy::AGGRESSIVE`)
-- `depends_on`: Specify dependencies for DAG execution (e.g., `depends_on = "step1, step2"`)
+- `depends_on`: Specify dependencies for DAG execution (e.g., `depends_on = "step1"` or `depends_on = ["step1", "step2"]`)
+- `inputs`: Wire dependency outputs to parameters (e.g., `inputs(data = "step1")`)
+- `delay`: Delay before execution (e.g., `delay = 5, unit = "SECONDS"`)
 
 **Generated code:**
 - Result caching and memoization
-- Retry policy integration
 - Error conversion
 - Idempotency key generation
 - Step registration
+- Dependency tracking for DAG execution
 
 <!-- TODO: Add step caching diagram here -->
 ![Step Caching](https://via.placeholder.com/800x250/34495e/ffffff?text=Step+Result+Caching+and+Replay)
@@ -212,25 +224,27 @@ Expands to (simplified):
 
 ## Macro Attributes
 
-### Step Attributes
+### Flow Attributes
 
-#### `retry_policy`
+#### `retry`
 
-Specifies the retry policy for a step:
+Specifies the retry policy for the entire flow:
 
 ```rust
-#[step(retry_policy = RetryPolicy::NONE)]
-async fn no_retry(self: Arc<Self>) -> Result<(), String> { }
+#[flow(retry = RetryPolicy::NONE)]
+async fn no_retry(self: Arc<Self>) -> Result<(), ExecutionError> { }
 
-#[step(retry_policy = RetryPolicy::STANDARD)]
-async fn standard_retry(self: Arc<Self>) -> Result<(), String> { }
+#[flow(retry = RetryPolicy::STANDARD)]
+async fn standard_retry(self: Arc<Self>) -> Result<(), ExecutionError> { }
 
-#[step(retry_policy = RetryPolicy::AGGRESSIVE)]
-async fn aggressive_retry(self: Arc<Self>) -> Result<(), String> { }
+#[flow(retry = RetryPolicy::AGGRESSIVE)]
+async fn aggressive_retry(self: Arc<Self>) -> Result<(), ExecutionError> { }
 
-#[step(retry_policy = RetryPolicy::custom(5, Duration::from_secs(2)))]
-async fn custom_retry(self: Arc<Self>) -> Result<(), String> { }
+#[flow(retry = RetryPolicy::custom(5, Duration::from_secs(2)))]
+async fn custom_retry(self: Arc<Self>) -> Result<(), ExecutionError> { }
 ```
+
+### Step Attributes
 
 #### `depends_on`
 
@@ -294,9 +308,9 @@ async fn bad_flow(self: Arc<Self>) -> String { }
 #[step]
 async fn bad_step(self: Arc<Self>) -> i32 { }
 
-// Error: Invalid retry policy
-#[step(retry_policy = "invalid")]
-async fn bad_policy(self: Arc<Self>) -> Result<(), String> { }
+// Error: Invalid retry attribute on flow
+#[flow(retry = "invalid")]
+async fn bad_retry(self: Arc<Self>) -> Result<(), ExecutionError> { }
 ```
 
 ### Type Safety
@@ -322,7 +336,7 @@ struct DataPipeline {
 }
 
 impl DataPipeline {
-    #[flow]
+    #[flow(retry = RetryPolicy::STANDARD)]
     async fn run(self: Arc<Self>) -> Result<Stats, ExecutionError> {
         dag! {
             // Parallel extraction
@@ -337,9 +351,9 @@ impl DataPipeline {
         }
     }
 
-    #[step(retry_policy = RetryPolicy::AGGRESSIVE)]
+    #[step]
     async fn extract(self: Arc<Self>) -> Result<Vec<u8>, String> {
-        // Fetch from source with aggressive retry
+        // Fetch from source
         Ok(vec![])
     }
 

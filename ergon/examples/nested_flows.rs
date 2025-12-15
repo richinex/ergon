@@ -419,9 +419,6 @@ struct InventoryResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\nNested Flows & Composition Example");
-    println!("===================================");
-
     let storage = Arc::new(InMemoryExecutionLog::new());
     let scheduler = Scheduler::new(storage.clone());
 
@@ -477,15 +474,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     worker_handle.shutdown().await;
-
-    println!("\nAll Flows Completed!");
-    println!("====================\n");
-
-    println!("Key Patterns Demonstrated:");
-    println!("  1. Parent flow orchestrating multiple child flows");
-    println!("  2. Helper methods called within steps (not tracked)");
-    println!("  3. Independent child flows running concurrently");
-    println!("  4. Data passed between steps using `inputs` attribute\n");
 
     Ok(())
 }

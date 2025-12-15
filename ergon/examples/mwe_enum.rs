@@ -164,16 +164,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
 
-    println!("\n=== Testing Enum Outputs ===\n");
-
-    // ============================================================
-    // PART 1: API Server / Scheduler Process
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 1: Scheduling Orders (API Server)                    ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     let scheduler = Scheduler::new(storage.clone());
     let mut task_ids = Vec::new();
 
@@ -183,10 +173,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expedited: false,
     };
     let task_id = scheduler.schedule(order1, Uuid::new_v4()).await?;
-    println!(
-        "   ✓ ORD-001 scheduled (task_id: {})",
-        &task_id.to_string()[..8]
-    );
     task_ids.push(task_id);
 
     // Test 2: Expedited shipping
@@ -195,33 +181,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expedited: true,
     };
     let task_id = scheduler.schedule(order2, Uuid::new_v4()).await?;
-    println!(
-        "   ✓ ORD-002 scheduled (task_id: {})",
-        &task_id.to_string()[..8]
-    );
     task_ids.push(task_id);
 
     // Test 3: Potentially delayed
     let order3 = Order {
-        id: "ABC".into(), // length 3 % 3 == 0, will be delayed
+        id: "ABC".into(),
         expedited: false,
     };
     let task_id = scheduler.schedule(order3, Uuid::new_v4()).await?;
-    println!(
-        "   ✓ ABC scheduled (task_id: {})",
-        &task_id.to_string()[..8]
-    );
     task_ids.push(task_id);
-
-    println!("\n   → In production: Return HTTP 202 Accepted with task_ids\n");
-
-    // ============================================================
-    // PART 2: Worker Service (Separate Process)
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 2: Starting Worker (Separate Service)                ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
 
     let worker =
         Worker::new(storage.clone(), "worker").with_poll_interval(Duration::from_millis(50));
@@ -231,16 +199,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let handle = worker.start().await;
 
-    // ============================================================
-    // PART 3: Client Status Monitoring (Demo Only)
-    // ============================================================
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║ PART 3: Monitoring Status (Client Would Poll API)         ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
     let timeout_duration = Duration::from_secs(5);
-    let wait_result = tokio::time::timeout(timeout_duration, async {
+    tokio::time::timeout(timeout_duration, async {
         loop {
             let mut all_complete = true;
             for &task_id in &task_ids {
@@ -258,12 +218,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok::<(), Box<dyn std::error::Error>>(())
     })
-    .await;
-
-    match wait_result {
-        Ok(_) => println!("\n=== All Tests Complete ===\n"),
-        Err(_) => println!("\n[WARN] Timeout waiting for tests to complete\n"),
-    }
+    .await
+    .ok();
 
     handle.shutdown().await;
     storage.close().await?;

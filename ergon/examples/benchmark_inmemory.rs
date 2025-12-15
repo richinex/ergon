@@ -181,10 +181,6 @@ struct AnalysisResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n========================================");
-    println!("    InMemory Storage Benchmark");
-    println!("========================================\n");
-
     let storage = Arc::new(InMemoryExecutionLog::new());
     let start = Instant::now();
 

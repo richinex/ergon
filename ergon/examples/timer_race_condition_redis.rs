@@ -85,15 +85,6 @@ fn format_time() -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n=== Timer Race Condition Demonstration (Redis) ===\n");
-
-    println!("This example demonstrates the race condition where:");
-    println!("  - 3 flows running CONCURRENTLY");
-    println!("  - Each scheduling VERY short timers (1ms)");
-    println!("  - Aggressive timer polling (10ms)");
-    println!("  - Timer fires BEFORE await_timer starts waiting");
-    println!("  - ergon handles this correctly via Redis check\n");
-
     // Setup Redis storage
     let storage = Arc::new(RedisExecutionLog::new("redis://127.0.0.1:6379").await?);
 
@@ -114,24 +105,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the worker
     let worker = worker.start().await;
 
-    println!("Worker with timer processing started (timer_interval=10ms - aggressive)\n");
-
     // Create scheduler to enqueue flows for worker processing
     let scheduler = ergon::executor::Scheduler::new(storage.clone());
 
     // Run 3 flows CONCURRENTLY to increase race condition likelihood
     // This is the realistic scenario - multiple flows competing for timers
-    println!("Scheduling flows...");
     for i in 1..=3 {
         let flow = RaceConditionFlow {
             id: format!("flow-{}", i),
         };
         let flow_id = uuid::Uuid::new_v4();
         scheduler.schedule(flow, flow_id).await?;
-        println!("  [{}] Scheduled flow-{}", format_time(), i);
     }
-
-    println!("\nWorker processing flows with timers...\n");
 
     // Wait for flows to complete (all 15 timers: 3 flows * 5 timers each)
     // Each timer cycle takes ~2 seconds due to worker polling overhead
@@ -140,11 +125,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Shutdown worker
     worker.shutdown().await;
-
-    println!("\n=== Results ===\n");
-    println!("[OK] All 15 timers completed successfully!");
-    println!("Each flow scheduled 5 very short timers (1ms) with aggressive polling (10ms).");
-    println!("All timers fired and flows resumed correctly via worker queue.");
 
     storage.close().await?;
     Ok(())

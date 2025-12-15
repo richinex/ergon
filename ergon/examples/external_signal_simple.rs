@@ -303,35 +303,18 @@ impl DocumentApprovalFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║     Simple External Signal Example                       ║");
-    println!("╚═══════════════════════════════════════════════════════════╝\n");
-
     // Setup storage
     let storage = Arc::new(SqliteExecutionLog::new("sqlite::memory:").await?);
-
-    // Choose your signal source implementation
-    // Option 1: Mock (for testing)
     let signal_source = Arc::new(SimulatedUserInputSource::new());
 
-    // Option 2: Real user input (you could implement this)
-    // let signal_source = Arc::new(StdinSignalSource::new());
-
-    // Option 3: HTTP endpoint (you could implement this)
-    // let signal_source = Arc::new(HttpSignalSource::new("http://localhost:8080"));
-
     // Start worker with signal processing
-    // The worker automatically handles signal delivery to waiting flows
     let worker = Worker::new(storage.clone(), "approval-worker");
     worker
         .register(|flow: Arc<DocumentApprovalFlow>| flow.process())
         .await;
     let worker = worker.with_signals(signal_source.clone()).start().await;
 
-    // Create scheduler
     let scheduler = Scheduler::new(storage.clone());
-
-    println!("=== Test 1: Approved Document ===\n");
 
     let doc1 = DocumentSubmission {
         document_id: "DOC-001".to_string(),
@@ -377,7 +360,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(10) {
-            println!("[WARN] Timeout waiting for Test 1 to complete");
             break;
         }
         match storage.get_scheduled_flow(task_id_1).await? {
@@ -386,12 +368,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
             }
-            None => break, // Flow completed and removed from queue
+            None => break,
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-
-    println!("\n=== Test 2: Rejected by Manager ===\n");
 
     let doc2 = DocumentSubmission {
         document_id: "DOC-002".to_string(),
@@ -425,129 +405,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Wait for flow to fail with permanent error
-    // Expected time: ~1-2 seconds (no retries, signal consumed once)
-    // We wait up to 10 seconds to be safe
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(20) {
-            println!("\n[TIMEOUT] Test 2 did not complete within 20 seconds");
-            if let Ok(Some(scheduled)) = storage.get_scheduled_flow(task_id_2).await {
-                println!(
-                    "[INFO] Final status: {:?}, retry_count: {}",
-                    scheduled.status, scheduled.retry_count
-                );
-            }
             break;
         }
         match storage.get_scheduled_flow(task_id_2).await? {
             Some(scheduled) => {
-                if matches!(scheduled.status, TaskStatus::Failed) {
-                    println!(
-                        "\n[COMPLETE] Test 2 failed as expected: Manager rejection is permanent"
-                    );
-                    println!("           Signal step succeeded and was cached (no re-suspension on retry)");
-                    break;
-                } else if matches!(scheduled.status, TaskStatus::Complete) {
-                    println!("\n[ERROR] Test 2 completed unexpectedly (should have failed)");
+                if matches!(scheduled.status, TaskStatus::Failed)
+                    || matches!(scheduled.status, TaskStatus::Complete)
+                {
                     break;
                 }
             }
-            None => {
-                println!("\n[COMPLETE] Test 2 flow removed from queue");
-                break;
-            }
+            None => break,
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // Shutdown
     worker.shutdown().await;
-
-    println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Example Complete - Flows suspended and resumed via      ║");
-    println!("║  external signals using abstracted signal sources!       ║");
-    println!("╚═══════════════════════════════════════════════════════════╝");
-
-    println!("\n[INFO] To implement a real signal source:");
-    println!("   1. Implement the ergon::executor::SignalSource trait");
-    println!("   2. Replace SimulatedUserInputSource with your implementation");
-    println!("   3. Add it to Worker with .with_signals(your_source)");
-    println!("   4. Examples:");
-    println!("      - StdinSignalSource: Read from terminal input");
-    println!("      - HttpSignalSource: Poll HTTP endpoint or webhook");
-    println!("      - RedisSignalSource: Use Redis pub/sub");
-    println!("      - KafkaSignalSource: Consume from Kafka topic");
-    println!("\n   The Worker automatically handles signal delivery - no manual polling needed!\n");
-
     storage.close().await?;
     Ok(())
 }
-
-// Output
-// ergon git:(modularize-worker) ✗ cargo run --example external_signal_simple
-//    Compiling ergon v0.1.0 (/home/richinex/Documents/devs/rust_projects/ergon/ergon)
-//     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.34s
-//      Running `target/debug/examples/external_signal_simple`
-
-// ╔═══════════════════════════════════════════════════════════╗
-// ║     Simple External Signal Example                       ║
-// ╚═══════════════════════════════════════════════════════════╝
-
-// === Test 1: Approved Document ===
-
-// [FLOW] Processing document: Q4 Financial Report
-//        Author: john.doe@company.com
-//        [STEP] Validating document format...
-//        [OK] Validation passed
-//        [SUSPEND] Waiting for manager approval...
-//   [INPUT] User decision received for 'manager_approval_DOC-001'
-//   [INPUT] User decision received for 'legal_review_DOC-001'
-
-// [FLOW] Processing document: Q4 Financial Report
-//        Author: john.doe@company.com
-//        [SUSPEND] Waiting for manager approval...
-//        [OK] Manager approved by manager@company.com - Looks good, approved!
-//        [SUSPEND] Waiting for legal review...
-
-// [FLOW] Processing document: Q4 Financial Report
-//        Author: john.doe@company.com
-//        [SUSPEND] Waiting for legal review...
-//        [OK] Legal approved by manager@company.com - Looks good, approved!
-//        [STEP] Publishing document...
-//        [OK] Document published
-
-// === Test 2: Rejected by Manager ===
-
-//   [INPUT] User decision received for 'manager_approval_DOC-002'
-
-// [FLOW] Processing document: Policy Update Draft
-//        Author: jane.smith@company.com
-//        [STEP] Validating document format...
-//        [OK] Validation passed
-//        [SUSPEND] Waiting for manager approval...
-
-// [FLOW] Processing document: Policy Update Draft
-//        Author: jane.smith@company.com
-//        [SUSPEND] Waiting for manager approval...
-//        [REJECTED] Manager rejected by manager@company.com - Needs revision
-//        [COMPLETE] Document rejected (permanent)
-
-// [COMPLETE] Test 2 failed as expected: Manager rejection is permanent
-//            Signal step succeeded and was cached (no re-suspension on retry)
-
-// ╔═══════════════════════════════════════════════════════════╗
-// ║  Example Complete - Flows suspended and resumed via      ║
-// ║  external signals using abstracted signal sources!       ║
-// ╚═══════════════════════════════════════════════════════════╝
-
-// [INFO] To implement a real signal source:
-//    1. Implement the ergon::executor::SignalSource trait
-//    2. Replace SimulatedUserInputSource with your implementation
-//    3. Add it to Worker with .with_signals(your_source)
-//    4. Examples:
-//       - StdinSignalSource: Read from terminal input
-//       - HttpSignalSource: Poll HTTP endpoint or webhook
-//       - RedisSignalSource: Use Redis pub/sub
-//       - KafkaSignalSource: Consume from Kafka topic
-
-//    The Worker automatically handles signal delivery - no manual polling needed!

@@ -253,10 +253,6 @@ struct ProcessingReport {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║         File Processing Flow Example                    ║");
-    println!("╚══════════════════════════════════════════════════════════╝\n");
-
     // Create sample input files
     setup_sample_files().await?;
 
@@ -280,8 +276,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scheduler.schedule(processor, Uuid::new_v4()).await?;
     }
 
-    println!("Scheduled {} file processing flows\n", 3);
-
     // Start worker to process flows
     let worker = Worker::new(storage.clone(), "file-worker");
     worker
@@ -301,17 +295,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker_handle.shutdown().await;
 
-    println!("\n╔══════════════════════════════════════════════════════════╗");
-    println!("║              Processing Complete!                        ║");
-    println!("╚══════════════════════════════════════════════════════════╝");
-    println!("\nCheck the 'output/' directory for results.\n");
-
     Ok(())
 }
 
 async fn setup_sample_files() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Setting up sample data files...\n");
-
     // Create data directory
     tokio::fs::create_dir_all("data").await?;
 
@@ -346,6 +333,5 @@ async fn setup_sample_files() -> Result<(), Box<dyn std::error::Error>> {
     tokio::fs::write("data/sales_2024_q2.csv", q2_data).await?;
     tokio::fs::write("data/sales_2024_q3.csv", q3_data).await?;
 
-    println!("Created sample CSV files in 'data/' directory");
     Ok(())
 }
