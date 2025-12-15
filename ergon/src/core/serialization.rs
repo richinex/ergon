@@ -19,23 +19,20 @@ pub fn hash_params(bytes: &[u8]) -> u64 {
     seahash::hash(bytes)
 }
 
-/// Serializes a value to bytes using bincode.
+/// Serializes a value to bytes using JSON.
 ///
 /// # Errors
 /// Returns `CoreError::Serialization` if the value cannot be serialized.
 pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .map_err(CoreError::Serialization)
+    serde_json::to_vec(value).map_err(CoreError::Serialization)
 }
 
-/// Deserializes bytes to a value using bincode.
+/// Deserializes bytes to a value using JSON.
 ///
 /// # Errors
 /// Returns `CoreError::Deserialization` if the bytes cannot be deserialized.
 pub fn deserialize_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
-        .map(|(value, _len)| value)
-        .map_err(CoreError::Deserialization)
+    serde_json::from_slice(bytes).map_err(CoreError::Deserialization)
 }
 
 #[cfg(test)]

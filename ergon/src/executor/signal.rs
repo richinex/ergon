@@ -400,7 +400,7 @@ where
         .try_with(|ctx| ctx.storage.clone())
         .expect("signal_parent_flow must be called within flow context");
 
-    // Serialize result using bincode (same format as ergon internals)
+    // Serialize result using JSON (same format as ergon internals)
     let result_bytes = crate::core::serialize_value(&result)?;
 
     // Find parent's waiting step

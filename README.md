@@ -153,8 +153,8 @@ Non-breaking changes include:
 Ergon requires Rust **1.85.0** or later (edition 2021).
 
 This is enforced by the `rust-version` field in `Cargo.toml` and is determined by our dependencies:
-- **bincode 2.0.1**: requires Rust 1.85.0 (our highest dependency requirement)
 - tokio 1.42: requires Rust 1.70
+- Other dependencies require lower versions
 
 MSRV increases are considered breaking changes and will only occur with minor version bumps (0.x.0) before 1.0.0, and major version bumps (x.0.0) after 1.0.0.
 

@@ -10,11 +10,11 @@ use uuid::Uuid;
 pub enum CoreError {
     /// Serialization failed when encoding a value to bytes.
     #[error("serialization failed")]
-    Serialization(#[source] bincode::error::EncodeError),
+    Serialization(#[source] serde_json::Error),
 
     /// Deserialization failed when decoding bytes to a value.
     #[error("deserialization failed")]
-    Deserialization(#[source] bincode::error::DecodeError),
+    Deserialization(#[source] serde_json::Error),
 
     /// The flow structure has changed incompatibly between executions.
     #[error("incompatible flow structure: expected {expected_class}.{expected_method}, got {actual_class}.{actual_method}")]

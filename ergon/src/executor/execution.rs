@@ -64,13 +64,27 @@ pub(super) async fn complete_child_flow<S: ExecutionLog>(
 
         // result_bytes contains a serialized Result<R, E>
         // Since we're in the success branch, we know it's Result::Ok(value)
-        // Bincode encodes Result as: [variant_index: 1 byte] + [data]
-        // So we skip the first byte to get just the success value bytes
-        // NOTE: For Result<(), E>, the success value is zero-sized, so len will be 1
-        let value_bytes = if result_bytes.len() > 1 {
-            &result_bytes[1..] // Skip Ok variant byte, return value data
-        } else {
-            &[] // Empty for () return type (zero-sized)
+        // With JSON serialization, we need to deserialize the Result, extract the value,
+        // and re-serialize just the value (not the Result wrapper)
+        let value_bytes = match serde_json::from_slice::<serde_json::Value>(result_bytes) {
+            Ok(json_value) => {
+                // Extract the Ok variant's value from the JSON Result
+                // JSON Result format is: {"Ok": <value>} or {"Err": <error>}
+                if let Some(ok_value) = json_value.get("Ok") {
+                    // Re-serialize just the value
+                    serde_json::to_vec(ok_value).unwrap_or_default()
+                } else {
+                    error!("Expected Ok variant in Result JSON for flow {}", flow_id);
+                    vec![]
+                }
+            }
+            Err(e) => {
+                error!(
+                    "Failed to deserialize Result JSON for flow {}: {}",
+                    flow_id, e
+                );
+                vec![]
+            }
         };
 
         crate::executor::child_flow::SignalPayload {

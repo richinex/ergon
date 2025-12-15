@@ -17,7 +17,6 @@ repository = "https://github.com/yourusername/ergon"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-bincode = { version = "2.0", features = ["serde"] }
 base64 = "0.22"
 
 # Async runtime
