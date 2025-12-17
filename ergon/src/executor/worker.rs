@@ -741,14 +741,12 @@ impl<
             // Maintenance intervals
             let mut delayed_task_interval = tokio::time::interval(Duration::from_secs(1));
             let mut stale_lock_interval = tokio::time::interval(Duration::from_secs(60));
-            let mut timer_interval = tokio::time::interval(self.timer_state.timer_poll_interval());
             let mut signal_interval =
                 tokio::time::interval(self.signal_state.signal_poll_interval());
 
             // Don't fire immediately on startup - wait for first tick
             delayed_task_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             stale_lock_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            timer_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             signal_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             // Create BOUNDED channel for dequeue results with capacity of 1
@@ -810,10 +808,34 @@ impl<
                 }
             });
 
+            // Event-driven timer processing: track next wake time and get timer_notify
+            let mut next_timer_wake: Option<tokio::time::Instant> = None;
+            let timer_notify = self.storage.timer_notify().cloned();
+
             loop {
                 // Create worker loop span
                 let loop_span = self.tracing_state.worker_loop_span(&self.worker_id);
                 let _loop_guard = loop_span.as_ref().map(|span| span.enter());
+
+                // Create timer sleep future based on next wake time
+                let timer_sleep = async {
+                    if let Some(wake_time) = next_timer_wake {
+                        tokio::time::sleep_until(wake_time).await;
+                    } else {
+                        // No timers - sleep forever (will be woken by notification)
+                        std::future::pending::<()>().await;
+                    }
+                };
+
+                // Create timer notification future
+                let timer_notified = async {
+                    if let Some(ref notify) = timer_notify {
+                        notify.notified().await;
+                    } else {
+                        // No notifications available - sleep forever
+                        std::future::pending::<()>().await;
+                    }
+                };
 
                 tokio::select! {
                     biased;
@@ -846,11 +868,59 @@ impl<
                         }
                     }
 
-                    // Timer processing interval
-                    _ = timer_interval.tick() => {
+                    // Event-driven timer processing: wake when timer fires OR new timer scheduled
+                    _ = timer_sleep => {
                         let timer_span = self.tracing_state.timer_processing_span(&self.worker_id);
                         let _timer_guard = timer_span.as_ref().map(|span| span.enter());
+
+                        // Process expired timers
                         self.timer_state.process_timers(&self.storage, &self.worker_id).await;
+
+                        // Recalculate next wake time
+                        match self.storage.get_next_timer_fire_time().await {
+                            Ok(Some(next_fire)) => {
+                                let now = chrono::Utc::now();
+                                if next_fire > now {
+                                    // Calculate tokio::time::Instant from chrono::DateTime
+                                    let duration_until_fire = (next_fire - now).to_std().unwrap_or(Duration::from_secs(0));
+                                    next_timer_wake = Some(tokio::time::Instant::now() + duration_until_fire);
+                                } else {
+                                    // Timer already expired, wake immediately next iteration
+                                    next_timer_wake = Some(tokio::time::Instant::now());
+                                }
+                            }
+                            Ok(None) => {
+                                // No more timers
+                                next_timer_wake = None;
+                            }
+                            Err(e) => {
+                                warn!("Failed to get next timer fire time: {}", e);
+                                next_timer_wake = None;
+                            }
+                        }
+                    }
+
+                    // Timer notification: new timer scheduled or timer claimed
+                    _ = timer_notified => {
+                        // Recalculate next wake time when notified
+                        match self.storage.get_next_timer_fire_time().await {
+                            Ok(Some(next_fire)) => {
+                                let now = chrono::Utc::now();
+                                if next_fire > now {
+                                    let duration_until_fire = (next_fire - now).to_std().unwrap_or(Duration::from_secs(0));
+                                    next_timer_wake = Some(tokio::time::Instant::now() + duration_until_fire);
+                                } else {
+                                    next_timer_wake = Some(tokio::time::Instant::now());
+                                }
+                            }
+                            Ok(None) => {
+                                next_timer_wake = None;
+                            }
+                            Err(e) => {
+                                warn!("Failed to get next timer fire time: {}", e);
+                                next_timer_wake = None;
+                            }
+                        }
                     }
 
                     // Signal processing interval

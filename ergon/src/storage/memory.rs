@@ -38,6 +38,8 @@ pub struct InMemoryExecutionLog {
     work_notify: Option<Arc<Notify>>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
+    /// Notification mechanism for timer changes (new timer scheduled, timer fired)
+    timer_notify: Arc<Notify>,
 }
 
 impl InMemoryExecutionLog {
@@ -53,6 +55,7 @@ impl InMemoryExecutionLog {
             pending_rx: Arc::new(tokio::sync::Mutex::new(pending_rx)),
             work_notify: Some(Arc::new(Notify::new())),
             status_notify: Arc::new(Notify::new()),
+            timer_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -62,6 +65,14 @@ impl InMemoryExecutionLog {
     /// instead of polling. The notification is triggered whenever any flow status changes.
     pub fn status_notify(&self) -> &Arc<Notify> {
         &self.status_notify
+    }
+
+    /// Returns a reference to the timer notification handle.
+    ///
+    /// Callers can use this to wait for timer events (new timer scheduled, timer claimed/fired)
+    /// instead of polling. This enables event-driven timer processing.
+    pub fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }
 
@@ -431,11 +442,38 @@ impl ExecutionLog for InMemoryExecutionLog {
                 entry.set_return_value(
                     crate::core::serialize_value(&()).map_err(|_| StorageError::Serialization)?,
                 );
+
+                // Notify timer processor that timer was claimed (may need to recalculate next wake time)
+                self.timer_notify.notify_one();
+
                 return Ok(true);
             }
         }
 
         Ok(false)
+    }
+
+    async fn get_next_timer_fire_time(&self) -> Result<Option<chrono::DateTime<Utc>>> {
+        let mut next_fire_time: Option<chrono::DateTime<Utc>> = None;
+
+        for entry in self.invocations.iter() {
+            let inv = entry.value();
+
+            // Check if this is a timer waiting to fire
+            if inv.status() == InvocationStatus::WaitingForTimer {
+                if let Some(fire_at) = inv.timer_fire_at() {
+                    match next_fire_time {
+                        None => next_fire_time = Some(fire_at),
+                        Some(current_earliest) if fire_at < current_earliest => {
+                            next_fire_time = Some(fire_at);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Ok(next_fire_time)
     }
 
     async fn log_timer(
@@ -451,6 +489,10 @@ impl ExecutionLog for InMemoryExecutionLog {
             entry.set_status(InvocationStatus::WaitingForTimer);
             entry.set_timer_fire_at(Some(fire_at));
             entry.set_timer_name(timer_name.map(|s| s.to_string()));
+
+            // Notify timer processor that a new timer was scheduled
+            self.timer_notify.notify_one();
+
             Ok(())
         } else {
             Err(StorageError::InvocationNotFound { id: flow_id, step })
@@ -615,6 +657,10 @@ impl ExecutionLog for InMemoryExecutionLog {
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {
         self.work_notify.as_ref()
+    }
+
+    fn timer_notify(&self) -> Option<&Arc<Notify>> {
+        Some(&self.timer_notify)
     }
 }
 

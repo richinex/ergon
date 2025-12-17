@@ -69,6 +69,8 @@ pub struct PostgresExecutionLog {
     work_notify: Option<Arc<Notify>>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
+    /// Notification mechanism for timer changes (new timer scheduled, timer fired)
+    timer_notify: Arc<Notify>,
 }
 
 impl PostgresExecutionLog {
@@ -90,6 +92,7 @@ impl PostgresExecutionLog {
             pool,
             work_notify: Some(Arc::new(Notify::new())),
             status_notify: Arc::new(Notify::new()),
+            timer_notify: Arc::new(Notify::new()),
         };
 
         log.initialize().await?;
@@ -805,7 +808,35 @@ impl ExecutionLog for PostgresExecutionLog {
 
         tx.commit().await?;
 
-        Ok(result.rows_affected() > 0)
+        let claimed = result.rows_affected() > 0;
+
+        // Notify timer processor if we successfully claimed a timer
+        if claimed {
+            self.timer_notify.notify_one();
+        }
+
+        Ok(claimed)
+    }
+
+    async fn get_next_timer_fire_time(&self) -> Result<Option<chrono::DateTime<Utc>>> {
+        let row = sqlx::query(
+            "SELECT MIN(timer_fire_at) as next_fire_time
+             FROM execution_log
+             WHERE status = 'WAITING_FOR_TIMER'
+               AND timer_fire_at IS NOT NULL",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            if let Some(fire_at) =
+                row.try_get::<Option<chrono::DateTime<Utc>>, _>("next_fire_time")?
+            {
+                return Ok(Some(fire_at));
+            }
+        }
+
+        Ok(None)
     }
 
     async fn log_timer(
@@ -828,6 +859,9 @@ impl ExecutionLog for PostgresExecutionLog {
         .bind(step)
         .execute(&self.pool)
         .await?;
+
+        // Notify timer processor that a new timer was scheduled
+        self.timer_notify.notify_one();
 
         Ok(())
     }
@@ -1066,6 +1100,10 @@ impl ExecutionLog for PostgresExecutionLog {
         self.work_notify.as_ref()
     }
 
+    fn timer_notify(&self) -> Option<&Arc<Notify>> {
+        Some(&self.timer_notify)
+    }
+
     async fn ping(&self) -> Result<()> {
         sqlx::query("SELECT 1")
             .execute(&self.pool)
@@ -1082,6 +1120,14 @@ impl PostgresExecutionLog {
     /// instead of polling. The notification is triggered whenever any flow status changes.
     pub fn status_notify(&self) -> &Arc<Notify> {
         &self.status_notify
+    }
+
+    /// Returns a reference to the timer notification handle.
+    ///
+    /// Callers can use this to wait for timer events (new timer scheduled, timer claimed/fired)
+    /// instead of polling. This enables event-driven timer processing.
+    pub fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }
 

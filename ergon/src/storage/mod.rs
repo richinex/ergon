@@ -289,6 +289,24 @@ pub trait ExecutionLog: Send + Sync {
         Ok(false)
     }
 
+    /// Get the fire time of the next timer to fire.
+    ///
+    /// Used for event-driven timer processing - instead of polling every N milliseconds,
+    /// the worker can sleep until the next timer is due to fire.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(fire_time))` - The earliest unclaimed timer's fire time
+    /// - `Ok(None)` - No timers scheduled
+    /// - `Err(...)` - Storage error
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `None` by default (no timers).
+    async fn get_next_timer_fire_time(&self) -> Result<Option<DateTime<Utc>>> {
+        Ok(None)
+    }
+
     /// Log a timer that should fire at the specified time.
     ///
     /// Called by schedule_timer() to persist the timer to storage.
@@ -347,6 +365,18 @@ pub trait ExecutionLog: Send + Sync {
     ///
     /// Returns `None` by default for storage backends that don't support notifications.
     fn work_notify(&self) -> Option<&Arc<tokio::sync::Notify>> {
+        None
+    }
+
+    /// Returns a reference to the timer notification handle.
+    ///
+    /// Workers can use this to wait for timer events (new timer scheduled, timer claimed/fired)
+    /// instead of polling. This enables event-driven timer processing.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `None` by default for storage backends that don't support notifications.
+    fn timer_notify(&self) -> Option<&Arc<tokio::sync::Notify>> {
         None
     }
 
@@ -670,6 +700,10 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
 
     async fn claim_timer(&self, flow_id: Uuid, step: i32) -> Result<bool> {
         (**self).claim_timer(flow_id, step).await
+    }
+
+    async fn get_next_timer_fire_time(&self) -> Result<Option<DateTime<Utc>>> {
+        (**self).get_next_timer_fire_time().await
     }
 
     async fn log_timer(

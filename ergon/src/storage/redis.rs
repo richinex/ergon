@@ -92,6 +92,8 @@ pub struct RedisExecutionLog {
     work_notify: Option<Arc<Notify>>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
+    /// Notification mechanism for timer changes (new timer scheduled, timer fired)
+    timer_notify: Arc<Notify>,
 }
 
 impl RedisExecutionLog {
@@ -123,6 +125,7 @@ impl RedisExecutionLog {
             stale_message_timeout_ms: DEFAULT_STALE_MESSAGE_TIMEOUT_MS,
             work_notify: Some(Arc::new(Notify::new())),
             status_notify: Arc::new(Notify::new()),
+            timer_notify: Arc::new(Notify::new()),
         };
 
         // Ensure consumer group exists
@@ -151,6 +154,7 @@ impl RedisExecutionLog {
             stale_message_timeout_ms,
             work_notify: Some(Arc::new(Notify::new())),
             status_notify: Arc::new(Notify::new()),
+            timer_notify: Arc::new(Notify::new()),
         };
 
         // Ensure consumer group exists
@@ -1332,7 +1336,36 @@ impl ExecutionLog for RedisExecutionLog {
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
-        Ok(claimed == 1)
+        let claimed = claimed == 1;
+
+        // Notify timer processor if we successfully claimed a timer
+        if claimed {
+            self.timer_notify.notify_one();
+        }
+
+        Ok(claimed)
+    }
+
+    async fn get_next_timer_fire_time(&self) -> Result<Option<chrono::DateTime<Utc>>> {
+        let mut conn = self.get_connection().await?;
+
+        // Get the first entry from the sorted set (lowest score = earliest timer)
+        let result: Vec<(String, i64)> = redis::cmd("ZRANGE")
+            .arg("ergon:timers:pending")
+            .arg(0)
+            .arg(0)
+            .arg("WITHSCORES")
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        if let Some((_, fire_at_ms)) = result.first() {
+            let fire_at = chrono::DateTime::from_timestamp_millis(*fire_at_ms)
+                .ok_or_else(|| StorageError::Connection("Invalid timestamp".to_string()))?;
+            return Ok(Some(fire_at));
+        }
+
+        Ok(None)
     }
 
     async fn log_timer(
@@ -1362,6 +1395,9 @@ impl ExecutionLog for RedisExecutionLog {
             .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        // Notify timer processor that a new timer was scheduled
+        self.timer_notify.notify_one();
 
         Ok(())
     }
@@ -1835,6 +1871,10 @@ impl ExecutionLog for RedisExecutionLog {
         self.work_notify.as_ref()
     }
 
+    fn timer_notify(&self) -> Option<&Arc<Notify>> {
+        Some(&self.timer_notify)
+    }
+
     async fn ping(&self) -> Result<()> {
         let mut conn = self
             .pool
@@ -1858,5 +1898,13 @@ impl RedisExecutionLog {
     /// instead of polling. The notification is triggered whenever any flow status changes.
     pub fn status_notify(&self) -> &Arc<Notify> {
         &self.status_notify
+    }
+
+    /// Returns a reference to the timer notification handle.
+    ///
+    /// Callers can use this to wait for timer events (new timer scheduled, timer claimed/fired)
+    /// instead of polling. This enables event-driven timer processing.
+    pub fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }

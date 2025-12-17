@@ -56,6 +56,8 @@ pub struct SqliteExecutionLog {
     work_notify: Option<Arc<Notify>>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
+    /// Notification mechanism for timer changes (new timer scheduled, timer fired)
+    timer_notify: Arc<Notify>,
 }
 
 impl SqliteExecutionLog {
@@ -85,6 +87,7 @@ impl SqliteExecutionLog {
             pool,
             work_notify: Some(Arc::new(Notify::new())),
             status_notify: Arc::new(Notify::new()),
+            timer_notify: Arc::new(Notify::new()),
         };
 
         log.initialize().await?;
@@ -822,8 +825,36 @@ impl ExecutionLog for SqliteExecutionLog {
 
         tx.commit().await?;
 
+        let claimed = result.rows_affected() > 0;
+
+        // Notify timer processor if we successfully claimed a timer
+        if claimed {
+            self.timer_notify.notify_one();
+        }
+
         // If rows_affected == 0, another worker already claimed this timer
-        Ok(result.rows_affected() > 0)
+        Ok(claimed)
+    }
+
+    async fn get_next_timer_fire_time(&self) -> Result<Option<chrono::DateTime<Utc>>> {
+        let row = sqlx::query(
+            "SELECT MIN(timer_fire_at) as next_fire_time
+             FROM execution_log
+             WHERE status = 'WAITING_FOR_TIMER'
+               AND timer_fire_at IS NOT NULL",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            if let Some(fire_at_millis) = row.try_get::<Option<i64>, _>("next_fire_time")? {
+                let fire_at = chrono::DateTime::from_timestamp_millis(fire_at_millis)
+                    .ok_or_else(|| StorageError::Connection("Invalid timestamp".to_string()))?;
+                return Ok(Some(fire_at));
+            }
+        }
+
+        Ok(None)
     }
 
     async fn log_timer(
@@ -846,6 +877,9 @@ impl ExecutionLog for SqliteExecutionLog {
         .bind(step)
         .execute(&self.pool)
         .await?;
+
+        // Notify timer processor that a new timer was scheduled
+        self.timer_notify.notify_one();
 
         Ok(())
     }
@@ -1097,6 +1131,10 @@ impl ExecutionLog for SqliteExecutionLog {
     fn work_notify(&self) -> Option<&Arc<Notify>> {
         self.work_notify.as_ref()
     }
+
+    fn timer_notify(&self) -> Option<&Arc<Notify>> {
+        Some(&self.timer_notify)
+    }
 }
 
 impl SqliteExecutionLog {
@@ -1106,6 +1144,14 @@ impl SqliteExecutionLog {
     /// instead of polling. The notification is triggered whenever any flow status changes.
     pub fn status_notify(&self) -> &Arc<Notify> {
         &self.status_notify
+    }
+
+    /// Returns a reference to the timer notification handle.
+    ///
+    /// Callers can use this to wait for timer events (new timer scheduled, timer claimed/fired)
+    /// instead of polling. This enables event-driven timer processing.
+    pub fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }
 
