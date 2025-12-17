@@ -11,7 +11,6 @@ use crate::core::{deserialize_value, FlowType};
 use crate::executor::ExecutionError;
 use crate::storage::ExecutionLog;
 use crate::Executor;
-use chrono::Utc;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::future::Future;
@@ -39,29 +38,11 @@ use super::execution;
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 // ============================================================================
-// Timer Typestates
+// Timer and Signal type imports (moved to separate modules)
 // ============================================================================
 
-/// Typestate: Worker without timer processing
-pub struct WithoutTimers;
-
-/// Typestate: Worker with timer processing enabled
-pub struct WithTimers {
-    pub timer_poll_interval: Duration,
-}
-
-// ============================================================================
-// Signal Typestates
-// ============================================================================
-
-/// Typestate: Worker without signal processing
-pub struct WithoutSignals;
-
-/// Typestate: Worker with signal processing enabled
-pub struct WithSignals<Src> {
-    pub signal_source: Arc<Src>,
-    pub signal_poll_interval: Duration,
-}
+pub use super::signal::{SignalProcessing, WithSignals, WithoutSignals};
+pub use super::timer::{TimerProcessing, WithTimers, WithoutTimers};
 
 // ============================================================================
 // Tracing Typestates
@@ -82,37 +63,6 @@ pub struct WithoutStructuredTracing;
 /// rich debugging information in production.
 #[derive(Clone, Copy)]
 pub struct WithStructuredTracing;
-
-// ============================================================================
-// Timer Processing Trait
-// ============================================================================
-
-/// Trait that defines timer processing behavior based on type state.
-///
-/// This trait uses the typestate pattern to provide different behaviors
-/// for workers with and without timer processing enabled.
-#[async_trait::async_trait]
-pub trait TimerProcessing: Send + Sync {
-    async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
-}
-
-// ============================================================================
-// Signal Processing Trait
-// ============================================================================
-
-/// Trait that defines signal processing behavior based on type state.
-///
-/// This trait uses the typestate pattern to provide different behaviors
-/// for workers with and without signal processing enabled.
-#[async_trait::async_trait]
-pub trait SignalProcessing: Send + Sync {
-    async fn process_signals<S: ExecutionLog>(
-        &self,
-        storage: &Arc<S>,
-        worker_id: &str,
-        work_notify: &Arc<tokio::sync::Notify>,
-    );
-}
 
 // ============================================================================
 // Tracing Behavior Trait
@@ -140,162 +90,6 @@ pub trait TracingBehavior: Send + Sync {
 
     /// Creates a span for timer processing.
     fn timer_processing_span(&self, worker_id: &str) -> Option<tracing::Span>;
-}
-
-#[async_trait::async_trait]
-impl TimerProcessing for WithoutTimers {
-    async fn process_timers<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str) {
-        // No-op: timer processing disabled
-    }
-}
-
-#[async_trait::async_trait]
-impl TimerProcessing for WithTimers {
-    async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str) {
-        // Fetch expired timers and process them
-        match storage.get_expired_timers(Utc::now()).await {
-            Ok(timers) => {
-                if !timers.is_empty() {
-                    debug!("Processing {} expired timers", timers.len());
-                }
-
-                for timer in timers {
-                    // Try to claim the timer (optimistic concurrency)
-                    match storage.claim_timer(timer.flow_id, timer.step).await {
-                        Ok(true) => {
-                            // Successfully claimed - resume the flow
-                            info!(
-                                "Timer fired: flow={} step={} name={:?}",
-                                timer.flow_id, timer.step, timer.timer_name
-                            );
-
-                            // Resume the flow by re-enqueuing it
-                            match storage.resume_flow(timer.flow_id).await {
-                                Ok(true) => debug!("Resumed flow after timer: {}", timer.flow_id),
-                                Ok(false) => debug!(
-                                    "Flow {} not in SUSPENDED state after timer (may have already resumed)",
-                                    timer.flow_id
-                                ),
-                                Err(e) => warn!(
-                                    "Failed to resume flow after timer: flow={} step={} error={}",
-                                    timer.flow_id, timer.step, e
-                                ),
-                            }
-                        }
-                        Ok(false) => {
-                            // Another worker already claimed it
-                            debug!(
-                                "Timer already fired by another worker: flow={} step={}",
-                                timer.flow_id, timer.step
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to claim timer (will retry): flow={} step={} error={}",
-                                timer.flow_id, timer.step, e
-                            );
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("Failed to fetch expired timers: {}", e);
-            }
-        }
-    }
-}
-
-// ============================================================================
-// Signal Processing Implementations
-// ============================================================================
-
-#[async_trait::async_trait]
-impl SignalProcessing for WithoutSignals {
-    async fn process_signals<S: ExecutionLog>(
-        &self,
-        _storage: &Arc<S>,
-        _worker_id: &str,
-        _work_notify: &Arc<tokio::sync::Notify>,
-    ) {
-        // No-op: signal processing disabled
-    }
-}
-
-#[async_trait::async_trait]
-impl<Src> SignalProcessing for WithSignals<Src>
-where
-    Src: crate::executor::SignalSource + 'static,
-{
-    async fn process_signals<S: ExecutionLog>(
-        &self,
-        storage: &Arc<S>,
-        _worker_id: &str,
-        _work_notify: &Arc<tokio::sync::Notify>,
-    ) {
-        // Get all flows waiting for signals
-        let waiting_signals = match storage.get_waiting_signals().await {
-            Ok(signals) => signals,
-            Err(e) => {
-                warn!("Failed to fetch waiting signals: {}", e);
-                return;
-            }
-        };
-
-        if !waiting_signals.is_empty() {
-            debug!("Processing {} waiting signals", waiting_signals.len());
-        }
-
-        for signal_info in waiting_signals {
-            let Some(signal_name) = &signal_info.signal_name else {
-                continue;
-            };
-
-            // Check if signal source has the signal
-            if let Some(signal_data) = self.signal_source.poll_for_signal(signal_name).await {
-                // Store signal params
-                match storage
-                    .store_signal_params(
-                        signal_info.flow_id,
-                        signal_info.step,
-                        signal_info.signal_name.as_deref().unwrap_or(""),
-                        &signal_data,
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        // Consume signal so we don't re-process
-                        self.signal_source.consume_signal(signal_name).await;
-
-                        // Try to resume flow
-                        // Note: resume_flow() already calls work_notify internally
-                        match storage.resume_flow(signal_info.flow_id).await {
-                            Ok(true) => {
-                                debug!(
-                                    "Signal '{}' delivered to flow {}",
-                                    signal_name, signal_info.flow_id
-                                );
-                            }
-                            Ok(false) => {
-                                debug!(
-                                    "Signal '{}' stored for flow {} (will resume when suspended)",
-                                    signal_name, signal_info.flow_id
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to resume flow {} after signal '{}': {}",
-                                    signal_info.flow_id, signal_name, e
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to store signal params for '{}': {}", signal_name, e);
-                    }
-                }
-            }
-        }
-    }
 }
 
 // ============================================================================
@@ -947,10 +741,15 @@ impl<
             // Maintenance intervals
             let mut delayed_task_interval = tokio::time::interval(Duration::from_secs(1));
             let mut stale_lock_interval = tokio::time::interval(Duration::from_secs(60));
+            let mut timer_interval = tokio::time::interval(self.timer_state.timer_poll_interval());
+            let mut signal_interval =
+                tokio::time::interval(self.signal_state.signal_poll_interval());
 
             // Don't fire immediately on startup - wait for first tick
             delayed_task_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             stale_lock_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            timer_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            signal_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             // Create BOUNDED channel for dequeue results with capacity of 1
             // Channel payload: (The DB Result, The Semaphore Permit)
@@ -1047,6 +846,18 @@ impl<
                         }
                     }
 
+                    // Timer processing interval
+                    _ = timer_interval.tick() => {
+                        let timer_span = self.tracing_state.timer_processing_span(&self.worker_id);
+                        let _timer_guard = timer_span.as_ref().map(|span| span.enter());
+                        self.timer_state.process_timers(&self.storage, &self.worker_id).await;
+                    }
+
+                    // Signal processing interval
+                    _ = signal_interval.tick() => {
+                        self.signal_state.process_signals(&self.storage, &self.worker_id).await;
+                    }
+
                     // Main work: Receive dequeued flow + Permit
                     Some((result, permit)) = dequeue_rx.recv() => {
                         // Reap completed flow tasks
@@ -1056,17 +867,8 @@ impl<
                             }
                         }
 
-                        // Process timers
-                        {
-                            let timer_span = self.tracing_state.timer_processing_span(&self.worker_id);
-                            let _timer_guard = timer_span.as_ref().map(|span| span.enter());
-                            self.timer_state.process_timers(&self.storage, &self.worker_id).await;
-                        }
-
-                        // Process signals
-                        {
-                            self.signal_state.process_signals(&self.storage, &self.worker_id, &self.work_notify).await;
-                        }
+                        // Note: Timer and signal processing now happen on dedicated intervals
+                        // (see timer_interval and signal_interval branches above)
 
                         match result {
                             Ok(Some(flow)) => {

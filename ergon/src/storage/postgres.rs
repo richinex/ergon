@@ -199,23 +199,23 @@ impl PostgresExecutionLog {
         .execute(&self.pool)
         .await?;
 
-        // Create signal parameters table for durable signals
+        // Create suspension_params table for durable suspension results (signals and timers)
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS signal_params (
+            "CREATE TABLE IF NOT EXISTS suspension_params (
                 flow_id UUID NOT NULL,
                 step INTEGER NOT NULL,
-                signal_name TEXT NOT NULL,
-                params BYTEA NOT NULL,
+                suspension_key TEXT NOT NULL,
+                result BYTEA NOT NULL,
                 created_at BIGINT NOT NULL,
-                PRIMARY KEY (flow_id, step, signal_name)
+                PRIMARY KEY (flow_id, step, suspension_key)
             )",
         )
         .execute(&self.pool)
         .await?;
 
-        // Create index for signal parameter cleanup
+        // Create index for suspension parameter cleanup
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_signal_params_created ON signal_params(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_suspension_params_created ON suspension_params(created_at)",
         )
         .execute(&self.pool)
         .await?;
@@ -563,7 +563,7 @@ impl ExecutionLog for PostgresExecutionLog {
         sqlx::query("DELETE FROM flow_queue")
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM signal_params")
+        sqlx::query("DELETE FROM suspension_params")
             .execute(&self.pool)
             .await?;
         sqlx::query("DELETE FROM step_child_mappings")
@@ -853,6 +853,76 @@ impl ExecutionLog for PostgresExecutionLog {
         Ok(())
     }
 
+    async fn store_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+        result: &[u8],
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO suspension_params (flow_id, step, suspension_key, result, created_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT(flow_id, step, suspension_key)
+             DO UPDATE SET result = EXCLUDED.result, created_at = EXCLUDED.created_at",
+        )
+        .bind(flow_id)
+        .bind(step)
+        .bind(suspension_key)
+        .bind(result)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
+
+        debug!(
+            "Stored suspension result: flow_id={}, step={}, suspension_key={}",
+            flow_id, step, suspension_key
+        );
+
+        Ok(())
+    }
+
+    async fn get_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let result: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT result FROM suspension_params WHERE flow_id = $1 AND step = $2 AND suspension_key = $3",
+        )
+        .bind(flow_id)
+        .bind(step)
+        .bind(suspension_key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result)
+    }
+
+    async fn remove_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM suspension_params WHERE flow_id = $1 AND step = $2 AND suspension_key = $3",
+        )
+        .bind(flow_id)
+        .bind(step)
+        .bind(suspension_key)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(
+            "Removed suspension result: flow_id={}, step={}, suspension_key={}",
+            flow_id, step, suspension_key
+        );
+
+        Ok(())
+    }
+
     async fn store_signal_params(
         &self,
         flow_id: Uuid,
@@ -860,26 +930,8 @@ impl ExecutionLog for PostgresExecutionLog {
         signal_name: &str,
         params: &[u8],
     ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO signal_params (flow_id, step, signal_name, params, created_at)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT(flow_id, step, signal_name)
-             DO UPDATE SET params = EXCLUDED.params, created_at = EXCLUDED.created_at",
-        )
-        .bind(flow_id)
-        .bind(step)
-        .bind(signal_name)
-        .bind(params)
-        .bind(Utc::now().timestamp_millis())
-        .execute(&self.pool)
-        .await?;
-
-        debug!(
-            "Stored signal params: flow_id={}, step={}, signal_name={}",
-            flow_id, step, signal_name
-        );
-
-        Ok(())
+        self.store_suspension_result(flow_id, step, signal_name, params)
+            .await
     }
 
     async fn get_signal_params(
@@ -888,16 +940,7 @@ impl ExecutionLog for PostgresExecutionLog {
         step: i32,
         signal_name: &str,
     ) -> Result<Option<Vec<u8>>> {
-        let params: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT params FROM signal_params WHERE flow_id = $1 AND step = $2 AND signal_name = $3",
-        )
-        .bind(flow_id)
-        .bind(step)
-        .bind(signal_name)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(params)
+        self.get_suspension_result(flow_id, step, signal_name).await
     }
 
     async fn remove_signal_params(
@@ -906,21 +949,8 @@ impl ExecutionLog for PostgresExecutionLog {
         step: i32,
         signal_name: &str,
     ) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM signal_params WHERE flow_id = $1 AND step = $2 AND signal_name = $3",
-        )
-        .bind(flow_id)
-        .bind(step)
-        .bind(signal_name)
-        .execute(&self.pool)
-        .await?;
-
-        debug!(
-            "Removed signal params: flow_id={}, step={}, signal_name={}",
-            flow_id, step, signal_name
-        );
-
-        Ok(())
+        self.remove_suspension_result(flow_id, step, signal_name)
+            .await
     }
 
     async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
@@ -975,7 +1005,7 @@ impl ExecutionLog for PostgresExecutionLog {
         let deleted_invocations = result.rows_affected();
 
         sqlx::query(
-            "DELETE FROM signal_params
+            "DELETE FROM suspension_params
              WHERE created_at < $1",
         )
         .bind(cutoff_millis)

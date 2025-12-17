@@ -27,8 +27,8 @@ pub struct InMemoryExecutionLog {
     invocations: dashmap::DashMap<(Uuid, i32), Invocation>,
     /// Concurrent storage for scheduled flows keyed by task_id
     flow_queue: dashmap::DashMap<Uuid, super::ScheduledFlow>,
-    /// Concurrent storage for signal parameters keyed by (flow_id, step, signal_name)
-    signal_params: dashmap::DashMap<(Uuid, i32, String), Vec<u8>>,
+    /// Concurrent storage for suspension results (signals and timers) keyed by (flow_id, step, suspension_key)
+    suspension_params: dashmap::DashMap<(Uuid, i32, String), Vec<u8>>,
     /// Index mapping flow_id to task_id for fast lookup during resume_flow
     flow_task_map: dashmap::DashMap<Uuid, Uuid>,
     /// Channel for pending flows (mimics Redis Stream)
@@ -47,7 +47,7 @@ impl InMemoryExecutionLog {
         Self {
             invocations: dashmap::DashMap::new(),
             flow_queue: dashmap::DashMap::new(),
-            signal_params: dashmap::DashMap::new(),
+            suspension_params: dashmap::DashMap::new(),
             flow_task_map: dashmap::DashMap::new(),
             pending_tx,
             pending_rx: Arc::new(tokio::sync::Mutex::new(pending_rx)),
@@ -252,7 +252,7 @@ impl ExecutionLog for InMemoryExecutionLog {
     async fn reset(&self) -> Result<()> {
         self.invocations.clear();
         self.flow_queue.clear();
-        self.signal_params.clear();
+        self.suspension_params.clear();
         self.flow_task_map.clear();
 
         // Drain the channel by receiving all pending messages
@@ -469,6 +469,39 @@ impl ExecutionLog for InMemoryExecutionLog {
         }
     }
 
+    async fn store_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+        result: &[u8],
+    ) -> Result<()> {
+        let key = (flow_id, step, suspension_key.to_string());
+        self.suspension_params.insert(key, result.to_vec());
+        Ok(())
+    }
+
+    async fn get_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let key = (flow_id, step, suspension_key.to_string());
+        Ok(self.suspension_params.get(&key).map(|v| v.clone()))
+    }
+
+    async fn remove_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<()> {
+        let key = (flow_id, step, suspension_key.to_string());
+        self.suspension_params.remove(&key);
+        Ok(())
+    }
+
     async fn store_signal_params(
         &self,
         flow_id: Uuid,
@@ -476,9 +509,8 @@ impl ExecutionLog for InMemoryExecutionLog {
         signal_name: &str,
         params: &[u8],
     ) -> Result<()> {
-        let key = (flow_id, step, signal_name.to_string());
-        self.signal_params.insert(key, params.to_vec());
-        Ok(())
+        self.store_suspension_result(flow_id, step, signal_name, params)
+            .await
     }
 
     async fn get_signal_params(
@@ -487,8 +519,7 @@ impl ExecutionLog for InMemoryExecutionLog {
         step: i32,
         signal_name: &str,
     ) -> Result<Option<Vec<u8>>> {
-        let key = (flow_id, step, signal_name.to_string());
-        Ok(self.signal_params.get(&key).map(|v| v.clone()))
+        self.get_suspension_result(flow_id, step, signal_name).await
     }
 
     async fn remove_signal_params(
@@ -497,9 +528,8 @@ impl ExecutionLog for InMemoryExecutionLog {
         step: i32,
         signal_name: &str,
     ) -> Result<()> {
-        let key = (flow_id, step, signal_name.to_string());
-        self.signal_params.remove(&key);
-        Ok(())
+        self.remove_suspension_result(flow_id, step, signal_name)
+            .await
     }
 
     async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
@@ -538,8 +568,8 @@ impl ExecutionLog for InMemoryExecutionLog {
             }
         });
 
-        // Cleanup old signal parameters
-        self.signal_params.clear(); // In-memory can just clear all signal params
+        // Cleanup old suspension parameters (signals and timers)
+        self.suspension_params.clear(); // In-memory can just clear all suspension params
 
         // Cleanup old completed flows from queue
         self.flow_queue.retain(|_key, flow| {

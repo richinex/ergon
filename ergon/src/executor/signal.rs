@@ -48,12 +48,18 @@ pub struct WithSignals<Src> {
 #[async_trait::async_trait]
 pub trait SignalProcessing: Send + Sync {
     async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
+    fn signal_poll_interval(&self) -> Duration;
 }
 
 #[async_trait::async_trait]
 impl SignalProcessing for WithoutSignals {
     async fn process_signals<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str) {
         // No-op: signal processing disabled
+    }
+
+    fn signal_poll_interval(&self) -> Duration {
+        // Return a very long interval since signals are disabled
+        Duration::from_secs(3600)
     }
 }
 
@@ -62,6 +68,10 @@ impl<Src> SignalProcessing for WithSignals<Src>
 where
     Src: SignalSource + 'static,
 {
+    fn signal_poll_interval(&self) -> Duration {
+        self.signal_poll_interval
+    }
+
     async fn process_signals<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str) {
         // Get all flows waiting for signals
         let waiting_signals = match storage.get_waiting_signals().await {

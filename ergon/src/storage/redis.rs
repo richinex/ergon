@@ -216,9 +216,9 @@ impl RedisExecutionLog {
         format!("ergon:inv:{}:{}", flow_id, step)
     }
 
-    /// Builds the Redis key for signal parameters.
-    fn signal_key(flow_id: Uuid, step: i32) -> String {
-        format!("ergon:signal:{}:{}", flow_id, step)
+    /// Builds the Redis key for suspension results (signals and timers).
+    fn suspension_key(flow_id: Uuid, step: i32) -> String {
+        format!("ergon:suspension:{}:{}", flow_id, step)
     }
 
     /// Helper to re-enqueue a task to the stream from its flow metadata.
@@ -1461,6 +1461,71 @@ impl ExecutionLog for RedisExecutionLog {
 
     // ===== Signal Operations =====
 
+    async fn store_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+        result: &[u8],
+    ) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        // Include suspension_key (signal name or timer name) to support multiple suspensions at same step
+        let key = format!("{}:{}", Self::suspension_key(flow_id, step), suspension_key);
+
+        // Store suspension result with TTL
+        let _: () = redis::pipe()
+            .atomic()
+            .set(&key, result)
+            .expire(&key, self.signal_ttl)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        debug!(
+            "Stored suspension result: flow_id={}, step={}, suspension_key={}",
+            flow_id, step, suspension_key
+        );
+        Ok(())
+    }
+
+    async fn get_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut conn = self.get_connection().await?;
+        let key = format!("{}:{}", Self::suspension_key(flow_id, step), suspension_key);
+
+        let result: Option<Vec<u8>> = conn
+            .get(&key)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        Ok(result)
+    }
+
+    async fn remove_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let key = format!("{}:{}", Self::suspension_key(flow_id, step), suspension_key);
+
+        let _: () = conn
+            .del(&key)
+            .await
+            .map_err(|e| StorageError::Connection(e.to_string()))?;
+
+        debug!(
+            "Removed suspension result: flow_id={}, step={}, suspension_key={}",
+            flow_id, step, suspension_key
+        );
+        Ok(())
+    }
+
     async fn store_signal_params(
         &self,
         flow_id: Uuid,
@@ -1468,24 +1533,8 @@ impl ExecutionLog for RedisExecutionLog {
         signal_name: &str,
         params: &[u8],
     ) -> Result<()> {
-        let mut conn = self.get_connection().await?;
-        // Include signal_name in key to support multiple signals at same step
-        let signal_key = format!("{}:{}", Self::signal_key(flow_id, step), signal_name);
-
-        // Store signal params with TTL
-        let _: () = redis::pipe()
-            .atomic()
-            .set(&signal_key, params)
-            .expire(&signal_key, self.signal_ttl)
-            .query_async(&mut *conn)
+        self.store_suspension_result(flow_id, step, signal_name, params)
             .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        debug!(
-            "Stored signal params: flow_id={}, step={}, signal_name={}",
-            flow_id, step, signal_name
-        );
-        Ok(())
     }
 
     async fn get_signal_params(
@@ -1494,15 +1543,7 @@ impl ExecutionLog for RedisExecutionLog {
         step: i32,
         signal_name: &str,
     ) -> Result<Option<Vec<u8>>> {
-        let mut conn = self.get_connection().await?;
-        let signal_key = format!("{}:{}", Self::signal_key(flow_id, step), signal_name);
-
-        let params: Option<Vec<u8>> = conn
-            .get(&signal_key)
-            .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        Ok(params)
+        self.get_suspension_result(flow_id, step, signal_name).await
     }
 
     async fn remove_signal_params(
@@ -1511,19 +1552,8 @@ impl ExecutionLog for RedisExecutionLog {
         step: i32,
         signal_name: &str,
     ) -> Result<()> {
-        let mut conn = self.get_connection().await?;
-        let signal_key = format!("{}:{}", Self::signal_key(flow_id, step), signal_name);
-
-        let _: () = conn
-            .del(&signal_key)
+        self.remove_suspension_result(flow_id, step, signal_name)
             .await
-            .map_err(|e| StorageError::Connection(e.to_string()))?;
-
-        debug!(
-            "Removed signal params: flow_id={}, step={}, signal_name={}",
-            flow_id, step, signal_name
-        );
-        Ok(())
     }
 
     async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {

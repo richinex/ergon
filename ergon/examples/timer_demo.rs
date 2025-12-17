@@ -55,38 +55,43 @@ impl OrderWorkflow {
     /// - Wait 2 seconds: Process payment
     /// - Wait 3 seconds: Ship order
     /// - Wait 1 second: Send confirmation
+    ///
+    /// NOTE: All println! statements are inside #[step] functions so they
+    /// execute only ONCE due to step caching, proving that timer steps
+    /// don't re-execute after firing.
     #[flow]
     async fn process_order(self: Arc<Self>) -> Result<String, ExecutionError> {
-        println!("\n[{}] Order {} created", format_time(), self.order_id);
+        // Step 1: Create order
+        self.clone().create_order().await?;
 
-        // Step 1: Wait before processing (simulates order validation period)
+        // Step 2: Wait before processing (simulates order validation period)
         self.clone().wait_for_processing().await?;
 
-        println!(
-            "[{}] Processing payment for {}",
-            format_time(),
-            self.order_id
-        );
+        // Step 3: Process payment
         self.clone().process_payment().await?;
 
-        // Step 2: Wait before shipping (simulates warehouse processing)
+        // Step 4: Wait before shipping (simulates warehouse processing)
         self.clone().wait_for_shipping().await?;
 
-        println!("[{}] Shipping order {}", format_time(), self.order_id);
+        // Step 5: Ship order
         self.clone().ship_order().await?;
 
-        // Step 3: Wait before confirmation (simulates delivery tracking)
+        // Step 6: Wait before confirmation (simulates delivery tracking)
         self.clone().wait_for_confirmation().await?;
 
-        println!(
-            "[{}] Sending confirmation to {}",
-            format_time(),
-            self.customer_email
-        );
+        // Step 7: Send confirmation
         self.clone().send_confirmation().await?;
 
-        println!("[{}] Order {} completed!", format_time(), self.order_id);
+        // Step 8: Complete order
+        self.clone().complete_order().await?;
+
         Ok(format!("Order {} completed successfully", self.order_id))
+    }
+
+    #[step]
+    async fn create_order(self: Arc<Self>) -> Result<(), ExecutionError> {
+        println!("\n[{}] Order {} created", format_time(), self.order_id);
+        Ok(())
     }
 
     #[step]
@@ -98,7 +103,11 @@ impl OrderWorkflow {
 
     #[step]
     async fn process_payment(self: Arc<Self>) -> Result<(), ExecutionError> {
-        // Simulate payment processing
+        println!(
+            "[{}] Processing payment for {}",
+            format_time(),
+            self.order_id
+        );
         Ok(())
     }
 
@@ -111,7 +120,7 @@ impl OrderWorkflow {
 
     #[step]
     async fn ship_order(self: Arc<Self>) -> Result<(), ExecutionError> {
-        // Simulate shipping
+        println!("[{}] Shipping order {}", format_time(), self.order_id);
         Ok(())
     }
 
@@ -127,7 +136,17 @@ impl OrderWorkflow {
 
     #[step]
     async fn send_confirmation(self: Arc<Self>) -> Result<(), ExecutionError> {
-        // Simulate sending email
+        println!(
+            "[{}] Sending confirmation to {}",
+            format_time(),
+            self.customer_email
+        );
+        Ok(())
+    }
+
+    #[step]
+    async fn complete_order(self: Arc<Self>) -> Result<(), ExecutionError> {
+        println!("[{}] Order {} completed!", format_time(), self.order_id);
         Ok(())
     }
 }
@@ -173,7 +192,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = std::time::Instant::now();
 
-    // Wait for flow to complete by checking task status
+    // Wait for flow to complete using event-driven notifications (no polling!)
+    let status_notify = storage.status_notify().clone();
     while let Some(task) = storage.get_scheduled_flow(_task_id).await? {
         match task.status {
             ergon::storage::TaskStatus::Complete => break,
@@ -182,8 +202,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
             _ => {
-                // Still running or pending
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Still running or pending - wait for status change notification
+                status_notify.notified().await;
             }
         }
     }

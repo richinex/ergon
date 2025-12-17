@@ -350,6 +350,112 @@ pub trait ExecutionLog: Send + Sync {
         None
     }
 
+    // ===== Suspension Result Operations =====
+    // These methods support storing results for asynchronously resuming steps (signals AND timers).
+    // Both signals and timers suspend a step and later resume it with a result - they use the same storage.
+
+    /// Store a suspension result for a waiting flow.
+    ///
+    /// Called when a signal arrives or timer fires for a flow that is (or will be)
+    /// waiting. Results are persisted so they survive worker crashes and enable
+    /// proper step caching on resume.
+    ///
+    /// # Arguments
+    ///
+    /// * `flow_id` - The flow ID
+    /// * `step` - The step number
+    /// * `suspension_key` - Unique key (signal name or timer name)
+    /// * `result` - Serialized result data
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default.
+    async fn store_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+        result: &[u8],
+    ) -> Result<()> {
+        let _ = (flow_id, step, suspension_key, result);
+        Err(StorageError::Unsupported(
+            "suspension results not implemented for this storage backend".to_string(),
+        ))
+    }
+
+    /// Retrieve a suspension result for a waiting flow.
+    ///
+    /// Returns the result if it exists, or None if the signal/timer hasn't
+    /// completed yet.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns None by default.
+    async fn get_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let _ = (flow_id, step, suspension_key);
+        Ok(None)
+    }
+
+    /// Remove a suspension result after it's been consumed.
+    ///
+    /// Called after a flow successfully resumes from a signal/timer to clean up
+    /// the stored result.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns Ok by default (no-op).
+    async fn remove_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<()> {
+        let _ = (flow_id, step, suspension_key);
+        Ok(())
+    }
+
+    // ===== Legacy Signal Parameters Methods =====
+    // These methods delegate to the unified suspension_result methods above.
+    // They're kept for backwards compatibility with existing code.
+
+    /// Store signal parameters (delegates to store_suspension_result).
+    async fn store_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+        params: &[u8],
+    ) -> Result<()> {
+        self.store_suspension_result(flow_id, step, signal_name, params)
+            .await
+    }
+
+    /// Get signal parameters (delegates to get_suspension_result).
+    async fn get_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        self.get_suspension_result(flow_id, step, signal_name).await
+    }
+
+    /// Remove signal parameters (delegates to remove_suspension_result).
+    async fn remove_signal_params(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        signal_name: &str,
+    ) -> Result<()> {
+        self.remove_suspension_result(flow_id, step, signal_name)
+            .await
+    }
+
     // ===== External Signal Operations =====
     // These methods support durable external signals that survive crashes.
 
@@ -366,64 +472,6 @@ pub trait ExecutionLog: Send + Sync {
         Err(StorageError::Unsupported(
             "signals not implemented for this storage backend".to_string(),
         ))
-    }
-
-    /// Store signal parameters for a waiting flow.
-    ///
-    /// Called when a signal arrives for a flow that is (or will be)
-    /// waiting for an external signal. Parameters are persisted so they
-    /// survive worker crashes.
-    ///
-    /// # Default Implementation
-    ///
-    /// Returns `StorageError::Unsupported` by default.
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-        params: &[u8],
-    ) -> Result<()> {
-        let _ = (flow_id, step, signal_name, params);
-        Err(StorageError::Unsupported(
-            "signals not implemented for this storage backend".to_string(),
-        ))
-    }
-
-    /// Retrieve signal parameters for a waiting flow.
-    ///
-    /// Returns the parameters if they exist, or None if no signal has
-    /// arrived yet.
-    ///
-    /// # Default Implementation
-    ///
-    /// Returns None by default.
-    async fn get_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<Option<Vec<u8>>> {
-        let _ = (flow_id, step, signal_name);
-        Ok(None)
-    }
-
-    /// Remove signal parameters after they've been consumed.
-    ///
-    /// Called after a flow successfully resumes from a signal to clean up
-    /// the stored parameters.
-    ///
-    /// # Default Implementation
-    ///
-    /// Returns Ok by default (no-op).
-    async fn remove_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<()> {
-        let _ = (flow_id, step, signal_name);
-        Ok(())
     }
 
     /// Get all flows currently waiting for signals.
@@ -638,8 +686,38 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self).resume_flow(flow_id).await
     }
 
-    async fn log_signal(&self, flow_id: Uuid, step: i32, signal_name: &str) -> Result<()> {
-        (**self).log_signal(flow_id, step, signal_name).await
+    async fn store_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+        result: &[u8],
+    ) -> Result<()> {
+        (**self)
+            .store_suspension_result(flow_id, step, suspension_key, result)
+            .await
+    }
+
+    async fn get_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        (**self)
+            .get_suspension_result(flow_id, step, suspension_key)
+            .await
+    }
+
+    async fn remove_suspension_result(
+        &self,
+        flow_id: Uuid,
+        step: i32,
+        suspension_key: &str,
+    ) -> Result<()> {
+        (**self)
+            .remove_suspension_result(flow_id, step, suspension_key)
+            .await
     }
 
     async fn store_signal_params(
@@ -672,6 +750,10 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self)
             .remove_signal_params(flow_id, step, signal_name)
             .await
+    }
+
+    async fn log_signal(&self, flow_id: Uuid, step: i32, signal_name: &str) -> Result<()> {
+        (**self).log_signal(flow_id, step, signal_name).await
     }
 
     async fn get_waiting_signals(&self) -> Result<Vec<SignalInfo>> {

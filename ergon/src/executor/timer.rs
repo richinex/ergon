@@ -40,6 +40,7 @@ pub struct WithTimers {
 #[async_trait::async_trait]
 pub trait TimerProcessing: Send + Sync {
     async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, worker_id: &str);
+    fn timer_poll_interval(&self) -> Duration;
 }
 
 #[async_trait::async_trait]
@@ -47,10 +48,19 @@ impl TimerProcessing for WithoutTimers {
     async fn process_timers<S: ExecutionLog>(&self, _storage: &Arc<S>, _worker_id: &str) {
         // No-op: timer processing disabled
     }
+
+    fn timer_poll_interval(&self) -> Duration {
+        // Return a very long interval since timers are disabled
+        Duration::from_secs(3600)
+    }
 }
 
 #[async_trait::async_trait]
 impl TimerProcessing for WithTimers {
+    fn timer_poll_interval(&self) -> Duration {
+        self.timer_poll_interval
+    }
+
     async fn process_timers<S: ExecutionLog>(&self, storage: &Arc<S>, _worker_id: &str) {
         // Fetch expired timers and process them
         match storage.get_expired_timers(Utc::now()).await {
@@ -68,6 +78,28 @@ impl TimerProcessing for WithTimers {
                                 "Timer fired: flow={} step={} name={:?}",
                                 timer.flow_id, timer.step, timer.timer_name
                             );
+
+                            // Store the timer result for caching (like signals do)
+                            // This prevents re-execution of the timer step on resume
+                            let timer_key = timer.timer_name.as_deref().unwrap_or("");
+                            let result =
+                                crate::core::serialize_value(&Ok::<(), super::ExecutionError>(()))
+                                    .unwrap_or_default();
+
+                            if let Err(e) = storage
+                                .store_suspension_result(
+                                    timer.flow_id,
+                                    timer.step,
+                                    timer_key,
+                                    &result,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    "Failed to store timer result (will still resume): flow={} step={} key={:?} error={}",
+                                    timer.flow_id, timer.step, timer_key, e
+                                );
+                            }
 
                             // Resume the flow by re-enqueuing it
                             match storage.resume_flow(timer.flow_id).await {
@@ -179,11 +211,28 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
         }
 
         if inv.status() == InvocationStatus::WaitingForTimer {
-            // We're waiting for this timer - check if it's fired
-            if inv.is_timer_expired() {
-                // Timer fired - just return Ok and let step macro log completion
-                // with the correct Result<(), ExecutionError> type
-                return Ok(());
+            // We're waiting for this timer - check if it's fired and has a cached result
+            let timer_key = name.unwrap_or("");
+
+            if let Some(result_bytes) = ctx
+                .storage
+                .get_suspension_result(ctx.id, current_step, timer_key)
+                .await
+                .map_err(ExecutionError::from)?
+            {
+                // Timer fired and result is cached! Deserialize and return
+                use crate::core::deserialize_value;
+                let result: Result<()> = deserialize_value(&result_bytes).map_err(|e| {
+                    ExecutionError::Failed(format!("Failed to deserialize timer result: {}", e))
+                })?;
+
+                // Clean up suspension result so it isn't re-delivered on retry
+                ctx.storage
+                    .remove_suspension_result(ctx.id, current_step, timer_key)
+                    .await
+                    .map_err(ExecutionError::from)?;
+
+                return result;
             }
 
             // Timer not fired yet - suspend the flow
@@ -202,9 +251,10 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
     }
 
     // First time - calculate fire time and log timer
+    let now = Utc::now();
     let fire_at = ChronoDuration::from_std(duration)
-        .map(|d| Utc::now() + d)
-        .unwrap_or_else(|_| Utc::now() + ChronoDuration::MAX);
+        .map(|d| now + d)
+        .unwrap_or_else(|_| now + ChronoDuration::MAX);
 
     ctx.storage
         .log_timer(ctx.id, current_step, fire_at, name)

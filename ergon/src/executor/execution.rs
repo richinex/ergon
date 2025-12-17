@@ -287,40 +287,55 @@ pub(super) async fn handle_suspended_flow<S: ExecutionLog>(
         error!("Worker {} failed to mark flow suspended: {}", worker_id, e);
     }
 
-    // FIX: Check if signal arrived while we were still RUNNING
+    // FIX: Check if signal or timer result arrived while we were still RUNNING
     // Race condition with multiple workers:
     // - Worker A: Parent suspends (RUNNING)
-    // - Worker B: Child completes, calls resume_flow() → returns false (parent still RUNNING)
+    // - Worker B: Child completes/timer fires, calls resume_flow() → returns false (parent still RUNNING)
     // - Worker A: Marks parent SUSPENDED
-    // - Need to check for pending signals and resume immediately
+    // - Need to check for pending signals/timers and resume immediately
     if let Ok(invocations) = storage.get_invocations_for_flow(flow_id).await {
         for inv in invocations.iter() {
-            if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
-                if let Ok(Some(_)) = storage
-                    .get_signal_params(flow_id, inv.step(), inv.timer_name().unwrap_or(""))
+            let should_resume = if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
+                // Check if signal arrived
+                storage
+                    .get_suspension_result(flow_id, inv.step(), inv.timer_name().unwrap_or(""))
                     .await
-                {
-                    debug!(
-                        "Found pending signal for suspended flow {} step {}, resuming immediately",
-                        flow_id,
-                        inv.step()
-                    );
-                    match storage.resume_flow(flow_id).await {
-                        Ok(true) => {
-                            debug!("Resumed flow {} with pending signal", flow_id);
-                        }
-                        Ok(false) => {
-                            debug!("Flow {} already resumed by another worker", flow_id)
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to resume flow {} with pending signal: {}",
-                                flow_id, e
-                            );
-                        }
+                    .ok()
+                    .flatten()
+                    .is_some()
+            } else if inv.status() == crate::core::InvocationStatus::WaitingForTimer {
+                // Check if timer fired and result is cached
+                storage
+                    .get_suspension_result(flow_id, inv.step(), inv.timer_name().unwrap_or(""))
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+            } else {
+                false
+            };
+
+            if should_resume {
+                debug!(
+                    "Found pending suspension result for suspended flow {} step {}, resuming immediately",
+                    flow_id,
+                    inv.step()
+                );
+                match storage.resume_flow(flow_id).await {
+                    Ok(true) => {
+                        debug!("Resumed flow {} with pending suspension result", flow_id);
                     }
-                    break;
+                    Ok(false) => {
+                        debug!("Flow {} already resumed by another worker", flow_id)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to resume flow {} with pending suspension result: {}",
+                            flow_id, e
+                        );
+                    }
                 }
+                break;
             }
         }
     }
