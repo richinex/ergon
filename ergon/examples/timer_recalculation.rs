@@ -48,7 +48,11 @@ impl ShortTimerFlow {
     async fn run_with_short_timer(self: Arc<Self>) -> Result<String, ExecutionError> {
         println!("[{}] Short timer flow started: {}", format_time(), self.id);
         self.clone().wait_short().await?;
-        println!("[{}] Short timer flow completed: {}", format_time(), self.id);
+        println!(
+            "[{}] Short timer flow completed: {}",
+            format_time(),
+            self.id
+        );
         Ok(format!("Short timer {} done", self.id))
     }
 
@@ -127,7 +131,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let short_flow_id = uuid::Uuid::new_v4();
     let short_task_id = scheduler.schedule(short_flow, short_flow_id).await?;
 
-    println!("[{}] Both timers scheduled. Worker should wake for short timer in ~2s, not 10s!\n", format_time());
+    println!(
+        "[{}] Both timers scheduled. Worker should wake for short timer in ~2s, not 10s!\n",
+        format_time()
+    );
 
     // Wait for both flows to complete
     let status_notify = storage.status_notify().clone();
@@ -182,7 +189,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[RESULT] Total execution time: {:?}", total_elapsed);
 
     if total_elapsed.as_secs() >= 10 && total_elapsed.as_secs() <= 12 {
-        println!("✓ Timer recalculation worked! At least one worker woke up early for the short timer.");
+        println!(
+            "✓ Timer recalculation worked! At least one worker woke up early for the short timer."
+        );
     } else {
         println!("✗ Unexpected total time. Event-driven recalculation may not be working.");
     }

@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// This is called by the worker when a child flow scheduled via invoke()
 /// finishes execution. It handles:
 /// - Reading the child's result from storage
-/// - Wrapping it in a SignalPayload (success/error)
+/// - Wrapping it in a SuspensionPayload (success/error)
 /// - Finding the parent's waiting step via signal token
 /// - Storing signal parameters
 /// - Resuming the parent flow
@@ -87,7 +87,7 @@ pub(super) async fn complete_child_flow<S: ExecutionLog>(
             }
         };
 
-        crate::executor::child_flow::SignalPayload {
+        crate::executor::child_flow::SuspensionPayload {
             success: true,
             data: value_bytes.to_vec(),
             is_retryable: None, // Not applicable for success
@@ -107,7 +107,7 @@ pub(super) async fn complete_child_flow<S: ExecutionLog>(
             .flatten()
             .and_then(|inv| inv.is_retryable());
 
-        crate::executor::child_flow::SignalPayload {
+        crate::executor::child_flow::SuspensionPayload {
             success: false,
             data: error_bytes,
             is_retryable,
@@ -287,8 +287,8 @@ pub(super) async fn handle_suspended_flow<S: ExecutionLog>(
         error!("Worker {} failed to mark flow suspended: {}", worker_id, e);
     }
 
-    // FIX: Check if signal or timer result arrived while we were still RUNNING
-    // Race condition with multiple workers:
+    // Check if signal or timer result arrived while we were still RUNNING
+    // This handles a race condition with multiple workers:
     // - Worker A: Parent suspends (RUNNING)
     // - Worker B: Child completes/timer fires, calls resume_flow() → returns false (parent still RUNNING)
     // - Worker A: Marks parent SUSPENDED

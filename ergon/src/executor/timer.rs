@@ -79,12 +79,22 @@ impl TimerProcessing for WithTimers {
                                 timer.flow_id, timer.step, timer.timer_name
                             );
 
-                            // Store the timer result for caching (like signals do)
+                            // Store the timer fired marker for caching (like signals do)
                             // This prevents re-execution of the timer step on resume
+                            // NOTE: The actual step result will be stored when the step completes
+                            // For now, we just mark that the timer has fired
                             let timer_key = timer.timer_name.as_deref().unwrap_or("");
-                            let result =
-                                crate::core::serialize_value(&Ok::<(), super::ExecutionError>(()))
-                                    .unwrap_or_default();
+
+                            // Use SuspensionPayload (same structure as signals, but for timers)
+                            // Store success=true with empty data to indicate timer fired
+                            // The step will execute and store its actual result
+                            use crate::executor::child_flow::SuspensionPayload;
+                            let payload = SuspensionPayload {
+                                success: true,
+                                data: vec![], // Empty - timer doesn't carry data, just marks delay completion
+                                is_retryable: None,
+                            };
+                            let result = crate::core::serialize_value(&payload).unwrap_or_default();
 
                             if let Err(e) = storage
                                 .store_suspension_result(
@@ -220,10 +230,12 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
                 .await
                 .map_err(ExecutionError::from)?
             {
-                // Timer fired and result is cached! Deserialize and return
+                // Timer fired! Deserialize SuspensionPayload (consistent with signals)
                 use crate::core::deserialize_value;
-                let result: Result<()> = deserialize_value(&result_bytes).map_err(|e| {
-                    ExecutionError::Failed(format!("Failed to deserialize timer result: {}", e))
+                use crate::executor::child_flow::SuspensionPayload;
+
+                let payload: SuspensionPayload = deserialize_value(&result_bytes).map_err(|e| {
+                    ExecutionError::Failed(format!("Failed to deserialize timer payload: {}", e))
                 })?;
 
                 // Clean up suspension result so it isn't re-delivered on retry
@@ -232,7 +244,13 @@ async fn schedule_timer_impl(duration: Duration, name: Option<&str>) -> Result<(
                     .await
                     .map_err(ExecutionError::from)?;
 
-                return result;
+                // Timer fired successfully (payload.success should be true, data is empty)
+                if payload.success {
+                    return Ok(());
+                } else {
+                    // This shouldn't happen for timers, but handle it gracefully
+                    return Err(ExecutionError::Failed("Timer marked as failed".to_string()));
+                }
             }
 
             // Timer not fired yet - suspend the flow

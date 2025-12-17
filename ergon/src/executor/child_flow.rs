@@ -39,16 +39,21 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Signal payload for child flow completion.
+/// Payload structure for suspension mechanisms (signals, timers).
 ///
-/// This flat structure avoids nested enum serialization issues when the worker
-/// signals completion. The worker doesn't need to know the result type R - it just
-/// passes raw bytes. The parent knows R and handles type-specific deserialization.
+/// This is a unified structure used by:
+/// - **Signals**: Carry the actual child flow result in `data`
+/// - **Timers**: Mark that the delay has passed (empty `data`)
+///
+/// This flat structure avoids nested enum serialization issues and works across
+/// the worker boundary where the worker doesn't know the result type R.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignalPayload {
-    /// Whether the child succeeded (true) or failed (false)
+pub struct SuspensionPayload {
+    /// Whether the suspension resolved successfully (true) or failed (false)
     pub success: bool,
-    /// The serialized data: either the result (if success=true) or error message (if success=false)
+    /// The serialized data:
+    /// - For signals: the child flow's result or error message
+    /// - For timers: empty (timer just marks delay completion)
     pub data: Vec<u8>,
     /// Whether the error is retryable (only meaningful when success=false)
     /// None for success or backward compatibility
@@ -151,7 +156,7 @@ where
             if inv.status() == crate::core::InvocationStatus::Complete {
                 // Return cached result
                 if let Some(bytes) = inv.return_value() {
-                    let payload: SignalPayload = crate::core::deserialize_value(bytes)?;
+                    let payload: SuspensionPayload = crate::core::deserialize_value(bytes)?;
                     if payload.success {
                         return Ok(crate::core::deserialize_value(&payload.data)?);
                     } else {
@@ -186,7 +191,7 @@ where
                     .get_signal_params(parent_id, step, &signal_name)
                     .await?
                 {
-                    let payload: SignalPayload = crate::core::deserialize_value(&params)?;
+                    let payload: SuspensionPayload = crate::core::deserialize_value(&params)?;
                     // Complete invocation and clean up
                     storage
                         .log_invocation_completion(parent_id, step, &params)
@@ -222,7 +227,7 @@ where
             }
         }
 
-        // CRITICAL FIX: Set WaitingForSignal status BEFORE scheduling child!
+        // CRITICAL: Set WaitingForSignal status BEFORE scheduling child!
         // This prevents race condition where child completes before parent is waiting
         storage
             .log_signal(parent_id, step, &signal_name)
@@ -271,7 +276,7 @@ where
             .get_signal_params(parent_id, step, &signal_name)
             .await?
         {
-            let payload: SignalPayload = crate::core::deserialize_value(&params)?;
+            let payload: SuspensionPayload = crate::core::deserialize_value(&params)?;
             // Complete invocation and clean up
             storage
                 .log_invocation_completion(parent_id, step, &params)

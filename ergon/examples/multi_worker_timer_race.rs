@@ -27,8 +27,11 @@ impl TimerFlow {
 
     #[step]
     async fn wait_one_second(self: Arc<Self>) -> Result<(), ExecutionError> {
-        schedule_timer_named(Duration::from_secs(1), &format!("timer-{}", self.flow_number))
-            .await?;
+        schedule_timer_named(
+            Duration::from_secs(1),
+            &format!("timer-{}", self.flow_number),
+        )
+        .await?;
         Ok(())
     }
 }

@@ -331,11 +331,32 @@ impl ExecutionContext {
             // Return cached result if step is complete
             if inv.status() == InvocationStatus::Complete {
                 if let Some(return_bytes) = inv.return_value() {
-                    let result: R = deserialize_value(return_bytes)?;
-                    return Ok(Some(result));
+                    // Defensive: Check if return_value is empty
+                    // This can happen in edge cases with storage inconsistencies
+                    if return_bytes.is_empty() {
+                        tracing::debug!(
+                            "Step {} has empty return_value, treating as cache miss",
+                            step
+                        );
+                        return Ok(None);
+                    }
+                    // Try to deserialize, handling type mismatches gracefully
+                    // If deserialization fails, treat as cache miss rather than propagating error
+                    // This provides resilience against storage schema changes
+                    match deserialize_value::<R>(return_bytes) {
+                        Ok(result) => return Ok(Some(result)),
+                        Err(_e) => {
+                            tracing::debug!(
+                                "Step {} ({}) deserialization failed, treating as cache miss",
+                                step,
+                                method_name
+                            );
+                            return Ok(None);
+                        }
+                    }
                 }
             } else if inv.status() == InvocationStatus::WaitingForSignal {
-                // FIX: Check if signal result is available (child completed)
+                // Check if signal result is available (child flow completed)
                 // This prevents re-executing step bodies when replaying flows with child invocations
                 tracing::debug!(
                     "Step {} is WaitingForSignal, checking for signal params",
@@ -349,9 +370,9 @@ impl ExecutionContext {
                     .await
                 {
                     tracing::debug!("Found signal params for step {}, deserializing", step);
-                    // Deserialize the signal payload to get the result
-                    use crate::executor::child_flow::SignalPayload;
-                    if let Ok(payload) = deserialize_value::<SignalPayload>(&signal_params) {
+                    // Deserialize the suspension payload to get the result
+                    use crate::executor::child_flow::SuspensionPayload;
+                    if let Ok(payload) = deserialize_value::<SuspensionPayload>(&signal_params) {
                         if payload.success {
                             // Return the successful result from the child
                             tracing::debug!(
@@ -369,6 +390,43 @@ impl ExecutionContext {
                 } else {
                     tracing::debug!("No signal params found for step {} yet", step);
                 }
+            } else if inv.status() == InvocationStatus::WaitingForTimer {
+                // Timer suspension handling (similar to signals, but with empty data)
+                // Check if timer has fired (SuspensionPayload with empty data)
+                // Unlike signals (which carry the actual step result in payload.data),
+                // timers only mark that the delay has passed (payload.data is empty)
+                // The step needs to execute to produce its actual return value
+                tracing::debug!("Step {} is WaitingForTimer, checking if timer fired", step);
+
+                // Use timer_name as the key for the suspension result
+                let timer_key = inv.timer_name().unwrap_or("");
+                if let Ok(Some(timer_result)) = self
+                    .storage
+                    .get_suspension_result(self.id, step, timer_key)
+                    .await
+                {
+                    // Timer has fired - verify it's a valid SuspensionPayload
+                    use crate::executor::child_flow::SuspensionPayload;
+                    if let Ok(payload) = deserialize_value::<SuspensionPayload>(&timer_result) {
+                        if payload.success {
+                            tracing::debug!(
+                                "Timer has fired for step {}, will let step execute to produce result",
+                                step
+                            );
+                            // Timer fired successfully, but don't return cached result
+                            // Let the step execute to produce its actual return value
+                            // The schedule_timer() call will handle cleanup
+                        } else {
+                            tracing::debug!("Timer marked as failed for step {}", step);
+                        }
+                    }
+                } else {
+                    tracing::debug!("Timer not fired yet for step {}", step);
+                }
+
+                // Don't return cached result - let step execute to produce actual value
+                // The schedule_timer() call will see the timer has fired and return Ok(())
+                // Then the step continues and produces its real return value
             }
         }
 
