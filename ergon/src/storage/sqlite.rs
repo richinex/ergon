@@ -54,6 +54,8 @@ pub struct SqliteExecutionLog {
     pool: SqlitePool,
     /// Optional notify handle for waking workers when work becomes available
     work_notify: Option<Arc<Notify>>,
+    /// Notification mechanism for flow status changes (completion, failure, etc.)
+    status_notify: Arc<Notify>,
 }
 
 impl SqliteExecutionLog {
@@ -82,6 +84,7 @@ impl SqliteExecutionLog {
         let log = Self {
             pool,
             work_notify: Some(Arc::new(Notify::new())),
+            status_notify: Arc::new(Notify::new()),
         };
 
         log.initialize().await?;
@@ -688,6 +691,9 @@ impl ExecutionLog for SqliteExecutionLog {
         }
 
         debug!("Completed flow: task_id={}, status={}", task_id, status);
+
+        // Notify any waiters that a flow status changed
+        self.status_notify.notify_waiters();
         Ok(())
     }
 
@@ -1056,6 +1062,16 @@ impl ExecutionLog for SqliteExecutionLog {
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {
         self.work_notify.as_ref()
+    }
+}
+
+impl SqliteExecutionLog {
+    /// Returns a reference to the status notification handle.
+    ///
+    /// Callers can use this to wait for flow status changes (completion, failure, etc.)
+    /// instead of polling. The notification is triggered whenever any flow status changes.
+    pub fn status_notify(&self) -> &Arc<Notify> {
+        &self.status_notify
     }
 }
 

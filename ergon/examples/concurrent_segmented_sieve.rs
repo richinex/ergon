@@ -139,6 +139,8 @@ impl PrimeSegmentFlow {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let start = std::time::Instant::now();
+
     // 1. Setup In-Memory Execution Log (Fastest for Benchmarking)
     let storage = Arc::new(ergon::storage::InMemoryExecutionLog::default());
     let scheduler = Scheduler::new(storage.clone());
@@ -191,6 +193,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for h in worker_handles {
         h.shutdown().await;
     }
+
+    let elapsed = start.elapsed();
+
+    // 7. Print results
+    println!("\nRust Ergon Concurrent Segmented Sieve");
+    println!("Computation time: {:?}", elapsed);
+    println!(
+        "Number of primes: {}",
+        TOTAL_PRIMES_FOUND.load(Ordering::Relaxed)
+    );
 
     Ok(())
 }

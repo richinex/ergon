@@ -69,7 +69,3 @@ pub use serialization::{deserialize_value, hash_params, serialize_value};
 pub mod kind {
     pub use super::retry::kind::*;
 }
-
-// Re-export deprecated names for backwards compatibility
-#[doc(hidden)]
-pub use retry::{DefaultResultKind, RetryableResultKind};

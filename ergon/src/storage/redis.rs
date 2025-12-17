@@ -90,6 +90,8 @@ pub struct RedisExecutionLog {
     stale_message_timeout_ms: i64,
     /// Optional notify handle for waking workers when work becomes available
     work_notify: Option<Arc<Notify>>,
+    /// Notification mechanism for flow status changes (completion, failure, etc.)
+    status_notify: Arc<Notify>,
 }
 
 impl RedisExecutionLog {
@@ -120,6 +122,7 @@ impl RedisExecutionLog {
             signal_ttl: DEFAULT_SIGNAL_TTL,
             stale_message_timeout_ms: DEFAULT_STALE_MESSAGE_TIMEOUT_MS,
             work_notify: Some(Arc::new(Notify::new())),
+            status_notify: Arc::new(Notify::new()),
         };
 
         // Ensure consumer group exists
@@ -147,6 +150,7 @@ impl RedisExecutionLog {
             signal_ttl: signal_ttl_secs,
             stale_message_timeout_ms,
             work_notify: Some(Arc::new(Notify::new())),
+            status_notify: Arc::new(Notify::new()),
         };
 
         // Ensure consumer group exists
@@ -1071,6 +1075,9 @@ impl ExecutionLog for RedisExecutionLog {
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
+        // Notify any waiters that a flow status changed
+        self.status_notify.notify_waiters();
+
         Ok(())
     }
 
@@ -1811,5 +1818,15 @@ impl ExecutionLog for RedisExecutionLog {
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(())
+    }
+}
+
+impl RedisExecutionLog {
+    /// Returns a reference to the status notification handle.
+    ///
+    /// Callers can use this to wait for flow status changes (completion, failure, etc.)
+    /// instead of polling. The notification is triggered whenever any flow status changes.
+    pub fn status_notify(&self) -> &Arc<Notify> {
+        &self.status_notify
     }
 }

@@ -859,15 +859,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   ✓ 4 workers started and polling for work\n");
 
     // ============================================================
-    // PART 3: Client Status Monitoring (Demo Only)
+    // PART 3: Client Status Monitoring (Event-Driven)
     // ============================================================
     // In production, the CLIENT would poll a status API endpoint:
     //   GET /api/tasks/:id -> returns {status: "pending|running|complete|failed"}
     //
-    // This demonstrates that workflows actually execute, but in production
-    // the scheduler process would NOT do this polling.
+    // This demonstrates event-driven waiting using status notifications
+    // instead of polling every 500ms.
     // ============================================================
 
+    let status_notify = storage.status_notify().clone();
     let timeout_duration = Duration::from_secs(30);
     tokio::time::timeout(timeout_duration, async {
         loop {
@@ -884,7 +885,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if all_complete {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // Wait for status change notification instead of polling
+            status_notify.notified().await;
         }
         Ok::<(), Box<dyn std::error::Error>>(())
     })

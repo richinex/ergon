@@ -36,6 +36,8 @@ pub struct InMemoryExecutionLog {
     pending_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Uuid>>>,
     /// Notification mechanism to wake up workers when new work arrives
     work_notify: Option<Arc<Notify>>,
+    /// Notification mechanism for flow status changes (completion, failure, etc.)
+    status_notify: Arc<Notify>,
 }
 
 impl InMemoryExecutionLog {
@@ -50,7 +52,16 @@ impl InMemoryExecutionLog {
             pending_tx,
             pending_rx: Arc::new(tokio::sync::Mutex::new(pending_rx)),
             work_notify: Some(Arc::new(Notify::new())),
+            status_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Returns a reference to the status notification handle.
+    ///
+    /// Callers can use this to wait for flow status changes (completion, failure, etc.)
+    /// instead of polling. The notification is triggered whenever any flow status changes.
+    pub fn status_notify(&self) -> &Arc<Notify> {
+        &self.status_notify
     }
 }
 
@@ -325,6 +336,10 @@ impl ExecutionLog for InMemoryExecutionLog {
         if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
             entry.status = status;
             entry.updated_at = Utc::now();
+
+            // Notify any waiters that a flow status changed
+            self.status_notify.notify_waiters();
+
             Ok(())
         } else {
             Err(StorageError::ScheduledFlowNotFound(task_id))

@@ -3,6 +3,9 @@ members = [
     "ergon",
     "ergon_macros",
 ]
+exclude = [
+    "benchmarks/rust",
+]
 resolver = "2"
 
 [workspace.package]

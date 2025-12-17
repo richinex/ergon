@@ -1,5 +1,5 @@
 // =============================================================================
-// STEP ERROR RETRY BEHAVIOR
+// FLOW ERROR RETRY BEHAVIOR
 // =============================================================================
 //
 // DESIGN RATIONALE (Option D + A from brainstorm):
@@ -9,36 +9,39 @@
 //
 // Two mechanisms control retry behavior:
 //
-// 1. RETRY POLICY: `#[step(retry = 3)]` or `#[step(retry = RetryPolicy::STANDARD)]`
+// 1. RETRY POLICY: `#[flow(retry = RetryPolicy::STANDARD)]`
+//    - Applied at the FLOW level (not steps!)
 //    - Controls HOW MANY times and WHEN to retry (backoff strategy)
-//    - Simple: `retry = 3` for up to 3 attempts with standard backoff
+//    - Simple: Use predefined policies (STANDARD, AGGRESSIVE, NONE)
 //    - Advanced: Custom `RetryPolicy` for full control
+//    - Note: `#[step(retry)]` is NOT supported - retry is flow-level only
 //
 // 2. RETRYABLE ERROR TRAIT: `Retryable` trait
+//    - Applied to error types (not flow attributes)
 //    - Controls WHICH errors should be retried
 //    - Implement on your error type for fine-grained control
 //    - Each error variant can specify if it's retryable
+//    - Steps call `is_retryable()` and store the flag
 //
-// 3. SIMPLE OVERRIDE: `#[step(cache_errors)]`
+// 3. STEP ERROR CACHING: `#[step(cache_errors)]`
+//    - Applied to individual steps
 //    - Caches ALL errors immediately (treats them as permanent)
-//    - Overrides both RetryPolicy and Retryable
+//    - Overrides Retryable trait for that specific step
 //
 // This follows Dave Cheney's principle "APIs should be hard to misuse":
-// - Safe default: no automatic retries (backward compatible)
-// - Simple retry: `retry = 3` (up to 3 attempts with standard backoff)
-// - Advanced control: `Retryable` trait + custom `RetryPolicy`
+// - Safe default: errors are retryable by default (transient assumption)
+// - Flow-level retry: `#[flow(retry = RetryPolicy::STANDARD)]`
+// - Fine-grained control: `Retryable` trait on error types
+// - Per-step override: `#[step(cache_errors)]`
 //
 // IMPLEMENTATION:
 //
-// The macro generates code that:
-// 1. If `cache_errors` is set: always cache the result, no retries
-// 2. If result is Ok: always cache
-// 3. If result is Err and retry_policy is set:
-//    - Check if error.is_retryable() (if Retryable implemented)
-//    - If is_retryable() == false: cache error, stop retrying
-//    - If is_retryable() == true AND attempts < max_attempts: retry with backoff
-//    - If is_retryable() == true AND attempts >= max_attempts: return error
-// 4. If result is Err and no retry_policy: return error (no retry)
+// 1. Flow macro: Applies retry policy to entire flow execution
+// 2. Step macro: Calls error.is_retryable() and stores flag in DB
+// 3. Worker: Reads retryability flag from DB to decide if flow should retry
+// 4. If error.is_retryable() == false: mark flow as failed (no retry)
+// 5. If error.is_retryable() == true AND attempts < max_attempts: retry with backoff
+// 6. If error.is_retryable() == true AND attempts >= max_attempts: mark as failed
 // =============================================================================
 
 use std::time::Duration;
@@ -47,10 +50,11 @@ use std::time::Duration;
 // RETRY POLICY
 // =============================================================================
 
-/// Configuration for step retry behavior.
+/// Configuration for flow retry behavior.
 ///
-/// Controls how many times a step should retry on transient errors and
-/// the backoff strategy between attempts.
+/// Controls how many times a flow should retry on transient errors and
+/// the backoff strategy between attempts. Retry policies are applied at
+/// the **flow level** using `#[flow(retry = ...)]`, not on individual steps.
 ///
 /// # Examples
 ///
@@ -58,13 +62,9 @@ use std::time::Duration;
 /// use ergon::RetryPolicy;
 /// use std::time::Duration;
 ///
-/// // Simple: just specify max attempts (uses standard delays)
-/// #[step(retry = 3)]
-/// async fn fetch_data() -> Result<Data, Error> { ... }
-///
 /// // Named policy: predefined sensible defaults
-/// #[step(retry = RetryPolicy::STANDARD)]
-/// async fn fetch_data() -> Result<Data, Error> { ... }
+/// #[flow(retry = RetryPolicy::STANDARD)]
+/// async fn process_order(self: Arc<Self>) -> Result<Order, Error> { ... }
 ///
 /// // Custom policy: full control, reusable
 /// const API_RETRY: RetryPolicy = RetryPolicy {
@@ -74,8 +74,12 @@ use std::time::Duration;
 ///     backoff_multiplier: 2.0,
 /// };
 ///
-/// #[step(retry = API_RETRY)]
-/// async fn call_api() -> Result<Response, Error> { ... }
+/// #[flow(retry = API_RETRY)]
+/// async fn call_api(self: Arc<Self>) -> Result<Response, Error> { ... }
+///
+/// // No retry - fail immediately
+/// #[flow(retry = RetryPolicy::NONE)]
+/// async fn validate_input(self: Arc<Self>) -> Result<(), Error> { ... }
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RetryPolicy {
@@ -116,9 +120,9 @@ impl RetryPolicy {
     /// # Example
     ///
     /// ```rust,ignore
-    /// #[step(retry = RetryPolicy::NONE)]
-    /// async fn validate_input(input: String) -> Result<(), Error> {
-    ///     if input.is_empty() {
+    /// #[flow(retry = RetryPolicy::NONE)]
+    /// async fn validate_input(self: Arc<Self>) -> Result<(), Error> {
+    ///     if self.input.is_empty() {
     ///         return Err("Input cannot be empty".into());
     ///     }
     ///     Ok(())
@@ -143,8 +147,8 @@ impl RetryPolicy {
     /// # Example
     ///
     /// ```rust,ignore
-    /// #[step(retry = RetryPolicy::STANDARD)]
-    /// async fn fetch_data() -> Result<Data, Error> {
+    /// #[flow(retry = RetryPolicy::STANDARD)]
+    /// async fn fetch_data(self: Arc<Self>) -> Result<Data, Error> {
     ///     http::get("https://api.example.com/data").await
     /// }
     /// ```
@@ -167,9 +171,9 @@ impl RetryPolicy {
     /// # Example
     ///
     /// ```rust,ignore
-    /// #[step(retry = RetryPolicy::AGGRESSIVE)]
-    /// async fn save_to_db() -> Result<(), DbError> {
-    ///     database.save(data).await
+    /// #[flow(retry = RetryPolicy::AGGRESSIVE)]
+    /// async fn save_to_db(self: Arc<Self>) -> Result<(), DbError> {
+    ///     self.database.save(&self.data).await
     /// }
     /// ```
     pub const AGGRESSIVE: Self = Self {
@@ -181,15 +185,13 @@ impl RetryPolicy {
 
     /// Create a policy with custom max_attempts (uses standard delays).
     ///
-    /// This is used for the shorthand `retry = 3` syntax.
-    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// // These are equivalent:
-    /// #[step(retry = 3)]
-    /// #[step(retry = RetryPolicy::with_max_attempts(3))]
-    /// async fn my_step() -> Result<T, E> { ... }
+    /// const MY_POLICY: RetryPolicy = RetryPolicy::with_max_attempts(5);
+    ///
+    /// #[flow(retry = MY_POLICY)]
+    /// async fn my_flow(self: Arc<Self>) -> Result<T, E> { ... }
     /// ```
     pub const fn with_max_attempts(max_attempts: u32) -> Self {
         Self {
@@ -372,12 +374,6 @@ impl DefaultTag {
         true // Default: all errors are retryable
     }
 }
-
-// Re-export the old names for backwards compatibility (deprecated)
-#[doc(hidden)]
-pub use DefaultKind as DefaultResultKind;
-#[doc(hidden)]
-pub use RetryableKind as RetryableResultKind;
 
 // Re-export kind module for macro use
 pub mod kind {

@@ -107,3 +107,4 @@ output/
 data/
 *.txt
 ergon/examples/outputs
+benchmarks/
