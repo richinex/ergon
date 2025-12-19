@@ -61,7 +61,7 @@ impl std::str::FromStr for TaskStatus {
 /// This represents a flow that has been serialized and queued for execution
 /// by a worker. The flow data is stored as serialized bytes and will be
 /// deserialized by the worker that picks it up.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScheduledFlow {
     /// Unique identifier for this scheduled task.
     pub task_id: Uuid,
@@ -91,11 +91,25 @@ pub struct ScheduledFlow {
     /// Signal token for Level 3 child invocation (if this is a child flow).
     /// This is the token the parent is waiting on (typically child's flow_id).
     pub signal_token: Option<String>,
+    /// Semantic version of the flow (e.g., "1.0.0", "v2").
+    /// Used to track which version of code executed a flow.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 impl ScheduledFlow {
     /// Creates a new scheduled flow in pending status.
     pub fn new(flow_id: Uuid, flow_type: String, flow_data: Vec<u8>) -> Self {
+        Self::new_with_version(flow_id, flow_type, flow_data, None)
+    }
+
+    /// Creates a new scheduled flow with a specific version.
+    pub fn new_with_version(
+        flow_id: Uuid,
+        flow_type: String,
+        flow_data: Vec<u8>,
+        version: Option<String>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             task_id: Uuid::new_v4(),
@@ -111,6 +125,7 @@ impl ScheduledFlow {
             scheduled_for: None,
             parent_flow_id: None,
             signal_token: None,
+            version,
         }
     }
 

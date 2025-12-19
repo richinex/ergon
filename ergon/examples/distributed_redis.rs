@@ -156,7 +156,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
     // Create Redis storage (network-accessible!)
     let storage = Arc::new(RedisExecutionLog::new(redis_url).await?);
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule data processing jobs
     for i in 1..=3 {
@@ -167,7 +167,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
         };
 
         let flow_id = Uuid::new_v4();
-        scheduler.schedule(job, flow_id).await?;
+        scheduler.schedule_with(job, flow_id).await?;
     }
 
     // Schedule email tasks
@@ -179,7 +179,7 @@ async fn run_scheduler(redis_url: &str) -> Result<(), Box<dyn std::error::Error>
         };
 
         let flow_id = Uuid::new_v4();
-        scheduler.schedule(email, flow_id).await?;
+        scheduler.schedule_with(email, flow_id).await?;
     }
 
     Ok(())

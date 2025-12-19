@@ -262,6 +262,7 @@ where
                 // Level 3 metadata: parent and token
                 parent_flow_id: Some(parent_id),
                 signal_token: Some(child_flow_id.to_string()),
+                version: None,
             };
 
             // Enqueue synchronously - must succeed before we wait

@@ -61,6 +61,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 // Global execution counters (for summary statistics only)
@@ -209,59 +210,46 @@ impl OrderAttempts {
 // =============================================================================
 
 /// Comprehensive order fulfillment error type
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Error, Serialize, Deserialize)]
 enum OrderError {
     // Payment errors - transient
+    #[error("Network timeout")]
     PaymentNetworkTimeout,
+    #[error("Payment gateway unavailable")]
     PaymentGatewayUnavailable,
 
     // Payment errors - permanent
+    #[error("Insufficient funds")]
     InsufficientFunds,
+    #[error("Card declined")]
     CardDeclined,
+    #[error("Fraud detected")]
     FraudDetected,
 
     // Inventory errors - transient
+    #[error("Database timeout")]
     InventoryDatabaseTimeout,
+    #[error("Warehouse system down")]
     WarehouseSystemDown,
 
     // Inventory errors - permanent
+    #[error("Out of stock: {product} (requested: {requested})")]
     OutOfStock { product: String, requested: u32 },
+    #[error("Invalid product ID")]
     InvalidProductId,
 
     // Approval errors - permanent
+    #[error("Manager rejected by {by} - {reason}")]
     ManagerRejected { by: String, reason: String },
 
     // Infrastructure errors - transient
+    #[error("Infrastructure error: {0}")]
     Infrastructure(String),
 
     // Generic errors
+    #[error("{0}")]
     Failed(String),
 }
-
-impl std::fmt::Display for OrderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OrderError::PaymentNetworkTimeout => write!(f, "Network timeout"),
-            OrderError::PaymentGatewayUnavailable => write!(f, "Payment gateway unavailable"),
-            OrderError::InsufficientFunds => write!(f, "Insufficient funds"),
-            OrderError::CardDeclined => write!(f, "Card declined"),
-            OrderError::FraudDetected => write!(f, "Fraud detected"),
-            OrderError::InventoryDatabaseTimeout => write!(f, "Database timeout"),
-            OrderError::WarehouseSystemDown => write!(f, "Warehouse system down"),
-            OrderError::OutOfStock { product, requested } => {
-                write!(f, "Out of stock: {} (requested: {})", product, requested)
-            }
-            OrderError::InvalidProductId => write!(f, "Invalid product ID"),
-            OrderError::ManagerRejected { by, reason } => {
-                write!(f, "Manager rejected by {} - {}", by, reason)
-            }
-            OrderError::Infrastructure(msg) => write!(f, "Infrastructure error: {}", msg),
-            OrderError::Failed(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-impl std::error::Error for OrderError {}
 
 impl From<OrderError> for String {
     fn from(err: OrderError) -> Self {
@@ -780,7 +768,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let signal_source = Arc::new(SimulatedApprovalSource::new());
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule 3 orders with different characteristics
     let orders = vec![
@@ -809,7 +797,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut task_ids = Vec::new();
     for order in &orders {
-        let task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
+        let task_id = scheduler.schedule(order.clone()).await?;
         task_ids.push(task_id);
 
         // Simulate manager approving each order after a delay

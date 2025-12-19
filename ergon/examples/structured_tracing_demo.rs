@@ -192,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let handle = worker.start().await;
 
         // Schedule some flows
-        let scheduler = Scheduler::new(storage.clone());
+        let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
         info!("Scheduling flows...");
         let order1 = OrderFlow {
@@ -200,20 +200,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             amount: 99.99,
             customer: "Alice".to_string(),
         };
-        scheduler.schedule(order1, Uuid::new_v4()).await?;
+        scheduler.schedule_with(order1, Uuid::new_v4()).await?;
 
         let order2 = OrderFlow {
             order_id: "ORD-002".to_string(),
             amount: 150.50,
             customer: "Bob".to_string(),
         };
-        scheduler.schedule(order2, Uuid::new_v4()).await?;
+        scheduler.schedule_with(order2, Uuid::new_v4()).await?;
 
         let shipping = ShippingFlow {
             order_id: "ORD-001".to_string(),
             address: "123 Main St".to_string(),
         };
-        scheduler.schedule(shipping, Uuid::new_v4()).await?;
+        scheduler.schedule_with(shipping, Uuid::new_v4()).await?;
 
         // Wait for flows to complete
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -235,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let handle = worker.start().await;
 
         // Schedule some flows
-        let scheduler = Scheduler::new(storage.clone());
+        let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
         info!("Scheduling flows...");
         let order1 = OrderFlow {
@@ -243,20 +243,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             amount: 99.99,
             customer: "Alice".to_string(),
         };
-        scheduler.schedule(order1, Uuid::new_v4()).await?;
+        scheduler.schedule_with(order1, Uuid::new_v4()).await?;
 
         let order2 = OrderFlow {
             order_id: "ORD-002".to_string(),
             amount: 150.50,
             customer: "Bob".to_string(),
         };
-        scheduler.schedule(order2, Uuid::new_v4()).await?;
+        scheduler.schedule_with(order2, Uuid::new_v4()).await?;
 
         let shipping = ShippingFlow {
             order_id: "ORD-001".to_string(),
             address: "123 Main St".to_string(),
         };
-        scheduler.schedule(shipping, Uuid::new_v4()).await?;
+        scheduler.schedule_with(shipping, Uuid::new_v4()).await?;
 
         // Wait for flows to complete
         tokio::time::sleep(Duration::from_secs(2)).await;

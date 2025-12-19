@@ -97,14 +97,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize storage and scheduler
     let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     // Schedule an order flow
     let order = Order {
         id: "ORD-001".into(),
         amount: 99.99,
     };
-    let task_id = scheduler.schedule(order, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule(order).await?;
     println!("[{}] scheduled: {}", ts(), &task_id.to_string()[..8]);
 
     // Set up worker with fast poll interval for demo purposes

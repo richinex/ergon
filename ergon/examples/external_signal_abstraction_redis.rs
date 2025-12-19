@@ -330,7 +330,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
 
     let signal_source = Arc::new(SimulatedUserInputSource::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let doc1 = DocumentSubmission {
         document_id: "DOC-001".to_string(),
@@ -344,7 +344,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_1 = Uuid::new_v4();
-    let task_id_1 = scheduler.schedule(flow1, flow_id_1).await?;
+    let task_id_1 = scheduler.schedule_with(flow1, flow_id_1).await?;
 
     let doc2 = DocumentSubmission {
         document_id: "DOC-002".to_string(),
@@ -358,7 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_2 = Uuid::new_v4();
-    let task_id_2 = scheduler.schedule(flow2, flow_id_2).await?;
+    let task_id_2 = scheduler.schedule_with(flow2, flow_id_2).await?;
 
     let worker = Worker::new(storage.clone(), "document-processor");
     worker
@@ -460,7 +460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_3 = Uuid::new_v4();
-    let task_id_3 = scheduler.schedule(flow3, flow_id_3).await?;
+    let task_id_3 = scheduler.schedule_with(flow3, flow_id_3).await?;
 
     // Simulate manager rejecting DOC-003 immediately
     let signal_source_clone = signal_source.clone();
@@ -510,7 +510,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_4 = Uuid::new_v4();
-    let task_id_4 = scheduler.schedule(flow4, flow_id_4).await?;
+    let task_id_4 = scheduler.schedule_with(flow4, flow_id_4).await?;
 
     // Simulate manager approving DOC-004 (increased delay to ensure flow is waiting)
     let signal_source_clone = signal_source.clone();

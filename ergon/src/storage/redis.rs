@@ -277,6 +277,11 @@ impl RedisExecutionLog {
                 fields.push(("signal_token", signal_token));
             }
         }
+        if let Ok(version) = get_string("version") {
+            if !version.is_empty() {
+                fields.push(("version", version));
+            }
+        }
 
         // Add to stream
         let _entry_id: String = redis::cmd("XADD")
@@ -371,6 +376,11 @@ impl RedisExecutionLog {
             .and_then(get_string)
             .filter(|s| !s.is_empty());
 
+        let version: Option<String> = map
+            .get("version")
+            .and_then(get_string)
+            .filter(|s| !s.is_empty());
+
         Ok(super::ScheduledFlow {
             task_id,
             flow_id,
@@ -385,6 +395,7 @@ impl RedisExecutionLog {
             scheduled_for: None,
             parent_flow_id,
             signal_token,
+            version,
         })
     }
 
@@ -868,6 +879,9 @@ impl ExecutionLog for RedisExecutionLog {
             if let Some(ref signal_token) = flow.signal_token {
                 pipe.hset(&flow_key, "signal_token", signal_token);
             }
+            if let Some(ref version) = flow.version {
+                pipe.hset(&flow_key, "version", version);
+            }
 
             let _: () = pipe
                 .set(
@@ -903,6 +917,9 @@ impl ExecutionLog for RedisExecutionLog {
             if let Some(ref signal_token) = flow.signal_token {
                 pipe.hset(&flow_key, "signal_token", signal_token);
             }
+            if let Some(ref version) = flow.version {
+                pipe.hset(&flow_key, "version", version);
+            }
 
             // Create flow_id -> task_id index for resume_flow
             pipe.set(
@@ -931,6 +948,9 @@ impl ExecutionLog for RedisExecutionLog {
             }
             if let Some(ref signal_token) = flow.signal_token {
                 fields.push(("signal_token", signal_token.clone()));
+            }
+            if let Some(ref version) = flow.version {
+                fields.push(("version", version.clone()));
             }
 
             let entry_id: String = redis::cmd("XADD")
@@ -1220,6 +1240,10 @@ impl ExecutionLog for RedisExecutionLog {
         let signal_token: Option<String> = data
             .get("signal_token")
             .map(|v| String::from_utf8_lossy(v).to_string());
+        let version: Option<String> = data
+            .get("version")
+            .map(|v| String::from_utf8_lossy(v).to_string())
+            .filter(|s| !s.is_empty());
 
         Ok(Some(super::ScheduledFlow {
             task_id,
@@ -1235,6 +1259,7 @@ impl ExecutionLog for RedisExecutionLog {
             scheduled_for,
             parent_flow_id,
             signal_token,
+            version,
         }))
     }
 

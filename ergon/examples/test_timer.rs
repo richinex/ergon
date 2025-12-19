@@ -196,7 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     sleep(Duration::from_secs(1)).await;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     println!("Scheduling timer-based orders...\n");
 
@@ -216,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut task_ids = Vec::new();
     for order in orders {
         let id = Uuid::new_v4();
-        let task_id = scheduler.schedule(order.clone(), id).await?;
+        let task_id = scheduler.schedule_with(order.clone(), id).await?;
         task_ids.push(task_id);
         println!(
             "   Scheduled: {} (${}) - flow_id: {}",

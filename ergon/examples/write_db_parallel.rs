@@ -437,8 +437,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Schedule and process
-    let scheduler = Scheduler::new(storage.clone());
-    scheduler.schedule(order, Uuid::new_v4()).await?;
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
+    scheduler.schedule_with(order, Uuid::new_v4()).await?;
 
     // Start worker
     let worker =

@@ -189,7 +189,8 @@ impl PostgresExecutionLog {
                 updated_at BIGINT NOT NULL,
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 error_message TEXT,
-                scheduled_for BIGINT
+                scheduled_for BIGINT,
+                version TEXT
             )",
         )
         .execute(&self.pool)
@@ -263,6 +264,7 @@ impl PostgresExecutionLog {
 
         let parent_flow_id: Option<Uuid> = row.try_get("parent_flow_id").ok();
         let signal_token: Option<String> = row.try_get("signal_token").ok();
+        let version: Option<String> = row.try_get("version").ok();
 
         Ok(super::ScheduledFlow {
             task_id,
@@ -278,6 +280,7 @@ impl PostgresExecutionLog {
             scheduled_for,
             parent_flow_id,
             signal_token,
+            version,
         })
     }
 
@@ -587,8 +590,8 @@ impl ExecutionLog for PostgresExecutionLog {
         let flow_type = flow.flow_type.clone();
 
         sqlx::query(
-            "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at, retry_count, error_message, scheduled_for, parent_flow_id, signal_token)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+            "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at, retry_count, error_message, scheduled_for, parent_flow_id, signal_token, version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(task_id)
         .bind(flow.flow_id)
@@ -603,6 +606,7 @@ impl ExecutionLog for PostgresExecutionLog {
         .bind(flow.scheduled_for.map(|dt| dt.timestamp_millis()))
         .bind(flow.parent_flow_id)
         .bind(flow.signal_token)
+        .bind(flow.version)
         .execute(&self.pool)
         .await?;
 
@@ -638,7 +642,7 @@ impl ExecutionLog for PostgresExecutionLog {
              )
              RETURNING task_id, flow_id, flow_type, flow_data, status, locked_by,
                        created_at, updated_at, retry_count, error_message,
-                       scheduled_for, parent_flow_id, signal_token",
+                       scheduled_for, parent_flow_id, signal_token, version",
         )
         .bind(worker_id)
         .bind(now)
@@ -733,7 +737,7 @@ impl ExecutionLog for PostgresExecutionLog {
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<super::ScheduledFlow>> {
         let flow = sqlx::query(
             "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
-                    retry_count, error_message, scheduled_for, parent_flow_id, signal_token
+                    retry_count, error_message, scheduled_for, parent_flow_id, signal_token, version
              FROM flow_queue
              WHERE task_id = $1",
         )

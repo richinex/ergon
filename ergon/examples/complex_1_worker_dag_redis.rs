@@ -601,7 +601,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule 3 orders with different characteristics
     let orders = vec![
@@ -629,7 +629,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for order in &orders {
-        let _task_id = scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
+        let _task_id = scheduler.schedule(order.clone()).await?;
     }
 
     // Start 1 worker (testing for concurrency vs logic bugs)

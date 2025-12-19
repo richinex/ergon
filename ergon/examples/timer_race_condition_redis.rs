@@ -104,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = worker.start().await;
 
     // Create scheduler to enqueue flows for worker processing
-    let scheduler = ergon::executor::Scheduler::new(storage.clone());
+    let scheduler = ergon::executor::Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Run 3 flows CONCURRENTLY to increase race condition likelihood
     // This is the realistic scenario - multiple flows competing for timers
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: format!("flow-{}", i),
         };
         let flow_id = uuid::Uuid::new_v4();
-        scheduler.schedule(flow, flow_id).await?;
+        scheduler.schedule_with(flow, flow_id).await?;
     }
 
     // Wait for flows to complete (all 15 timers: 3 flows * 5 timers each)

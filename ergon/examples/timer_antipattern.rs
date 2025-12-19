@@ -66,12 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.register(|f: Arc<GoodExample>| f.run_good()).await;
     let worker_handle = worker.start().await;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     println!("\n=== BAD PATTERN (logic after suspension) ===");
-    let bad_id = scheduler
-        .schedule(BadExample { id: "BAD".into() }, Uuid::new_v4())
-        .await?;
+    let bad_id = scheduler.schedule(BadExample { id: "BAD".into() }).await?;
 
     let notify = storage.status_notify().clone();
     loop {
@@ -88,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== GOOD PATTERN (separate steps) ===");
     let good_id = scheduler
-        .schedule(GoodExample { id: "GOOD".into() }, Uuid::new_v4())
+        .schedule(GoodExample { id: "GOOD".into() })
         .await?;
 
     loop {

@@ -56,6 +56,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use ergon::executor::Configured;
 use ergon::prelude::*;
 use ergon::InvocationStatus;
 use serde::{Deserialize, Serialize};
@@ -248,7 +249,7 @@ struct OrderStatus {
 #[derive(Clone, FlowType)]
 struct AppState {
     storage: Arc<RedisExecutionLog>,
-    scheduler: Arc<Scheduler<RedisExecutionLog>>,
+    scheduler: Arc<Scheduler<RedisExecutionLog, Configured>>,
 }
 
 // ===== API Handlers =====
@@ -269,7 +270,7 @@ async fn submit_order(
     // Schedule the order flow for execution
     state
         .scheduler
-        .schedule(order, flow_id)
+        .schedule_with(order, flow_id)
         .await
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
@@ -356,7 +357,7 @@ async fn retry_order(
     // Schedule retry with the same flow_id
     state
         .scheduler
-        .schedule(order, flow_id)
+        .schedule_with(order, flow_id)
         .await
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
@@ -405,7 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // storage.reset().await?;
 
     // Setup flow scheduler
-    let scheduler = Arc::new(Scheduler::new(storage.clone()));
+    let scheduler = Arc::new(Scheduler::new(storage.clone()).with_version("v1.0"));
 
     // Create application state
     let state = AppState {

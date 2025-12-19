@@ -543,7 +543,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("child_custom_errors.db").await?);
     storage.reset().await?;
 
-    let scheduler = ergon::executor::Scheduler::new(storage.clone());
+    let scheduler = ergon::executor::Scheduler::new(storage.clone()).unversioned();
     let mut task_ids = Vec::new();
 
     // Test 1: Successful Loan Application
@@ -553,7 +553,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         requested_amount: 50000.0,
         simulate_error: None,
     };
-    let task_id = scheduler.schedule(app1, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule(app1).await?;
     task_ids.push(task_id);
 
     // Test 2: Credit Score Too Low (Permanent Error)
@@ -563,7 +563,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         requested_amount: 30000.0,
         simulate_error: Some("low_credit_score".to_string()),
     };
-    let task_id = scheduler.schedule(app2, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule(app2).await?;
     task_ids.push(task_id);
 
     // Test 3: Insufficient Income (Permanent Error)
@@ -573,7 +573,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         requested_amount: 100000.0,
         simulate_error: Some("insufficient_income".to_string()),
     };
-    let task_id = scheduler.schedule(app3, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule(app3).await?;
     task_ids.push(task_id);
 
     // Test 4: Bureau Timeout (Retryable Error)
@@ -584,7 +584,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         requested_amount: 25000.0,
         simulate_error: Some("bureau_timeout".to_string()),
     };
-    let task_id = scheduler.schedule(app4, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule(app4).await?;
     task_ids.push(task_id);
 
     let worker = Worker::new(storage.clone(), "loan-worker")

@@ -314,7 +314,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     let worker = worker.with_signals(signal_source.clone()).start().await;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let doc1 = DocumentSubmission {
         document_id: "DOC-001".to_string(),
@@ -328,7 +328,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_1 = Uuid::new_v4();
-    let task_id_1 = scheduler.schedule(flow1, flow_id_1).await?;
+    let task_id_1 = scheduler.schedule_with(flow1, flow_id_1).await?;
 
     // Simulate manager approving after 1 second
     let signal_source_clone = signal_source.clone();
@@ -385,7 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_2 = Uuid::new_v4();
-    let task_id_2 = scheduler.schedule(flow2, flow_id_2).await?;
+    let task_id_2 = scheduler.schedule_with(flow2, flow_id_2).await?;
 
     // Simulate manager rejecting after 1 second
     // Key insight: Rejection is an OUTCOME (step succeeds), not an error

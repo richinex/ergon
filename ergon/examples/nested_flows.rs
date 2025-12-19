@@ -420,7 +420,7 @@ struct InventoryResult {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     // Schedule PARENT flow (order processing)
     let order = OrderProcessor {
@@ -433,7 +433,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         total_amount: 299.99,
         customer_id: "CUST-001".to_string(),
     };
-    scheduler.schedule(order, Uuid::new_v4()).await?;
+    scheduler.schedule(order).await?;
 
     // Schedule CHILD flows (these run independently)
     let payment = PaymentFlow {
@@ -441,13 +441,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         amount: 299.99,
         payment_method: "credit_card".to_string(),
     };
-    scheduler.schedule(payment, Uuid::new_v4()).await?;
+    scheduler.schedule(payment).await?;
 
     let inventory = InventoryFlow {
         reservation_id: "INV-001".to_string(),
         items: vec!["ITEM-A".to_string(), "ITEM-B".to_string()],
     };
-    scheduler.schedule(inventory, Uuid::new_v4()).await?;
+    scheduler.schedule(inventory).await?;
 
     // Start worker
     let worker = Worker::new(storage.clone(), "orchestrator");

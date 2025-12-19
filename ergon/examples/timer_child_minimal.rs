@@ -144,12 +144,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = worker.start().await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let scheduler = ergon::executor::Scheduler::new(storage.clone());
+    let scheduler = ergon::executor::Scheduler::new(storage.clone()).with_version("v1.0");
     let task1 = ParentTask {
         test_name: "Test1".to_string(),
         child_should_fail: false,
     };
-    let task_id_1 = scheduler.schedule(task1, Uuid::new_v4()).await?;
+    let task_id_1 = scheduler.schedule_with(task1, Uuid::new_v4()).await?;
 
     // Wait for completion
     let start = std::time::Instant::now();
@@ -171,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         test_name: "Test2".to_string(),
         child_should_fail: true,
     };
-    let task_id_2 = scheduler.schedule(task2, Uuid::new_v4()).await?;
+    let task_id_2 = scheduler.schedule_with(task2, Uuid::new_v4()).await?;
 
     // Wait for completion
     let start = std::time::Instant::now();

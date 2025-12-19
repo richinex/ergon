@@ -188,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("distributed_timer_demo.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Start worker 1 with timer processing enabled
     let worker1 = Worker::new(storage.clone(), "worker-1")
@@ -231,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(order, flow_id).await?;
+        let task_id = scheduler.schedule_with(order, flow_id).await?;
         flow_info.push((task_id, format!("Order ORD-{:03}", i)));
     }
 
@@ -243,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(trial, flow_id).await?;
+        let task_id = scheduler.schedule_with(trial, flow_id).await?;
         flow_info.push((task_id, format!("Trial expiry user-{}", i)));
     }
 

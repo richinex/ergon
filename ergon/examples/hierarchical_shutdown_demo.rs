@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("hierarchical_demo.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     let mut task_ids = Vec::new();
 
@@ -93,14 +93,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             data_id: i,
             processing_time_ms: 200,
         };
-        let task_id = scheduler.schedule(flow, Uuid::new_v4()).await?;
+        let task_id = scheduler.schedule(flow).await?;
         task_ids.push(task_id);
     }
 
     // Schedule notification flows
     for i in 1..=3 {
         let flow = NotificationJob { job_id: i };
-        let task_id = scheduler.schedule(flow, Uuid::new_v4()).await?;
+        let task_id = scheduler.schedule(flow).await?;
         task_ids.push(task_id);
     }
 

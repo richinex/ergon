@@ -542,7 +542,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule 3 orders with specific failure triggers
     let orders = vec![
@@ -573,7 +573,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for order in &orders {
-        scheduler.schedule(order.clone(), Uuid::new_v4()).await?;
+        scheduler.schedule(order.clone()).await?;
     }
 
     // Start 1 worker

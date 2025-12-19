@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let _ = std::fs::remove_file(db_path);
     // let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
     let storage = Arc::new(InMemoryExecutionLog::default());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     // 2. Schedule 30 Orders (Deterministic Batch)
     // Group 0 (Mod 0): 10 orders -> Fail Validate
@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: i,
             order_ref: format!("ORD-{:02}", i),
         };
-        scheduler.schedule(flow, Uuid::new_v4()).await?;
+        scheduler.schedule(flow).await?;
     }
 
     println!("Scheduled 30 flows.");

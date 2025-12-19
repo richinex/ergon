@@ -37,9 +37,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.register(|f: Arc<TimedTask>| f.execute()).await;
     let worker_handle = worker.start().await;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
     let task_id = scheduler
-        .schedule(
+        .schedule_with(
             TimedTask {
                 id: "Task_001".into(),
             },

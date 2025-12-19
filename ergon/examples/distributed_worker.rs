@@ -139,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("distributed_demo.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule some order processing flows
     for i in 1..=3 {
@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let _task_id = scheduler.schedule(order, flow_id).await?;
+        let _task_id = scheduler.schedule_with(order, flow_id).await?;
     }
 
     // Schedule some notification flows
@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let _task_id = scheduler.schedule(notification, flow_id).await?;
+        let _task_id = scheduler.schedule_with(notification, flow_id).await?;
     }
 
     // Start worker 1 (handles both flow types)

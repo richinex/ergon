@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create in-memory storage (no files!)
     let storage = Arc::new(InMemoryExecutionLog::new());
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule multiple tasks
     for i in 1..=5 {
@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        let _task_id = scheduler.schedule(task, flow_id).await?;
+        let _task_id = scheduler.schedule_with(task, flow_id).await?;
     }
 
     // Start worker 1

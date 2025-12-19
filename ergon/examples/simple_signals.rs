@@ -61,9 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.register(|f: Arc<Task>| f.run()).await;
     let worker_handle = worker.with_signals(sig.clone()).start().await;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
     let task_id = scheduler
-        .schedule(Task { id: "W1".into() }, Uuid::new_v4())
+        .schedule_with(Task { id: "W1".into() }, Uuid::new_v4())
         .await?;
 
     // Send signal after task suspends, then wait for completion

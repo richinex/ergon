@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("backpressure_demo.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     // Schedule many heavy computation flows
     for i in 1..=30 {
@@ -83,13 +83,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             job_id: i,
             computation_ms: 300,
         };
-        scheduler.schedule(flow, Uuid::new_v4()).await?;
+        scheduler.schedule(flow).await?;
     }
 
     // Schedule many lightweight flows
     for i in 1..=20 {
         let flow = LightweightFlow { task_id: i };
-        scheduler.schedule(flow, Uuid::new_v4()).await?;
+        scheduler.schedule(flow).await?;
     }
 
     // Worker 1: No backpressure limit (default behavior)

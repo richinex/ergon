@@ -1123,11 +1123,11 @@ mod tests {
     #[tokio::test]
     async fn test_scheduler_enqueue() {
         let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
-        let scheduler = Scheduler::new(storage.clone());
+        let scheduler = Scheduler::new(storage.clone()).unversioned();
 
         let flow = TestFlow { value: 21 };
         let flow_id = Uuid::new_v4();
-        let task_id = scheduler.schedule(flow, flow_id).await.unwrap();
+        let task_id = scheduler.schedule_with(flow, flow_id).await.unwrap();
 
         // Verify the task was enqueued
         let scheduled = storage.get_scheduled_flow(task_id).await.unwrap();

@@ -187,12 +187,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let handle = worker.start().await;
 
-    let scheduler = ergon::executor::Scheduler::new(storage);
+    let scheduler = ergon::executor::Scheduler::new(storage).with_version("v1.0");
     let parent = ParentFlow {
         flow_id: "TEST".to_string(),
     };
 
-    scheduler.schedule(parent, uuid::Uuid::new_v4()).await?;
+    scheduler
+        .schedule_with(parent, uuid::Uuid::new_v4())
+        .await?;
 
     tokio::time::sleep(Duration::from_secs(5)).await;
     handle.shutdown().await;

@@ -196,7 +196,7 @@ impl IncidentFlow {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use InMemory for speed, but works identically with SQLite
     let storage = Arc::new(InMemoryExecutionLog::default());
-    let scheduler = ergon::executor::Scheduler::new(storage.clone());
+    let scheduler = ergon::executor::Scheduler::new(storage.clone()).with_version("v1.0");
     let pager = Arc::new(PagerSystem::new());
 
     // 1. Scenario: Everyone ignores it (Full Escalation)
@@ -204,7 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         incident_id: "INC-001-IGNORE".to_string(),
         server_name: "DB-Production-1".to_string(),
     };
-    scheduler.schedule(inc1, uuid::Uuid::new_v4()).await?;
+    scheduler.schedule(inc1).await?;
 
     // 2. Scenario: Tier 2 fixes it (Partial Escalation)
     // The -FIXED suffix simulates a successful resolution in our mock logic
@@ -212,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         incident_id: "INC-002-FIXED".to_string(),
         server_name: "Cache-Cluster-A".to_string(),
     };
-    scheduler.schedule(inc2, uuid::Uuid::new_v4()).await?;
+    scheduler.schedule(inc2).await?;
 
     let worker = Worker::new(storage, "ops-worker")
         .with_timers()

@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("timer_demo.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Start worker with timer processing (polls every 100ms for demo responsiveness)
     let worker = Worker::new(storage.clone(), "timer-demo-worker")
@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id = uuid::Uuid::new_v4();
-    let _task_id = scheduler.schedule(order, flow_id).await?;
+    let _task_id = scheduler.schedule_with(order, flow_id).await?;
 
     let start = std::time::Instant::now();
 

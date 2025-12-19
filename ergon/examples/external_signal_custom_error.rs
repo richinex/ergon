@@ -446,7 +446,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = worker.with_signals(signal_source.clone()).start().await;
 
     // Create scheduler
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // ========================================================================
     // Test 1: Approved Loan (Good Credit)
@@ -465,7 +465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_1 = Uuid::new_v4();
-    let task_id_1 = scheduler.schedule(flow1, flow_id_1).await?;
+    let task_id_1 = scheduler.schedule_with(flow1, flow_id_1).await?;
 
     // Simulate manager approving after 1 second
     let signal_source_clone = signal_source.clone();
@@ -515,7 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_2 = Uuid::new_v4();
-    let task_id_2 = scheduler.schedule(flow2, flow_id_2).await?;
+    let task_id_2 = scheduler.schedule_with(flow2, flow_id_2).await?;
 
     // Simulate manager rejecting after 1 second
     let signal_source_clone = signal_source.clone();
@@ -567,7 +567,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_3 = Uuid::new_v4();
-    let task_id_3 = scheduler.schedule(flow3, flow_id_3).await?;
+    let task_id_3 = scheduler.schedule_with(flow3, flow_id_3).await?;
 
     // This should fail at credit check step (before waiting for signal)
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -601,7 +601,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_4 = Uuid::new_v4();
-    let task_id_4 = scheduler.schedule(flow4, flow_id_4).await?;
+    let task_id_4 = scheduler.schedule_with(flow4, flow_id_4).await?;
 
     // This should fail at validation step
     tokio::time::sleep(Duration::from_millis(500)).await;

@@ -204,7 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clear any previous data
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule data pipeline jobs
     for i in 1..=5 {
@@ -214,7 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        scheduler.schedule(pipeline, flow_id).await?;
+        scheduler.schedule_with(pipeline, flow_id).await?;
     }
 
     // Schedule notification tasks
@@ -225,7 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let flow_id = Uuid::new_v4();
-        scheduler.schedule(notification, flow_id).await?;
+        scheduler.schedule_with(notification, flow_id).await?;
     }
 
     // Start 3 workers concurrently

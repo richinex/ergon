@@ -229,7 +229,7 @@ struct OrderResult {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule parent flow only - it will spawn children
     let order = OrderProcessor {
@@ -237,8 +237,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         items: vec!["Widget".to_string(), "Gadget".to_string()],
         total_amount: 99.99,
     };
-    let parent_flow_id = Uuid::new_v4();
-    scheduler.schedule(order.clone(), parent_flow_id).await?;
+    scheduler
+        .schedule_with(order.clone(), Uuid::new_v4())
+        .await?;
 
     // Worker only needs to handle the parent flow type
     // Child flows are executed inline, not scheduled separately

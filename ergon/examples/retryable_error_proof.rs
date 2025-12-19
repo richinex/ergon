@@ -160,13 +160,14 @@ impl OrderB {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let order_a = OrderA {
         order_id: "ORD-A-001".to_string(),
     };
-    let flow_id_a = Uuid::new_v4();
-    scheduler.schedule(order_a.clone(), flow_id_a).await?;
+    scheduler
+        .schedule_with(order_a.clone(), Uuid::new_v4())
+        .await?;
 
     let storage_a = storage.clone();
     let worker_a = tokio::spawn(async move {
@@ -189,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         item_sku: "INVALID-SKU-999".to_string(),
     };
     let flow_id_b = Uuid::new_v4();
-    scheduler.schedule(order_b.clone(), flow_id_b).await?;
+    scheduler.schedule_with(order_b.clone(), flow_id_b).await?;
 
     let storage_b = storage.clone();
     let worker_b = tokio::spawn(async move {

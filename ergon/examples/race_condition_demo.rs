@@ -102,7 +102,7 @@ struct TaskResult {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let tasks = vec![
         ("TASK-001", "Transfer $10,000 to Account B"),
@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             operation: operation.to_string(),
         };
         let flow_id = Uuid::new_v4();
-        scheduler.schedule(task, flow_id).await?;
+        scheduler.schedule_with(task, flow_id).await?;
     }
 
     let mut worker_handles = Vec::new();

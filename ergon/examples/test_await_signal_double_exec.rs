@@ -81,13 +81,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(db);
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
     let signal_source = Arc::new(MemorySignalSource::new());
 
     let flow = TestFlow {
         id: "TEST-001".into(),
     };
-    scheduler.schedule(flow, Uuid::new_v4()).await?;
+    scheduler.schedule(flow).await?;
 
     let worker = Worker::new(storage.clone(), "worker")
         .with_poll_interval(Duration::from_millis(50))

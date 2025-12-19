@@ -314,7 +314,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     let worker = worker.with_signals(signal_source.clone()).start().await;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let doc1 = DocumentSubmission {
         document_id: "DOC-001".to_string(),
@@ -328,7 +328,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id = Uuid::new_v4();
-    scheduler.schedule(flow1, flow_id).await?;
+    scheduler.schedule_with(flow1, flow_id).await?;
 
     tokio::signal::ctrl_c().await?;
 

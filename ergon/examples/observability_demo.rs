@@ -143,7 +143,7 @@ struct PaymentResult {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule mix of orders: some will complete, some will fail at authorization
     let orders = vec![
@@ -163,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             should_fail: *should_fail,
         };
         let flow_id = Uuid::new_v4();
-        scheduler.schedule(processor, flow_id).await?;
+        scheduler.schedule_with(processor, flow_id).await?;
         flow_ids.push((flow_id, order_id.to_string(), *should_fail));
     }
 

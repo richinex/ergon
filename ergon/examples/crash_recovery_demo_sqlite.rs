@@ -222,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(db_path);
 
     let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule an order
     let order = OrderProcessor {
@@ -230,8 +230,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         amount: 299.99,
         customer_id: "CUST-001".to_string(),
     };
-    let flow_id = Uuid::new_v4();
-    scheduler.schedule(order.clone(), flow_id).await?;
+    scheduler
+        .schedule_with(order.clone(), Uuid::new_v4())
+        .await?;
 
     // ========================================================================
     // Worker with Automatic Retry

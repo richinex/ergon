@@ -133,21 +133,19 @@ impl HolidaySaga {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(ergon::storage::InMemoryExecutionLog::default());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Scenario 1: Success (Paris)
     let saga_success = HolidaySaga {
         destination: "Paris".to_string(),
     };
-    scheduler
-        .schedule(saga_success, uuid::Uuid::new_v4())
-        .await?;
+    scheduler.schedule(saga_success).await?;
 
     // Scenario 2: Failure + Compensation (Atlantis)
     let saga_fail = HolidaySaga {
         destination: "Atlantis".to_string(),
     };
-    scheduler.schedule(saga_fail, uuid::Uuid::new_v4()).await?;
+    scheduler.schedule(saga_fail).await?;
 
     let worker = Worker::new(storage, "saga-worker").with_poll_interval(Duration::from_millis(100));
 

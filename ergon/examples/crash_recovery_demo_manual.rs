@@ -211,7 +211,7 @@ struct OrderResult {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule an order
     let order = OrderProcessor {
@@ -220,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         customer_id: "CUST-001".to_string(),
     };
     let flow_id = Uuid::new_v4();
-    scheduler.schedule(order.clone(), flow_id).await?;
+    scheduler.schedule_with(order.clone(), flow_id).await?;
 
     // ========================================================================
     // PHASE 1: First worker processes until crash
@@ -258,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         amount: 299.99,
         customer_id: "CUST-001".to_string(),
     };
-    scheduler.schedule(order_retry, flow_id).await?;
+    scheduler.schedule_with(order_retry, flow_id).await?;
 
     let storage_clone = storage.clone();
     let worker2 = tokio::spawn(async move {

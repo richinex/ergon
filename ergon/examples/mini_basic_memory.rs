@@ -21,10 +21,10 @@ use uuid::Uuid;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::default());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let task_id = scheduler
-        .schedule(
+        .schedule_with(
             Order {
                 id: "ORD-001".into(),
                 amount: 99.99,

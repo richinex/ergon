@@ -184,13 +184,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
     let start = Instant::now();
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
     for i in 0..NUM_FLOWS {
         let pipeline = DataAnalysis {
             id: i as u64,
             size: 1000,
         };
-        scheduler.schedule(pipeline, Uuid::new_v4()).await?;
+        scheduler.schedule(pipeline).await?;
     }
 
     let mut handles = vec![];

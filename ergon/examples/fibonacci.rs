@@ -147,12 +147,10 @@ impl FibonacciFlow {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use In-Memory for speed
     let storage = Arc::new(ergon::storage::InMemoryExecutionLog::default());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     // Schedule the flow
-    scheduler
-        .schedule(FibonacciFlow, uuid::Uuid::new_v4())
-        .await?;
+    scheduler.schedule(FibonacciFlow).await?;
 
     // Start Worker
     let worker = Worker::new(storage, "calc-worker").with_poll_interval(Duration::from_millis(50));

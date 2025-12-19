@@ -299,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The scheduler does NOT wait for completion. It returns immediately.
     // ============================================================
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let files = vec![
         ("data/sales_2024_q1.csv", "output/sales_q1_report.txt"),
@@ -313,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             input_file: input.to_string(),
             output_file: output.to_string(),
         };
-        let task_id = scheduler.schedule(processor, Uuid::new_v4()).await?;
+        let task_id = scheduler.schedule_with(processor, Uuid::new_v4()).await?;
         task_ids.push(task_id);
     }
 

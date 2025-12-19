@@ -27,11 +27,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(db_path);
 
     let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
     let signals = Arc::new(SimpleSignals::new());
 
     let task_id = scheduler
-        .schedule(
+        .schedule_with(
             Document {
                 id: "DOC-001".into(),
             },

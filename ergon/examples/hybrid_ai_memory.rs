@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup In-Memory Storage
     let storage = Arc::new(ergon::storage::InMemoryExecutionLog::new());
 
-    let scheduler = ergon::executor::Scheduler::new(storage.clone());
+    let scheduler = ergon::executor::Scheduler::new(storage.clone()).with_version("v1.0");
     let dashboard = Arc::new(ModeratorDashboard::new());
 
     // 2. Schedule the 3 Flows
@@ -222,27 +222,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         content_id: "POST-SAFE".to_string(),
         text: "\x05".to_string(),
     };
-    scheduler
-        .schedule(flow_approve, uuid::Uuid::new_v4())
-        .await?;
+    scheduler.schedule(flow_approve).await?;
 
     // Toxic
     let flow_reject = ContentFlow {
         content_id: "POST-TOXIC".to_string(),
         text: "a".to_string(),
     };
-    scheduler
-        .schedule(flow_reject, uuid::Uuid::new_v4())
-        .await?;
+    scheduler.schedule(flow_reject).await?;
 
     // Ambiguous (Requires Human)
     let flow_review = ContentFlow {
         content_id: "POST-AMBIGUOUS".to_string(),
         text: "Rust".to_string(),
     };
-    scheduler
-        .schedule(flow_review, uuid::Uuid::new_v4())
-        .await?;
+    scheduler.schedule(flow_review).await?;
 
     // 3. Start the Worker
     let worker = Worker::new(storage.clone(), "content-worker")

@@ -46,7 +46,7 @@ pub use context::{ExecutionContext, LogStepStartParams, CALL_TYPE, EXECUTION_CON
 pub use dag::{DagSummary, DeferredRegistry, StepHandle};
 pub use error::{ExecutionError, FlowOutcome, Result, Retryable, SuspendReason};
 pub use instance::Executor;
-pub use scheduler::Scheduler;
+pub use scheduler::{Configured, Scheduler, Unconfigured};
 pub use signal::{
     await_external_signal, signal_parent_flow, SignalProcessing, SignalSource, StepFuture,
     WithSignals, WithoutSignals,

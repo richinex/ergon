@@ -137,13 +137,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(db);
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let order = OrderProcessor {
         order_id: "ORD-12345".to_string(),
     };
-    let flow_id = Uuid::new_v4();
-    let task_id = scheduler.schedule(order.clone(), flow_id).await?;
+    let task_id = scheduler
+        .schedule_with(order.clone(), Uuid::new_v4())
+        .await?;
 
     let worker = Worker::new(storage.clone(), "custom-retry-worker")
         .with_poll_interval(Duration::from_millis(50));
@@ -180,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker_handle.shutdown().await;
 
-    let invocations = storage.get_invocations_for_flow(flow_id).await?;
+    let invocations = storage.get_invocations_for_flow(task_id).await?;
     let flow_inv = invocations.iter().find(|i| i.step() == 0);
 
     if let Some(flow) = flow_inv {

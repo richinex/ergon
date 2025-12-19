@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("multi_worker_race.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     println!("\n=== Multi-Worker Timer Race Test ===");
     println!("Starting 3 workers...\n");
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=10 {
         let flow = TimerFlow { flow_number: i };
         let flow_id = uuid::Uuid::new_v4();
-        let task_id = scheduler.schedule(flow, flow_id).await?;
+        let task_id = scheduler.schedule_with(flow, flow_id).await?;
         task_ids.push((i, task_id, flow_id));
         println!("Scheduled flow {}", i);
     }

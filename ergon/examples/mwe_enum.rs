@@ -164,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
     let mut task_ids = Vec::new();
 
     // Test 1: Normal shipping
@@ -172,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "ORD-001".into(),
         expedited: false,
     };
-    let task_id = scheduler.schedule(order1, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule_with(order1, Uuid::new_v4()).await?;
     task_ids.push(task_id);
 
     // Test 2: Expedited shipping
@@ -180,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "ORD-002".into(),
         expedited: true,
     };
-    let task_id = scheduler.schedule(order2, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule_with(order2, Uuid::new_v4()).await?;
     task_ids.push(task_id);
 
     // Test 3: Potentially delayed
@@ -188,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "ABC".into(),
         expedited: false,
     };
-    let task_id = scheduler.schedule(order3, Uuid::new_v4()).await?;
+    let task_id = scheduler.schedule_with(order3, Uuid::new_v4()).await?;
     task_ids.push(task_id);
 
     let worker =

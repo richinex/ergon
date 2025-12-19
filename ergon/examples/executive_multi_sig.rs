@@ -136,17 +136,14 @@ impl MultiSigTransfer {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::default());
     let inbox = Arc::new(CorporateInbox::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let tx_id = "TX-99".to_string();
     scheduler
-        .schedule(
-            MultiSigTransfer {
-                transfer_id: tx_id.clone(),
-                amount: 10.0,
-            },
-            uuid::Uuid::new_v4(),
-        )
+        .schedule(MultiSigTransfer {
+            transfer_id: tx_id.clone(),
+            amount: 10.0,
+        })
         .await?;
 
     let worker = Worker::new(storage, "bank-worker")

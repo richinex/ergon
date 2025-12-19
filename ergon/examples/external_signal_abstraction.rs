@@ -347,7 +347,7 @@ impl DocumentApprovalFlow {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("data/sig_abstraction.db").await?);
     let signal_source = Arc::new(SimulatedUserInputSource::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let doc1 = DocumentSubmission {
         document_id: "DOC-001".to_string(),
@@ -361,7 +361,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_1 = Uuid::new_v4();
-    let task_id_1 = scheduler.schedule(flow1, flow_id_1).await?;
+    let task_id_1 = scheduler.schedule_with(flow1, flow_id_1).await?;
 
     let doc2 = DocumentSubmission {
         document_id: "DOC-002".to_string(),
@@ -375,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_2 = Uuid::new_v4();
-    let task_id_2 = scheduler.schedule(flow2, flow_id_2).await?;
+    let task_id_2 = scheduler.schedule_with(flow2, flow_id_2).await?;
 
     let worker = Worker::new(storage.clone(), "document-processor");
     worker

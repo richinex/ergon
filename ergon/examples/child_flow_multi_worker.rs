@@ -324,7 +324,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("multi_worker.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     let order1 = OrderFulfillment {
         order_id: "ORD-001".to_string(),
@@ -340,8 +340,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         amount: 299.99,
     };
 
-    let task_id_1 = scheduler.schedule(order1, Uuid::new_v4()).await?;
-    let task_id_2 = scheduler.schedule(order2, Uuid::new_v4()).await?;
+    let task_id_1 = scheduler.schedule(order1).await?;
+    let task_id_2 = scheduler.schedule(order2).await?;
 
     let storage_clone = storage.clone();
     let worker1 = tokio::spawn(async move {

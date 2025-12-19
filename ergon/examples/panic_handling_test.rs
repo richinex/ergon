@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     EXECUTION_COUNT.store(0, Ordering::SeqCst);
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
     let worker =
         Worker::new(storage.clone(), "test-worker").with_poll_interval(Duration::from_millis(100));
 
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let flow_id_1 = Uuid::new_v4();
-    scheduler.schedule(flow1, flow_id_1).await?;
+    scheduler.schedule_with(flow1, flow_id_1).await?;
 
     // Wait for completion
     tokio::time::sleep(Duration::from_secs(1)).await;

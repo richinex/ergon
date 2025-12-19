@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Connected to Postgres\n");
 
     // Create scheduler (no worker!)
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     // Schedule the 3 flows
     println!("Scheduling flows...");
@@ -78,21 +78,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         content_id: "POST-SAFE".to_string(),
         text: "\x05".to_string(),
     };
-    scheduler.schedule(flow_safe, Uuid::new_v4()).await?;
+    scheduler.schedule_with(flow_safe, Uuid::new_v4()).await?;
     println!("  ✓ Scheduled POST-SAFE");
 
     let flow_toxic = ContentFlow {
         content_id: "POST-TOXIC".to_string(),
         text: "a".to_string(),
     };
-    scheduler.schedule(flow_toxic, Uuid::new_v4()).await?;
+    scheduler.schedule_with(flow_toxic, Uuid::new_v4()).await?;
     println!("  ✓ Scheduled POST-TOXIC");
 
     let flow_review = ContentFlow {
         content_id: "POST-AMBIGUOUS".to_string(),
         text: "Rust".to_string(),
     };
-    scheduler.schedule(flow_review, Uuid::new_v4()).await?;
+    scheduler.schedule_with(flow_review, Uuid::new_v4()).await?;
     println!("  ✓ Scheduled POST-AMBIGUOUS\n");
 
     // Simulate human interaction

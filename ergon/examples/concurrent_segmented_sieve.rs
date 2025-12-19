@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Setup In-Memory Execution Log (Fastest for Benchmarking)
     let storage = Arc::new(ergon::storage::InMemoryExecutionLog::default());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     // 2. Pre-calculate Base Primes (Sequential Step)
     // We need primes up to sqrt(10,000,000) ~= 3162
@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_primes: base_primes.clone(),
         };
 
-        scheduler.schedule(flow, uuid::Uuid::new_v4()).await?;
+        scheduler.schedule(flow).await?;
 
         low += SEGMENT_SIZE;
     }

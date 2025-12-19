@@ -77,12 +77,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     let worker_handle = worker.start().await;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
     let notify = storage.status_notify().clone();
 
     println!("=== Flow-based logic (✅ GOOD) ===");
     let task1 = scheduler
-        .schedule(FlowLogicExample { id: "FLOW".into() }, Uuid::new_v4())
+        .schedule(FlowLogicExample { id: "FLOW".into() })
         .await?;
     loop {
         if let Some(task) = storage.get_scheduled_flow(task1).await? {
@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Step-based logic (⚠️ CONFUSING) ===");
     let task2 = scheduler
-        .schedule(StepLogicExample { id: "STEP".into() }, Uuid::new_v4())
+        .schedule(StepLogicExample { id: "STEP".into() })
         .await?;
     loop {
         if let Some(task) = storage.get_scheduled_flow(task2).await? {

@@ -184,7 +184,8 @@ impl SqliteExecutionLog {
                 updated_at INTEGER NOT NULL,
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 error_message TEXT,
-                scheduled_for INTEGER
+                scheduled_for INTEGER,
+                version TEXT
             )",
         )
         .execute(&self.pool)
@@ -253,6 +254,7 @@ impl SqliteExecutionLog {
         let parent_flow_id: Option<String> = row.try_get("parent_flow_id").ok();
         let parent_flow_id = parent_flow_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
         let signal_token: Option<String> = row.try_get("signal_token").ok();
+        let version: Option<String> = row.try_get("version").ok();
 
         Ok(super::ScheduledFlow {
             task_id,
@@ -268,6 +270,7 @@ impl SqliteExecutionLog {
             scheduled_for,
             parent_flow_id,
             signal_token,
+            version,
         })
     }
 
@@ -589,8 +592,8 @@ impl ExecutionLog for SqliteExecutionLog {
         let flow_type = flow.flow_type.clone();
 
         sqlx::query(
-            "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at, retry_count, error_message, scheduled_for, parent_flow_id, signal_token)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO flow_queue (task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at, retry_count, error_message, scheduled_for, parent_flow_id, signal_token, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task_id.to_string())
         .bind(flow.flow_id.to_string())
@@ -605,6 +608,7 @@ impl ExecutionLog for SqliteExecutionLog {
         .bind(flow.scheduled_for.map(|dt| dt.timestamp_millis()))
         .bind(flow.parent_flow_id.map(|id| id.to_string()))
         .bind(flow.signal_token)
+        .bind(flow.version)
         .execute(&self.pool)
         .await?;
 
@@ -646,7 +650,7 @@ impl ExecutionLog for SqliteExecutionLog {
              )
              RETURNING task_id, flow_id, flow_type, flow_data, status, locked_by,
                        created_at, updated_at, retry_count, error_message,
-                       scheduled_for, parent_flow_id, signal_token",
+                       scheduled_for, parent_flow_id, signal_token, version",
         )
         .bind(worker_id)
         .bind(now)
@@ -742,7 +746,7 @@ impl ExecutionLog for SqliteExecutionLog {
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<super::ScheduledFlow>> {
         let flow = sqlx::query(
             "SELECT task_id, flow_id, flow_type, flow_data, status, locked_by, created_at, updated_at,
-                    retry_count, error_message, scheduled_for, parent_flow_id, signal_token
+                    retry_count, error_message, scheduled_for, parent_flow_id, signal_token, version
              FROM flow_queue
              WHERE task_id = ?",
         )
@@ -1252,6 +1256,7 @@ mod tests {
             scheduled_for: None,
             parent_flow_id: None,
             signal_token: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -1270,6 +1275,7 @@ mod tests {
             scheduled_for: None,
             parent_flow_id: None,
             signal_token: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -1288,6 +1294,7 @@ mod tests {
             scheduled_for: None,
             parent_flow_id: None,
             signal_token: None,
+            version: None,
         })
         .await
         .unwrap();

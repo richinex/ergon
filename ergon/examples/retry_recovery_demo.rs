@@ -231,15 +231,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
     // let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     let order = OrderProcessor {
         order_id: "ORD-67890".to_string(),
         amount: 499.99,
         customer_id: "CUST-002".to_string(),
     };
-    let flow_id = Uuid::new_v4();
-    scheduler.schedule(order.clone(), flow_id).await?;
+    scheduler
+        .schedule_with(order.clone(), Uuid::new_v4())
+        .await?;
 
     let storage_clone = storage.clone();
     let worker = tokio::spawn(async move {

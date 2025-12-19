@@ -50,6 +50,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use ergon::executor::Configured;
 use ergon::prelude::*;
 use ergon::InvocationStatus;
 
@@ -235,7 +236,7 @@ struct OrderStatus {
 #[derive(Clone, FlowType)]
 struct AppState {
     storage: Arc<SqliteExecutionLog>,
-    scheduler: Arc<Scheduler<SqliteExecutionLog>>,
+    scheduler: Arc<Scheduler<SqliteExecutionLog, Configured>>,
 }
 
 // ===== API Handlers =====
@@ -256,7 +257,7 @@ async fn submit_order(
     // Schedule the order flow for execution
     state
         .scheduler
-        .schedule(order, flow_id)
+        .schedule_with(order, flow_id)
         .await
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
@@ -343,7 +344,7 @@ async fn retry_order(
     // Schedule retry with the same flow_id
     state
         .scheduler
-        .schedule(order, flow_id)
+        .schedule_with(order, flow_id)
         .await
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
@@ -387,7 +388,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new(db_path).await?);
 
     // Setup flow scheduler
-    let scheduler = Arc::new(Scheduler::new(storage.clone()));
+    let scheduler = Arc::new(Scheduler::new(storage.clone()).unversioned());
 
     // Create application state
     let state = AppState {

@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
-use uuid::Uuid;
 
 // Signal completion to test
 static DONE_NOTIFIER: std::sync::LazyLock<Arc<Notify>> =
@@ -165,28 +164,28 @@ impl CreditApplication {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(ergon::storage::InMemoryExecutionLog::default());
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).unversioned();
 
     // --- Test 1: Good Credit ---
     let good_app = CreditApplication {
         application_id: "APP-001-GOOD".to_string(),
         credit_score: 700,
     };
-    scheduler.schedule(good_app, Uuid::new_v4()).await?;
+    scheduler.schedule(good_app).await?;
 
     // --- Test 2: Bad Credit ---
     let bad_app = CreditApplication {
         application_id: "APP-002-BAD".to_string(),
         credit_score: 500,
     };
-    scheduler.schedule(bad_app, Uuid::new_v4()).await?;
+    scheduler.schedule(bad_app).await?;
 
     // --- Test 3: Borderline
     let border_app = CreditApplication {
         application_id: "APP-003-BORDER".to_string(),
         credit_score: 600,
     };
-    scheduler.schedule(border_app, Uuid::new_v4()).await?;
+    scheduler.schedule(border_app).await?;
 
     let worker = Worker::new(storage, "loan-worker").with_poll_interval(Duration::from_millis(50));
 

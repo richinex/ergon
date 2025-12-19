@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("timer_recalc.db").await?);
     storage.reset().await?;
 
-    let scheduler = Scheduler::new(storage.clone());
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
     println!("\n=== Timer Recalculation Test (Multiple Workers) ===");
     println!("Starting 3 workers...\n");
@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "long-1".to_string(),
     };
     let long_flow_id = uuid::Uuid::new_v4();
-    let long_task_id = scheduler.schedule(long_flow, long_flow_id).await?;
+    let long_task_id = scheduler.schedule_with(long_flow, long_flow_id).await?;
 
     // Wait 1 second to ensure long timer is scheduled and worker is sleeping
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -129,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "short-1".to_string(),
     };
     let short_flow_id = uuid::Uuid::new_v4();
-    let short_task_id = scheduler.schedule(short_flow, short_flow_id).await?;
+    let short_task_id = scheduler.schedule_with(short_flow, short_flow_id).await?;
 
     println!(
         "[{}] Both timers scheduled. Worker should wake for short timer in ~2s, not 10s!\n",
