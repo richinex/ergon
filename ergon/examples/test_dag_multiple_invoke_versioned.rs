@@ -1,10 +1,4 @@
-//! Test: Sequential execution with multiple .invoke() calls and Flow Versioning
-//!
-//! This example demonstrates how versioning works across parent-child flow relationships:
-//! - Parent flow is scheduled with a version
-//! - Child flows (invoked via .invoke()) are scheduled independently
-//! - Each flow (parent and children) can have its own version
-//! - Useful for tracking which code version processed each flow in a hierarchy
+//! Test: Sequential execution with multiple .invoke() calls (versioned)
 //!
 //! Note: With atomic steps, .invoke() must be at flow level.
 //! This means we can't use dag! macro when child results are needed in steps.
@@ -163,24 +157,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);
     let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
-    println!("\n=== Flow Versioning with Child Invocations Demo ===\n");
-    println!("This example shows how versioning works when a parent flow invokes children:");
-    println!("  • Parent flow (Order) scheduled with version v1.0");
-    println!("  • Child flows (Payment, Shipment) are invoked by parent");
-    println!("  • Child flows inherit NO version from parent (they're independent)");
-    println!("  • Each flow can be tracked separately\n");
-
     let order = Order {
         id: "ORD-001".into(),
     };
 
-    // Schedule parent flow with version "v1.0"
     let parent_task_id = scheduler.schedule(order).await?;
-
-    println!(
-        "✓ Scheduled parent Order with version v1.0 (task_id: {})\n",
-        parent_task_id.to_string()[..8].to_uppercase()
-    );
 
     let worker =
         Worker::new(storage.clone(), "worker").with_poll_interval(Duration::from_millis(50));
@@ -189,65 +170,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.register(|f: Arc<PaymentFlow>| f.process()).await;
     worker.register(|f: Arc<ShipmentFlow>| f.create()).await;
 
-    println!("✓ Worker started\n");
-
     let handle = worker.start().await;
 
-    // Wait for parent and children to complete
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     handle.shutdown().await;
 
-    println!("\n=== Flow Version Analysis ===\n");
-
-    // Get parent flow info
     if let Some(parent_flow) = storage.get_scheduled_flow(parent_task_id).await? {
-        println!("Parent Flow (Order):");
         println!(
-            "  • Task ID: {}",
-            parent_task_id.to_string()[..8].to_uppercase()
-        );
-        println!("  • Flow Type: {}", parent_flow.flow_type);
-        println!(
-            "  • Version: {}",
+            "\nParent flow version: {}",
             parent_flow.version.as_deref().unwrap_or("unversioned")
         );
-        println!("  • Status: {:?}", parent_flow.status);
-        println!();
     }
 
-    // Find and display child flows
-    // Note: Child flows are created by the parent during execution
-    // They won't have versions unless explicitly set
-    println!("Child Flows:");
-    println!("  Note: Child flows invoked via .invoke() are created WITHOUT versions");
-    println!("  unless the parent explicitly schedules them with schedule_with_version().");
-    println!("  Currently, .invoke() uses the default schedule() method.\n");
-
-    // In production, you could:
-    // 1. Query all flows with parent_flow_id matching the parent
-    // 2. Track child flow versions separately
-    // 3. Use a convention where child versions inherit from parent
-
-    println!("=== Key Insights ===\n");
-    println!("1. Parent-Child Independence:");
-    println!("   • Child flows are separate tasks with their own task_ids");
-    println!("   • Children do NOT automatically inherit parent's version");
-    println!("   • This allows flexibility: parent v1.0 can invoke child v2.0\n");
-
-    println!("2. Version Tracking Strategy:");
-    println!("   • Option A: Version only parent flows, track children via parent_flow_id");
-    println!("   • Option B: Extend InvokeChild to support version parameter");
-    println!("   • Option C: Use flow_type as version (e.g., 'PaymentFlow.v2')\n");
-
-    println!("3. Current Behavior:");
-    println!("   • Parent scheduled with schedule_with_version() → has version");
-    println!("   • Children invoked with .invoke() → no version (uses default)");
-    println!("   • Query parent_flow_id to find all children of a versioned parent\n");
-
     storage.close().await?;
-
-    println!("✓ Example complete!\n");
 
     Ok(())
 }
