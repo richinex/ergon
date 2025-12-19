@@ -1,13 +1,15 @@
 use ergon::executor::{schedule_timer_named, ExecutionError, Worker};
 use ergon::prelude::*;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
-struct Test { id: String }
+struct Test {
+    id: String,
+}
 
 impl Test {
     #[step]
@@ -37,12 +39,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_handle = worker.start().await;
 
     let scheduler = Scheduler::new(storage.clone());
-    let task_id = scheduler.schedule(Test { id: "TEST".into() }, Uuid::new_v4()).await?;
+    let task_id = scheduler
+        .schedule(Test { id: "TEST".into() }, Uuid::new_v4())
+        .await?;
 
     let notify = storage.status_notify().clone();
     loop {
         if let Some(task) = storage.get_scheduled_flow(task_id).await? {
-            if matches!(task.status, ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed) {
+            if matches!(
+                task.status,
+                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
+            ) {
                 println!("\nFinal result status: {:?}", task.status);
                 break;
             }

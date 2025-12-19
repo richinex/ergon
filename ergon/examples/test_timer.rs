@@ -1,9 +1,8 @@
+use ergon::executor::{schedule_timer_named, ExecutionError, Scheduler, Worker};
 use ergon::prelude::*;
-use ergon::executor::{schedule_timer_named, Scheduler, Worker, ExecutionError};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use tracing_subscriber;
-use serde::{Deserialize, Serialize};
 
 // =============================================================================
 // Domain Types
@@ -48,7 +47,10 @@ impl TimerOrderFlow {
     /// Step 2: Wait for fraud check (2 second timer)
     #[step]
     async fn wait_fraud_check(self: Arc<Self>) -> Result<(), ExecutionError> {
-        println!("   [{}] Starting fraud check - waiting 2 seconds...", self.order_id);
+        println!(
+            "   [{}] Starting fraud check - waiting 2 seconds...",
+            self.order_id
+        );
         schedule_timer_named(Duration::from_secs(2), "fraud-check-delay").await?;
         Ok(())
     }
@@ -74,7 +76,10 @@ impl TimerOrderFlow {
     /// Step 5: Wait for payment processing (3 second timer)
     #[step]
     async fn wait_payment_processing(self: Arc<Self>) -> Result<(), ExecutionError> {
-        println!("   [{}] Initiating payment - waiting 3 seconds...", self.order_id);
+        println!(
+            "   [{}] Initiating payment - waiting 3 seconds...",
+            self.order_id
+        );
         schedule_timer_named(Duration::from_secs(3), "payment-processing").await?;
         Ok(())
     }
@@ -95,7 +100,10 @@ impl TimerOrderFlow {
     /// Step 7: Wait before shipping (1 second timer)
     #[step]
     async fn wait_shipping_prep(self: Arc<Self>) -> Result<(), ExecutionError> {
-        println!("   [{}] Preparing shipment - waiting 1 second...", self.order_id);
+        println!(
+            "   [{}] Preparing shipment - waiting 1 second...",
+            self.order_id
+        );
         schedule_timer_named(Duration::from_secs(1), "shipping-prep").await?;
         Ok(())
     }
@@ -105,7 +113,10 @@ impl TimerOrderFlow {
     async fn ship_order(self: Arc<Self>, payment: PaymentInfo) -> Result<String, ExecutionError> {
         println!("   [{}] Shipping order", self.order_id);
         sleep(Duration::from_millis(200)).await;
-        println!("   [{}] ✓ Order shipped (paid ${:.2})", self.order_id, payment.amount);
+        println!(
+            "   [{}] ✓ Order shipped (paid ${:.2})",
+            self.order_id, payment.amount
+        );
 
         // Generate tracking number deterministically from order_id
         use std::collections::hash_map::DefaultHasher;
@@ -119,7 +130,10 @@ impl TimerOrderFlow {
     /// Main flow with timer-based steps (sequential execution)
     #[flow]
     async fn process_with_timers(self: Arc<Self>) -> Result<OrderResult, ExecutionError> {
-        println!("\nORDER [{}] Starting timer-based processing", self.order_id);
+        println!(
+            "\nORDER [{}] Starting timer-based processing",
+            self.order_id
+        );
         let start = std::time::Instant::now();
 
         // Execute steps sequentially (timers work best with sequential flows)
@@ -172,7 +186,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_timers()
         .with_poll_interval(Duration::from_millis(500));
 
-    worker.register(|f: Arc<TimerOrderFlow>| f.process_with_timers()).await;
+    worker
+        .register(|f: Arc<TimerOrderFlow>| f.process_with_timers())
+        .await;
 
     let _handle = worker.start().await;
 
@@ -202,8 +218,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = Uuid::new_v4();
         let task_id = scheduler.schedule(order.clone(), id).await?;
         task_ids.push(task_id);
-        println!("   Scheduled: {} (${}) - flow_id: {}",
-                 order.order_id, order.amount, id);
+        println!(
+            "   Scheduled: {} (${}) - flow_id: {}",
+            order.order_id, order.amount, id
+        );
         sleep(Duration::from_millis(200)).await;
     }
 
@@ -220,7 +238,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut all_complete = true;
             for &task_id in &task_ids {
                 if let Some(scheduled) = storage.get_scheduled_flow(task_id).await? {
-                    if !matches!(scheduled.status, ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed) {
+                    if !matches!(
+                        scheduled.status,
+                        ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
+                    ) {
                         all_complete = false;
                         break;
                     }

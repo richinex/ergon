@@ -93,8 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create worker with timer processing enabled and VERY frequent polling (10ms)
     // This makes the race condition MORE likely to occur
-    let worker = Worker::new(storage.clone(), "timer-race-worker-redis")
-        .with_timers()
+    let worker = Worker::new(storage.clone(), "timer-race-worker-redis").with_timers();
 
     // Register the flow type with the worker
     worker

@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
-struct BadExample { id: String }
+struct BadExample {
+    id: String,
+}
 
 impl BadExample {
     // ❌ ANTI-PATTERN: Logic after suspension
@@ -18,7 +20,7 @@ impl BadExample {
         println!("After timer - YOU WILL NEVER SEE THIS!");
         let result = format!("Processed {}", self.id);
 
-        Ok(result)  // This return value is ignored!
+        Ok(result) // This return value is ignored!
     }
 
     #[flow]
@@ -28,7 +30,9 @@ impl BadExample {
 }
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
-struct GoodExample { id: String }
+struct GoodExample {
+    id: String,
+}
 
 impl GoodExample {
     // ✅ GOOD PATTERN: Suspension at end of step
@@ -36,7 +40,7 @@ impl GoodExample {
     async fn wait_step(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("Before timer");
         schedule_timer_named(Duration::from_secs(1), "wait").await?;
-        Ok(())  // Suspension is the LAST thing
+        Ok(()) // Suspension is the LAST thing
     }
 
     #[step]
@@ -65,12 +69,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = Scheduler::new(storage.clone());
 
     println!("\n=== BAD PATTERN (logic after suspension) ===");
-    let bad_id = scheduler.schedule(BadExample { id: "BAD".into() }, Uuid::new_v4()).await?;
+    let bad_id = scheduler
+        .schedule(BadExample { id: "BAD".into() }, Uuid::new_v4())
+        .await?;
 
     let notify = storage.status_notify().clone();
     loop {
         if let Some(task) = storage.get_scheduled_flow(bad_id).await? {
-            if matches!(task.status, ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed) {
+            if matches!(
+                task.status,
+                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
+            ) {
                 break;
             }
         }
@@ -78,11 +87,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== GOOD PATTERN (separate steps) ===");
-    let good_id = scheduler.schedule(GoodExample { id: "GOOD".into() }, Uuid::new_v4()).await?;
+    let good_id = scheduler
+        .schedule(GoodExample { id: "GOOD".into() }, Uuid::new_v4())
+        .await?;
 
     loop {
         if let Some(task) = storage.get_scheduled_flow(good_id).await? {
-            if matches!(task.status, ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed) {
+            if matches!(
+                task.status,
+                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
+            ) {
                 break;
             }
         }

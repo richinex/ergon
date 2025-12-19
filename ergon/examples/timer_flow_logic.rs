@@ -1,13 +1,15 @@
 use ergon::executor::{schedule_timer_named, ExecutionError, Worker};
 use ergon::prelude::*;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 static LOGIC_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
-struct FlowLogicExample { id: String }
+struct FlowLogicExample {
+    id: String,
+}
 
 impl FlowLogicExample {
     // ✅ Step only handles suspension - no business logic!
@@ -36,7 +38,9 @@ impl FlowLogicExample {
 
 // Compare with step-based logic
 #[derive(Clone, Serialize, Deserialize, FlowType)]
-struct StepLogicExample { id: String }
+struct StepLogicExample {
+    id: String,
+}
 
 static STEP_LOGIC_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -65,18 +69,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.reset().await?;
 
     let worker = Worker::new(storage.clone(), "worker").with_timers();
-    worker.register(|f: Arc<FlowLogicExample>| f.process()).await;
-    worker.register(|f: Arc<StepLogicExample>| f.process()).await;
+    worker
+        .register(|f: Arc<FlowLogicExample>| f.process())
+        .await;
+    worker
+        .register(|f: Arc<StepLogicExample>| f.process())
+        .await;
     let worker_handle = worker.start().await;
 
     let scheduler = Scheduler::new(storage.clone());
     let notify = storage.status_notify().clone();
 
     println!("=== Flow-based logic (✅ GOOD) ===");
-    let task1 = scheduler.schedule(FlowLogicExample { id: "FLOW".into() }, Uuid::new_v4()).await?;
+    let task1 = scheduler
+        .schedule(FlowLogicExample { id: "FLOW".into() }, Uuid::new_v4())
+        .await?;
     loop {
         if let Some(task) = storage.get_scheduled_flow(task1).await? {
-            if matches!(task.status, ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed) {
+            if matches!(
+                task.status,
+                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
+            ) {
                 break;
             }
         }
@@ -84,10 +97,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== Step-based logic (⚠️ CONFUSING) ===");
-    let task2 = scheduler.schedule(StepLogicExample { id: "STEP".into() }, Uuid::new_v4()).await?;
+    let task2 = scheduler
+        .schedule(StepLogicExample { id: "STEP".into() }, Uuid::new_v4())
+        .await?;
     loop {
         if let Some(task) = storage.get_scheduled_flow(task2).await? {
-            if matches!(task.status, ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed) {
+            if matches!(
+                task.status,
+                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
+            ) {
                 break;
             }
         }
@@ -95,8 +113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== Results ===");
-    println!("Flow logic executed {} times (expected: 1)", LOGIC_COUNTER.load(Ordering::SeqCst));
-    println!("Step logic executed {} times (expected: 1, actual: may be > 1 due to replay)", STEP_LOGIC_COUNTER.load(Ordering::SeqCst));
+    println!(
+        "Flow logic executed {} times (expected: 1)",
+        LOGIC_COUNTER.load(Ordering::SeqCst)
+    );
+    println!(
+        "Step logic executed {} times (expected: 1, actual: may be > 1 due to replay)",
+        STEP_LOGIC_COUNTER.load(Ordering::SeqCst)
+    );
 
     worker_handle.shutdown().await;
     Ok(())

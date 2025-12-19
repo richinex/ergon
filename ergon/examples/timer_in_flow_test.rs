@@ -1,7 +1,7 @@
 use ergon::executor::{schedule_timer_named, ExecutionError, Worker};
 use ergon::prelude::*;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 static LOGIC_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -66,7 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notify.notified().await;
     }
 
-    println!("\nLogic step executed {} times (expected: 1)", LOGIC_COUNTER.load(Ordering::SeqCst));
+    println!(
+        "\nLogic step executed {} times (expected: 1)",
+        LOGIC_COUNTER.load(Ordering::SeqCst)
+    );
 
     worker_handle.shutdown().await;
     Ok(())
