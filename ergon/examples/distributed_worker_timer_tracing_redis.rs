@@ -235,7 +235,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start worker 1 with BOTH timer processing AND structured tracing
     let worker1 = Worker::new(storage.clone(), "worker-1")
         .with_timers() // Enable timer processing
-        .with_timer_interval(Duration::from_millis(100))
         .with_structured_tracing() // ← Enable structured spans
         .with_poll_interval(Duration::from_millis(110));
 
@@ -250,7 +249,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start worker 2 with BOTH timer processing AND structured tracing
     let worker2 = Worker::new(storage.clone(), "worker-2")
         .with_timers()
-        .with_timer_interval(Duration::from_millis(100))
         .with_structured_tracing() // ← Enable structured spans
         .with_poll_interval(Duration::from_millis(110));
 

@@ -218,7 +218,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start worker with timer processing (event-driven)
     let worker = Worker::new(storage.clone(), "dag-timer-worker")
         .with_timers()
-        .with_timer_interval(Duration::from_millis(100))
         .with_poll_interval(Duration::from_millis(100));
 
     // Register the flow handler

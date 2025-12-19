@@ -191,7 +191,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start worker 1 with timer processing enabled
     let worker1 = Worker::new(storage.clone(), "worker-1")
         .with_timers() // Enable timer processing
-        .with_timer_interval(Duration::from_millis(100)) // Check timers frequently
         .with_poll_interval(Duration::from_millis(90)); // Slightly faster polling
 
     worker1
@@ -205,7 +204,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start worker 2 with timer processing enabled (staggered poll interval)
     let worker2 = Worker::new(storage.clone(), "worker-2")
         .with_timers()
-        .with_timer_interval(Duration::from_millis(100))
         .with_poll_interval(Duration::from_millis(110)); // Slightly slower to stagger
 
     worker2

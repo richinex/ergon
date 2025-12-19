@@ -589,7 +589,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let worker = Worker::new(storage.clone(), "loan-worker")
         .with_timers()
-        .with_timer_interval(Duration::from_millis(100))
         .with_poll_interval(Duration::from_millis(100));
 
     worker

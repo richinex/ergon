@@ -136,7 +136,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let worker = Worker::new(storage.clone(), "test-worker")
         .with_timers()
-        .with_timer_interval(Duration::from_millis(50))
         .with_poll_interval(Duration::from_millis(50));
 
     worker.register(|flow: Arc<ParentTask>| flow.run()).await;
