@@ -118,7 +118,7 @@ pub struct Configured;
 /// # use std::sync::Arc;
 /// # use uuid::Uuid;
 /// #
-/// # #[derive(Serialize, Deserialize, FlowType)]
+/// # #[derive(Clone, Serialize, Deserialize, FlowType)]
 /// # struct Payment { amount: f64 }
 /// #
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -200,11 +200,11 @@ impl<S: ExecutionLog> Scheduler<S, Unconfigured> {
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let storage = Arc::new(SqliteExecutionLog::new("flows.db").await?);
     /// // Use package version from Cargo.toml
-    /// let scheduler = Scheduler::new(storage)
+    /// let scheduler = Scheduler::new(storage.clone())
     ///     .with_version(env!("CARGO_PKG_VERSION"));
     ///
     /// // Or a custom deployment tag
-    /// let scheduler = Scheduler::new(storage)
+    /// let scheduler = Scheduler::new(storage.clone())
     ///     .with_version("production-2024-01");
     /// # Ok(())
     /// # }
