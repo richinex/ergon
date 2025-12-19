@@ -483,6 +483,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_from_env_with_version() {
+        // Clean up at start in case previous test left it set
+        std::env::remove_var("DEPLOY_VERSION");
         std::env::set_var("DEPLOY_VERSION", "v2.0");
 
         let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
@@ -495,13 +497,16 @@ mod tests {
         let task_id = scheduler.schedule(flow).await.unwrap();
 
         let scheduled = storage.get_scheduled_flow(task_id).await.unwrap();
-        assert_eq!(scheduled.unwrap().version.as_deref(), Some("v2.0"));
+        let version = scheduled.as_ref().unwrap().version.clone();
 
         std::env::remove_var("DEPLOY_VERSION");
+
+        assert_eq!(version.as_deref(), Some("v2.0"));
     }
 
     #[tokio::test]
     async fn test_from_env_without_version() {
+        // Clean up any env var from other tests
         std::env::remove_var("DEPLOY_VERSION");
 
         let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
@@ -514,6 +519,11 @@ mod tests {
         let task_id = scheduler.schedule(flow).await.unwrap();
 
         let scheduled = storage.get_scheduled_flow(task_id).await.unwrap();
-        assert_eq!(scheduled.unwrap().version, None);
+        let version = scheduled.as_ref().unwrap().version.clone();
+
+        // Make sure to clean up before assertion
+        std::env::remove_var("DEPLOY_VERSION");
+
+        assert_eq!(version, None);
     }
 }

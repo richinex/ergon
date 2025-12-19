@@ -112,7 +112,7 @@ impl ScheduledFlow {
     ) -> Self {
         let now = Utc::now();
         Self {
-            task_id: Uuid::new_v4(),
+            task_id: flow_id,
             flow_id,
             flow_type,
             flow_data,
