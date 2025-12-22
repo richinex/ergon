@@ -298,6 +298,9 @@ impl ExecutionLog for InMemoryExecutionLog {
             .send(task_id)
             .map_err(|_| StorageError::Connection("pending channel closed".to_string()))?;
 
+        // Wake up one waiting worker
+        self.work_notify.notify_one();
+
         Ok(task_id)
     }
 
@@ -652,14 +655,6 @@ impl ExecutionLog for InMemoryExecutionLog {
         }
 
         Ok(false)
-    }
-
-    fn work_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.work_notify)
-    }
-
-    fn timer_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.timer_notify)
     }
 }
 

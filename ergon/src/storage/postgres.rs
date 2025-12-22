@@ -1099,14 +1099,6 @@ impl ExecutionLog for PostgresExecutionLog {
         Ok(true)
     }
 
-    fn work_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.work_notify)
-    }
-
-    fn timer_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.timer_notify)
-    }
-
     async fn ping(&self) -> Result<()> {
         sqlx::query("SELECT 1")
             .execute(&self.pool)

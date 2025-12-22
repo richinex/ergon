@@ -9,7 +9,7 @@
 
 use crate::core::{deserialize_value, FlowType};
 use crate::executor::ExecutionError;
-use crate::storage::ExecutionLog;
+use crate::storage::{ExecutionLog, TimerNotificationSource, WorkNotificationSource};
 use crate::Executor;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -430,7 +430,7 @@ impl<S: ExecutionLog + 'static> Default for Registry<S> {
 /// # }
 /// ```
 pub struct Worker<
-    S: ExecutionLog + 'static,
+    S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static,
     T = WithoutTimers,
     Sig = WithoutSignals,
     Tr = WithoutStructuredTracing,
@@ -448,7 +448,7 @@ pub struct Worker<
     work_notify: Arc<tokio::sync::Notify>,
 }
 
-impl<S: ExecutionLog + 'static, Sig, Tr> Worker<S, WithoutTimers, Sig, Tr> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, Sig, Tr> Worker<S, WithoutTimers, Sig, Tr> {
     /// Enables timer processing for this worker.
     ///
     /// Returns a worker in the `WithTimers` state, which allows configuring
@@ -481,7 +481,7 @@ impl<S: ExecutionLog + 'static, Sig, Tr> Worker<S, WithoutTimers, Sig, Tr> {
     }
 }
 
-impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutSignals, WithoutStructuredTracing> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static> Worker<S, WithoutTimers, WithoutSignals, WithoutStructuredTracing> {
     /// Creates a new flow worker without timer processing, signal processing, or structured tracing.
     ///
     /// This is the default state providing zero-cost abstraction.
@@ -504,11 +504,8 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutSignals, Without
     /// # }
     /// ```
     pub fn new(storage: Arc<S>, worker_id: impl Into<String>) -> Self {
-        // Get the work notify from storage, or create a new one as fallback
-        let work_notify = storage
-            .work_notify()
-            .cloned()
-            .unwrap_or_else(|| Arc::new(tokio::sync::Notify::new()));
+        // Get the work notify from storage (guaranteed by WorkNotificationSource trait)
+        let work_notify = storage.work_notify().clone();
 
         Self {
             storage,
@@ -524,7 +521,7 @@ impl<S: ExecutionLog + 'static> Worker<S, WithoutTimers, WithoutSignals, Without
     }
 }
 
-impl<S: ExecutionLog + 'static, Sig, Tr> Worker<S, WithTimers, Sig, Tr> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, Sig, Tr> Worker<S, WithTimers, Sig, Tr> {
     /// Sets the interval for checking expired timers.
     ///
     /// Only available when timer processing is enabled.
@@ -546,7 +543,7 @@ impl<S: ExecutionLog + 'static, Sig, Tr> Worker<S, WithTimers, Sig, Tr> {
 }
 
 // Methods for enabling signals
-impl<S: ExecutionLog + 'static, T, Tr> Worker<S, T, WithoutSignals, Tr> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Tr> Worker<S, T, WithoutSignals, Tr> {
     /// Enables signal processing for this worker.
     ///
     /// Returns a worker in the `WithSignals<Src>` state, which will automatically
@@ -580,7 +577,7 @@ impl<S: ExecutionLog + 'static, T, Tr> Worker<S, T, WithoutSignals, Tr> {
     }
 }
 
-impl<S: ExecutionLog + 'static, T, Src, Tr> Worker<S, T, WithSignals<Src>, Tr>
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Src, Tr> Worker<S, T, WithSignals<Src>, Tr>
 where
     Src: crate::executor::SignalSource + 'static,
 {
@@ -603,7 +600,7 @@ where
 }
 
 // State transition methods for tracing
-impl<S: ExecutionLog + 'static, T, Sig> Worker<S, T, Sig, WithoutStructuredTracing> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Sig> Worker<S, T, Sig, WithoutStructuredTracing> {
     /// Enables structured tracing for this worker.
     ///
     /// Returns a worker in the `WithStructuredTracing` state, which creates
@@ -639,7 +636,7 @@ impl<S: ExecutionLog + 'static, T, Sig> Worker<S, T, Sig, WithoutStructuredTraci
 
 // Methods available for all timer, signal, and tracing state combinations
 impl<
-        S: ExecutionLog + 'static,
+        S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static,
         T: TimerProcessing + 'static,
         Sig: SignalProcessing + 'static,
         Tr: TracingBehavior + 'static,
@@ -674,22 +671,23 @@ impl<
     ///
     /// ```rust
     /// use ergon::prelude::*;
+    /// use ergon::storage::{WorkNotificationSource, TimerNotificationSource};
     /// use std::time::Duration;
     /// use std::sync::Arc;
     ///
     /// // Aggressive checking (100ms fallback)
-    /// # async fn example1(storage: Arc<impl ExecutionLog + 'static>) {
+    /// # async fn example1(storage: Arc<impl ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static>) {
     /// let worker = Worker::new(storage, "worker-1")
     ///     .with_poll_interval(Duration::from_millis(100));
     /// # }
     ///
     /// // Default (1s fallback)
-    /// # async fn example2(storage: Arc<impl ExecutionLog + 'static>) {
+    /// # async fn example2(storage: Arc<impl ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static>) {
     /// let worker = Worker::new(storage, "worker-2");  // Uses 1s default
     /// # }
     ///
     /// // Conservative (5s fallback)
-    /// # async fn example3(storage: Arc<impl ExecutionLog + 'static>) {
+    /// # async fn example3(storage: Arc<impl ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static>) {
     /// let worker = Worker::new(storage, "worker-3")
     ///     .with_poll_interval(Duration::from_secs(5));
     /// # }
@@ -870,7 +868,7 @@ impl<
 
             // Event-driven timer processing: track next wake time and get timer_notify
             let mut next_timer_wake: Option<tokio::time::Instant> = None;
-            let timer_notify = self.storage.timer_notify().cloned();
+            let timer_notify = self.storage.timer_notify().clone();
 
             loop {
                 // Create worker loop span
@@ -887,15 +885,8 @@ impl<
                     }
                 };
 
-                // Create timer notification future
-                let timer_notified = async {
-                    if let Some(ref notify) = timer_notify {
-                        notify.notified().await;
-                    } else {
-                        // No notifications available - sleep forever
-                        std::future::pending::<()>().await;
-                    }
-                };
+                // Create timer notification future (event-driven timer wake-up)
+                let timer_notified = timer_notify.notified();
 
                 tokio::select! {
                     biased;

@@ -1889,14 +1889,6 @@ impl ExecutionLog for RedisExecutionLog {
         Ok(total_claimed)
     }
 
-    fn work_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.work_notify)
-    }
-
-    fn timer_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.timer_notify)
-    }
-
     async fn ping(&self) -> Result<()> {
         let mut conn = self
             .pool

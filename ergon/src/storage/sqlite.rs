@@ -1130,14 +1130,6 @@ impl ExecutionLog for SqliteExecutionLog {
 
         Ok(true)
     }
-
-    fn work_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.work_notify)
-    }
-
-    fn timer_notify(&self) -> Option<&Arc<Notify>> {
-        Some(&self.timer_notify)
-    }
 }
 
 // Implement notification source traits for type-safe access

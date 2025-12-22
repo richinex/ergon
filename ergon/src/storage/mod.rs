@@ -360,29 +360,6 @@ pub trait ExecutionLog: Send + Sync {
         ))
     }
 
-    /// Returns a reference to the work notification handle.
-    ///
-    /// Workers should use this notify to wait for work instead of sleeping.
-    /// The storage backend signals this notify when new work becomes available.
-    ///
-    /// # Default Implementation
-    ///
-    /// Returns `None` by default for storage backends that don't support notifications.
-    fn work_notify(&self) -> Option<&Arc<tokio::sync::Notify>> {
-        None
-    }
-
-    /// Returns a reference to the timer notification handle.
-    ///
-    /// Workers can use this to wait for timer events (new timer scheduled, timer claimed/fired)
-    /// instead of polling. This enables event-driven timer processing.
-    ///
-    /// # Default Implementation
-    ///
-    /// Returns `None` by default for storage backends that don't support notifications.
-    fn timer_notify(&self) -> Option<&Arc<tokio::sync::Notify>> {
-        None
-    }
 
     // ===== Suspension Result Operations =====
     // These methods support storing results for asynchronously resuming steps (signals AND timers).
