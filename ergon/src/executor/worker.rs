@@ -645,7 +645,54 @@ impl<
         Tr: TracingBehavior + 'static,
     > Worker<S, T, Sig, Tr>
 {
-    /// Sets the poll interval for checking the queue.
+    /// Sets the notification timeout (fallback poll interval).
+    ///
+    /// # Event-Driven Architecture with Safety Fallback
+    ///
+    /// Workers use a **hybrid push/pull approach**:
+    ///
+    /// - **Primary (Push):** Workers wake immediately when notified of new work via
+    ///   event-driven notifications. This provides instant response with zero polling overhead.
+    ///
+    /// - **Fallback (Pull):** If notifications are missed (race conditions, bugs, etc.),
+    ///   this timeout ensures the worker will check for work anyway by polling the database.
+    ///   A small jitter (1-5ms) is automatically added to prevent thundering herd issues
+    ///   when multiple workers wake simultaneously.
+    ///
+    /// # Choosing the Right Interval
+    ///
+    /// - **Default (1s):** Good balance for most workloads - instant wakeup when notified,
+    ///   1-second recovery if notifications fail.
+    ///
+    /// - **Latency-sensitive (100ms-500ms):** For real-time systems where even fallback
+    ///   latency matters. Uses more CPU during notification failures.
+    ///
+    /// - **Resource-constrained (5s-10s):** For low-priority background workers where
+    ///   fallback latency is acceptable. Saves CPU and database load.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use ergon::prelude::*;
+    /// use std::time::Duration;
+    ///
+    /// // Aggressive checking (100ms fallback)
+    /// # async fn example1(storage: impl ExecutionLog) {
+    /// let worker = Worker::new(storage, "worker-1")
+    ///     .with_poll_interval(Duration::from_millis(100));
+    /// # }
+    ///
+    /// // Default (1s fallback)
+    /// # async fn example2(storage: impl ExecutionLog) {
+    /// let worker = Worker::new(storage, "worker-2");  // Uses 1s default
+    /// # }
+    ///
+    /// // Conservative (5s fallback)
+    /// # async fn example3(storage: impl ExecutionLog) {
+    /// let worker = Worker::new(storage, "worker-3")
+    ///     .with_poll_interval(Duration::from_secs(5));
+    /// # }
+    /// ```
     ///
     /// Default is 1 second.
     pub fn with_poll_interval(mut self, interval: Duration) -> Self {
@@ -760,6 +807,16 @@ impl<
             let dequeue_notify = self.work_notify.clone();
             let dequeue_semaphore = self.max_concurrent_flows.clone();
 
+            // Add jitter to poll interval to avoid thundering herd
+            // (all workers waking simultaneously and hammering the database)
+            let worker_hash = self
+                .worker_id
+                .as_bytes()
+                .iter()
+                .fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
+            let jitter_ms = 1 + (worker_hash % 5);
+            let dequeue_poll_interval = self.poll_interval + Duration::from_millis(jitter_ms);
+
             tokio::spawn(async move {
                 loop {
                     // 1. ACQUIRE PERMIT BEFORE DB (Blocking safe here)
@@ -798,8 +855,10 @@ impl<
                             }
 
                             if !got_task {
+                                // Wait for notification with configurable timeout
+                                // This provides event-driven wakeup (fast path) with polling fallback (safety)
                                 let _notified = tokio::time::timeout(
-                                    Duration::from_millis(1000),
+                                    dequeue_poll_interval,
                                     dequeue_notify.notified()
                                 ).await;
                             }
@@ -1002,18 +1061,12 @@ impl<
                             }
                             Ok(None) => {
                                 drop(permit); // <--- Explicit drop
-                                let worker_hash = self.worker_id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
-                                let jitter_ms = 1 + (worker_hash % 5);
-                                let sleep_duration = self.poll_interval + Duration::from_millis(jitter_ms);
-                                tokio::time::sleep(sleep_duration).await;
+                                // Dequeue task will wait on notification, no sleep needed here!
                             }
                             Err(e) => {
                                 drop(permit); // <--- Explicit drop
                                 warn!("Worker {} failed to dequeue: {}", self.worker_id, e);
-                                let worker_hash = self.worker_id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
-                                let jitter_ms = 1 + (worker_hash % 5);
-                                let sleep_duration = self.poll_interval + Duration::from_millis(jitter_ms);
-                                tokio::time::sleep(sleep_duration).await;
+                                // Dequeue task will wait on notification, no sleep needed here!
                             }
                         } // End match result
                     } // End recv() branch

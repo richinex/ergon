@@ -14,6 +14,7 @@ Ergon enables you to write reliable, fault-tolerant workflows that survive proce
 - **Automatic retry** - Smart retry with exponential backoff
 - **Step caching** - Deterministic replay using cached results
 - **DAG parallelization** - Automatic parallel execution of independent steps
+- **Flow versioning** - Type-safe deployment versioning with compile-time checks
 - **External signals** - Human-in-the-loop and external event coordination
 - **Durable timers** - Long-running timers that survive crashes
 - **Distributed workers** - Scale horizontally with multiple worker processes
@@ -24,7 +25,7 @@ Ergon enables you to write reliable, fault-tolerant workflows that survive proce
 
 ## Features
 
-### 🔄 Durable Execution
+### Durable Execution
 
 ```rust
 use ergon::prelude::*;
@@ -41,7 +42,7 @@ async fn process_order(self: Arc<Self>) -> Result<Receipt, ExecutionError> {
 }
 ```
 
-### 📊 DAG-Based Parallelization
+### DAG-Based Parallelization
 
 ```rust
 #[flow]
@@ -66,7 +67,7 @@ async fn parallel_processing(self: Arc<Self>) -> Result<Summary, ExecutionError>
 ![DAG Execution](https://via.placeholder.com/800x300/34495e/ffffff?text=DAG+Parallel+Execution+Flow)
 *Visual representation of parallel step execution in a DAG*
 
-### 🔁 Smart Retry with Custom Errors
+### Smart Retry with Custom Errors
 
 ```rust
 use ergon::Retryable;
@@ -90,7 +91,7 @@ async fn charge_card(self: Arc<Self>) -> Result<Receipt, PaymentError> {
 }
 ```
 
-### 📡 External Signals & Human-in-the-Loop
+### External Signals & Human-in-the-Loop
 
 ```rust
 #[step]
@@ -107,7 +108,7 @@ async fn await_manager_approval(
 ![Signal Flow](https://via.placeholder.com/800x300/27ae60/ffffff?text=External+Signal+Coordination)
 *Signal-based workflow coordination with external systems*
 
-### ⏱️ Durable Timers
+### Durable Timers
 
 ```rust
 #[step]
@@ -118,15 +119,32 @@ async fn wait_for_settlement(self: Arc<Self>) -> Result<(), ExecutionError> {
 }
 ```
 
+### 🔄 Flow Versioning
+
+```rust
+// Configure scheduler with deployment version
+let scheduler = Scheduler::new(storage)
+    .with_version(env!("CARGO_PKG_VERSION"));  // Type-safe at compile time
+
+// All flows get this version automatically
+scheduler.schedule(order_flow).await?;
+
+// Alternative: Read from environment
+let scheduler = Scheduler::new(storage).from_env();  // DEPLOY_VERSION=v1.2.3
+
+// Or explicitly unversioned
+let scheduler = Scheduler::new(storage).unversioned();
+```
+
 ### 👥 Distributed Workers
 
 ```rust
 // Spawn multiple workers that share the queue
-let worker1 = Worker::new("worker-1", storage.clone())
+let worker1 = Worker::new(storage.clone(), "worker-1")
     .with_signals(signal_source.clone())
     .spawn();
 
-let worker2 = Worker::new("worker-2", storage.clone())
+let worker2 = Worker::new(storage.clone(), "worker-2")
     .with_signals(signal_source.clone())
     .spawn();
 ```
@@ -225,13 +243,14 @@ Ergon follows Parnas's information hiding principles:
 - **`core`**: Foundation types and traits (serialization, retry policies)
 - **`storage`**: Persistence layer (SQLite, Redis, in-memory)
 - **`graph`**: DAG structures for parallel execution
-- **`executor`**: Execution engine (worker loop, error handling)
+- **`executor`**: Execution engine (scheduler, workers, error handling)
 
 ```rust
-use ergon::prelude::*;           // Common types and macros
-use ergon::core::RetryPolicy;    // Retry configuration
-use ergon::executor::Worker;     // Distributed workers
-use ergon::storage::ExecutionLog;// Storage abstraction
+use ergon::prelude::*;            // Common types and macros
+use ergon::core::RetryPolicy;     // Retry configuration
+use ergon::executor::Scheduler;   // Flow scheduling with versioning
+use ergon::executor::Worker;      // Distributed workers
+use ergon::storage::ExecutionLog; // Storage abstraction
 ```
 
 ## Usage Patterns
@@ -281,18 +300,22 @@ async fn process_items(self: Arc<Self>) -> Result<Vec<String>, String> {
 ### Pattern 4: Distributed Workers
 
 ```rust
+// Create scheduler (configure once at startup)
+let scheduler = Scheduler::new(storage.clone())
+    .with_version(env!("CARGO_PKG_VERSION"));  // or .unversioned()
+
 // Start multiple workers
 let mut handles = vec![];
 
 for i in 0..4 {
-    let worker = Worker::new(format!("worker-{}", i), storage.clone())
+    let worker = Worker::new(storage.clone(), format!("worker-{}", i))
         .with_signals(signals.clone())
         .with_timers()
         .spawn();
     handles.push(worker);
 }
 
-// Schedule flows
+// Schedule flows (version applied automatically)
 scheduler.schedule(flow1).await?;
 scheduler.schedule(flow2).await?;
 
