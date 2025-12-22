@@ -1,4 +1,7 @@
-use super::{error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog};
+use super::{
+    error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog,
+    TimerNotificationSource, WorkNotificationSource,
+};
 use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -52,8 +55,8 @@ impl Default for PoolConfig {
 /// natively async without `spawn_blocking` overhead.
 pub struct SqliteExecutionLog {
     pool: SqlitePool,
-    /// Optional notify handle for waking workers when work becomes available
-    work_notify: Option<Arc<Notify>>,
+    /// Notify handle for waking workers when work becomes available
+    work_notify: Arc<Notify>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
     /// Notification mechanism for timer changes (new timer scheduled, timer fired)
@@ -85,7 +88,7 @@ impl SqliteExecutionLog {
 
         let log = Self {
             pool,
-            work_notify: Some(Arc::new(Notify::new())),
+            work_notify: Arc::new(Notify::new()),
             status_notify: Arc::new(Notify::new()),
             timer_notify: Arc::new(Notify::new()),
         };
@@ -619,9 +622,7 @@ impl ExecutionLog for SqliteExecutionLog {
 
         // Wake up one waiting worker if this is an immediate (non-delayed) flow
         if flow.scheduled_for.is_none() {
-            if let Some(ref notify) = self.work_notify {
-                notify.notify_one();
-            }
+            self.work_notify.notify_one();
         }
 
         Ok(task_id)
@@ -1125,19 +1126,30 @@ impl ExecutionLog for SqliteExecutionLog {
         debug!("Resumed flow: flow_id={}", flow_id);
 
         // Wake up one waiting worker since we just made a flow available
-        if let Some(ref notify) = self.work_notify {
-            notify.notify_one();
-        }
+        self.work_notify.notify_one();
 
         Ok(true)
     }
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {
-        self.work_notify.as_ref()
+        Some(&self.work_notify)
     }
 
     fn timer_notify(&self) -> Option<&Arc<Notify>> {
         Some(&self.timer_notify)
+    }
+}
+
+// Implement notification source traits for type-safe access
+impl WorkNotificationSource for SqliteExecutionLog {
+    fn work_notify(&self) -> &Arc<Notify> {
+        &self.work_notify
+    }
+}
+
+impl TimerNotificationSource for SqliteExecutionLog {
+    fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }
 

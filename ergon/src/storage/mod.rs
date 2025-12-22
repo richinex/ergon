@@ -45,6 +45,10 @@ pub use memory::InMemoryExecutionLog;
 pub use params::InvocationStartParams;
 pub use queue::{ScheduledFlow, TaskStatus};
 
+// Re-export traits (defined below in this file)
+// Note: These are not in the `use` statements above because they're defined later in this file
+// pub use {TimerNotificationSource, WorkNotificationSource}; // Will be available after traits are defined
+
 #[cfg(feature = "sqlite")]
 pub use sqlite::{PoolConfig, SqliteExecutionLog};
 
@@ -617,6 +621,88 @@ pub trait ExecutionLog: Send + Sync {
     async fn ping(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Trait for storage backends that support event-driven work notifications.
+///
+/// This trait enables storage backends to notify workers immediately when new
+/// work becomes available, providing sub-millisecond latency instead of polling.
+///
+/// # When to Implement
+///
+/// Implement this trait if your storage backend can efficiently notify waiting
+/// workers when flows are enqueued (via `enqueue_flow` or `schedule_flow`).
+///
+/// # Contract
+///
+/// Implementations must call `notify.notify_waiters()` whenever new work becomes
+/// available in the queue. This wakes all waiting workers to compete for the work.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl WorkNotificationSource for MyStorage {
+///     fn work_notify(&self) -> &Arc<Notify> {
+///         &self.work_notify
+///     }
+/// }
+///
+/// // In enqueue_flow implementation:
+/// async fn enqueue_flow(&self, flow: ScheduledFlow) -> Result<Uuid> {
+///     // ... store flow in database ...
+///     self.work_notify().notify_waiters(); // Wake all waiting workers
+///     Ok(task_id)
+/// }
+/// ```
+pub trait WorkNotificationSource: ExecutionLog {
+    /// Returns a reference to the work notification handle.
+    ///
+    /// Workers use this to wait for work instead of sleeping. When new work
+    /// is enqueued, the storage backend signals this notify to wake workers.
+    fn work_notify(&self) -> &Arc<tokio::sync::Notify>;
+}
+
+/// Trait for storage backends that support event-driven timer notifications.
+///
+/// This trait enables timer processing to be event-driven rather than polling-based,
+/// improving latency and reducing unnecessary database queries.
+///
+/// # When to Implement
+///
+/// Implement this trait if your storage backend can efficiently notify waiting
+/// timer processors when:
+/// - A new timer is scheduled
+/// - A timer's fire time is updated
+/// - A timer expires
+///
+/// # Contract
+///
+/// Implementations must call `notify.notify_one()` whenever the next timer's
+/// fire time changes. This wakes the timer processing task to recalculate the
+/// next wake time.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl TimerNotificationSource for MyStorage {
+///     fn timer_notify(&self) -> &Arc<Notify> {
+///         &self.timer_notify
+///     }
+/// }
+///
+/// // In schedule_timer implementation:
+/// async fn schedule_timer(&self, timer: TimerInfo) -> Result<()> {
+///     // ... store timer in database ...
+///     self.timer_notify().notify_one(); // Wake timer processor
+///     Ok(())
+/// }
+/// ```
+pub trait TimerNotificationSource: ExecutionLog {
+    /// Returns a reference to the timer notification handle.
+    ///
+    /// Timer processors use this to wait for timer events instead of polling.
+    /// The storage backend signals this notify when timer state changes.
+    fn timer_notify(&self) -> &Arc<tokio::sync::Notify>;
 }
 
 // Implement ExecutionLog for Box<dyn ExecutionLog> to allow type-erased storage

@@ -1,4 +1,7 @@
-use super::{error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog};
+use super::{
+    error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog,
+    TimerNotificationSource, WorkNotificationSource,
+};
 use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -35,7 +38,7 @@ pub struct InMemoryExecutionLog {
     pending_tx: mpsc::UnboundedSender<Uuid>,
     pending_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Uuid>>>,
     /// Notification mechanism to wake up workers when new work arrives
-    work_notify: Option<Arc<Notify>>,
+    work_notify: Arc<Notify>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
     /// Notification mechanism for timer changes (new timer scheduled, timer fired)
@@ -53,7 +56,7 @@ impl InMemoryExecutionLog {
             flow_task_map: dashmap::DashMap::new(),
             pending_tx,
             pending_rx: Arc::new(tokio::sync::Mutex::new(pending_rx)),
-            work_notify: Some(Arc::new(Notify::new())),
+            work_notify: Arc::new(Notify::new()),
             status_notify: Arc::new(Notify::new()),
             timer_notify: Arc::new(Notify::new()),
         }
@@ -390,9 +393,7 @@ impl ExecutionLog for InMemoryExecutionLog {
                 .map_err(|_| StorageError::Connection("pending channel closed".to_string()))?;
 
             // Notify workers that new work is available (or will be available soon)
-            if let Some(ref notify) = self.work_notify {
-                notify.notify_one();
-            }
+            self.work_notify.notify_one();
 
             Ok(())
         } else {
@@ -644,9 +645,7 @@ impl ExecutionLog for InMemoryExecutionLog {
                     .map_err(|_| StorageError::Connection("pending channel closed".to_string()))?;
 
                 // Wake up one waiting worker since we just made a flow available
-                if let Some(ref notify) = self.work_notify {
-                    notify.notify_one();
-                }
+                self.work_notify.notify_one();
 
                 return Ok(true);
             }
@@ -656,11 +655,24 @@ impl ExecutionLog for InMemoryExecutionLog {
     }
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {
-        self.work_notify.as_ref()
+        Some(&self.work_notify)
     }
 
     fn timer_notify(&self) -> Option<&Arc<Notify>> {
         Some(&self.timer_notify)
+    }
+}
+
+// Implement notification source traits for type-safe access
+impl WorkNotificationSource for InMemoryExecutionLog {
+    fn work_notify(&self) -> &Arc<Notify> {
+        &self.work_notify
+    }
+}
+
+impl TimerNotificationSource for InMemoryExecutionLog {
+    fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }
 

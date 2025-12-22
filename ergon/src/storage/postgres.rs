@@ -1,4 +1,7 @@
-use super::{error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog};
+use super::{
+    error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog,
+    TimerNotificationSource, WorkNotificationSource,
+};
 use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -65,8 +68,8 @@ impl Default for PoolConfig {
 /// ```
 pub struct PostgresExecutionLog {
     pool: PgPool,
-    /// Optional notify handle for waking workers when work becomes available
-    work_notify: Option<Arc<Notify>>,
+    /// Notify handle for waking workers when work becomes available
+    work_notify: Arc<Notify>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
     /// Notification mechanism for timer changes (new timer scheduled, timer fired)
@@ -90,7 +93,7 @@ impl PostgresExecutionLog {
 
         let log = Self {
             pool,
-            work_notify: Some(Arc::new(Notify::new())),
+            work_notify: Arc::new(Notify::new()),
             status_notify: Arc::new(Notify::new()),
             timer_notify: Arc::new(Notify::new()),
         };
@@ -617,9 +620,7 @@ impl ExecutionLog for PostgresExecutionLog {
 
         // Wake up one waiting worker if this is an immediate (non-delayed) flow
         if flow.scheduled_for.is_none() {
-            if let Some(ref notify) = self.work_notify {
-                notify.notify_one();
-            }
+            self.work_notify.notify_one();
         }
 
         Ok(task_id)
@@ -1093,15 +1094,13 @@ impl ExecutionLog for PostgresExecutionLog {
 
         debug!("Resumed flow: flow_id={}", flow_id);
 
-        if let Some(ref notify) = self.work_notify {
-            notify.notify_one();
-        }
+        self.work_notify.notify_one();
 
         Ok(true)
     }
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {
-        self.work_notify.as_ref()
+        Some(&self.work_notify)
     }
 
     fn timer_notify(&self) -> Option<&Arc<Notify>> {
@@ -1114,6 +1113,19 @@ impl ExecutionLog for PostgresExecutionLog {
             .await
             .map_err(StorageError::Database)?;
         Ok(())
+    }
+}
+
+// Implement notification source traits for type-safe access
+impl WorkNotificationSource for PostgresExecutionLog {
+    fn work_notify(&self) -> &Arc<Notify> {
+        &self.work_notify
+    }
+}
+
+impl TimerNotificationSource for PostgresExecutionLog {
+    fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }
 

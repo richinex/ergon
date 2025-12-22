@@ -44,7 +44,10 @@
 //! - Recovery: O(N) with XAUTOCLAIM (N = pending messages)
 //! - Network overhead: ~0.1-0.5ms per operation (local network)
 
-use super::{error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog};
+use super::{
+    error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog,
+    TimerNotificationSource, WorkNotificationSource,
+};
 use crate::core::{hash_params, Invocation, InvocationStatus};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -88,8 +91,8 @@ pub struct RedisExecutionLog {
     completed_ttl: i64,
     signal_ttl: i64,
     stale_message_timeout_ms: i64,
-    /// Optional notify handle for waking workers when work becomes available
-    work_notify: Option<Arc<Notify>>,
+    /// Notify handle for waking workers when work becomes available
+    work_notify: Arc<Notify>,
     /// Notification mechanism for flow status changes (completion, failure, etc.)
     status_notify: Arc<Notify>,
     /// Notification mechanism for timer changes (new timer scheduled, timer fired)
@@ -123,7 +126,7 @@ impl RedisExecutionLog {
             completed_ttl: DEFAULT_COMPLETED_TTL,
             signal_ttl: DEFAULT_SIGNAL_TTL,
             stale_message_timeout_ms: DEFAULT_STALE_MESSAGE_TIMEOUT_MS,
-            work_notify: Some(Arc::new(Notify::new())),
+            work_notify: Arc::new(Notify::new()),
             status_notify: Arc::new(Notify::new()),
             timer_notify: Arc::new(Notify::new()),
         };
@@ -152,7 +155,7 @@ impl RedisExecutionLog {
             completed_ttl: completed_ttl_secs,
             signal_ttl: signal_ttl_secs,
             stale_message_timeout_ms,
-            work_notify: Some(Arc::new(Notify::new())),
+            work_notify: Arc::new(Notify::new()),
             status_notify: Arc::new(Notify::new()),
             timer_notify: Arc::new(Notify::new()),
         };
@@ -970,9 +973,7 @@ impl ExecutionLog for RedisExecutionLog {
             );
 
             // Wake up one waiting worker (if any)
-            if let Some(ref notify) = self.work_notify {
-                notify.notify_one();
-            }
+            self.work_notify.notify_one();
         }
 
         Ok(task_id)
@@ -1505,9 +1506,7 @@ impl ExecutionLog for RedisExecutionLog {
             );
 
             // Wake up one waiting worker (if any)
-            if let Some(ref notify) = self.work_notify {
-                notify.notify_one();
-            }
+            self.work_notify.notify_one();
 
             Ok(true)
         } else {
@@ -1788,10 +1787,8 @@ impl ExecutionLog for RedisExecutionLog {
             debug!("Moved {} delayed tasks to stream", moved_count);
 
             // Wake up workers for the moved tasks
-            if let Some(ref notify) = self.work_notify {
-                for _ in 0..moved_count {
-                    notify.notify_one();
-                }
+            for _ in 0..moved_count {
+                self.work_notify.notify_one();
             }
         }
         Ok(moved_count)
@@ -1893,7 +1890,7 @@ impl ExecutionLog for RedisExecutionLog {
     }
 
     fn work_notify(&self) -> Option<&Arc<Notify>> {
-        self.work_notify.as_ref()
+        Some(&self.work_notify)
     }
 
     fn timer_notify(&self) -> Option<&Arc<Notify>> {
@@ -1913,6 +1910,19 @@ impl ExecutionLog for RedisExecutionLog {
             .map_err(|e| StorageError::Connection(e.to_string()))?;
 
         Ok(())
+    }
+}
+
+// Implement notification source traits for type-safe access
+impl WorkNotificationSource for RedisExecutionLog {
+    fn work_notify(&self) -> &Arc<Notify> {
+        &self.work_notify
+    }
+}
+
+impl TimerNotificationSource for RedisExecutionLog {
+    fn timer_notify(&self) -> &Arc<Notify> {
+        &self.timer_notify
     }
 }
 
