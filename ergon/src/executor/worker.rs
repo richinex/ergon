@@ -675,20 +675,21 @@ impl<
     /// ```rust
     /// use ergon::prelude::*;
     /// use std::time::Duration;
+    /// use std::sync::Arc;
     ///
     /// // Aggressive checking (100ms fallback)
-    /// # async fn example1(storage: impl ExecutionLog) {
+    /// # async fn example1(storage: Arc<impl ExecutionLog + 'static>) {
     /// let worker = Worker::new(storage, "worker-1")
     ///     .with_poll_interval(Duration::from_millis(100));
     /// # }
     ///
     /// // Default (1s fallback)
-    /// # async fn example2(storage: impl ExecutionLog) {
+    /// # async fn example2(storage: Arc<impl ExecutionLog + 'static>) {
     /// let worker = Worker::new(storage, "worker-2");  // Uses 1s default
     /// # }
     ///
     /// // Conservative (5s fallback)
-    /// # async fn example3(storage: impl ExecutionLog) {
+    /// # async fn example3(storage: Arc<impl ExecutionLog + 'static>) {
     /// let worker = Worker::new(storage, "worker-3")
     ///     .with_poll_interval(Duration::from_secs(5));
     /// # }
