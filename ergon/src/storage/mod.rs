@@ -360,7 +360,6 @@ pub trait ExecutionLog: Send + Sync {
         ))
     }
 
-
     // ===== Suspension Result Operations =====
     // These methods support storing results for asynchronously resuming steps (signals AND timers).
     // Both signals and timers suspend a step and later resume it with a result - they use the same storage.

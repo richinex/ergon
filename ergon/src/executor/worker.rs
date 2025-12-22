@@ -448,7 +448,9 @@ pub struct Worker<
     work_notify: Arc<tokio::sync::Notify>,
 }
 
-impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, Sig, Tr> Worker<S, WithoutTimers, Sig, Tr> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, Sig, Tr>
+    Worker<S, WithoutTimers, Sig, Tr>
+{
     /// Enables timer processing for this worker.
     ///
     /// Returns a worker in the `WithTimers` state, which allows configuring
@@ -481,7 +483,9 @@ impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'stati
     }
 }
 
-impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static> Worker<S, WithoutTimers, WithoutSignals, WithoutStructuredTracing> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static>
+    Worker<S, WithoutTimers, WithoutSignals, WithoutStructuredTracing>
+{
     /// Creates a new flow worker without timer processing, signal processing, or structured tracing.
     ///
     /// This is the default state providing zero-cost abstraction.
@@ -521,7 +525,9 @@ impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'stati
     }
 }
 
-impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, Sig, Tr> Worker<S, WithTimers, Sig, Tr> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, Sig, Tr>
+    Worker<S, WithTimers, Sig, Tr>
+{
     /// Sets the interval for checking expired timers.
     ///
     /// Only available when timer processing is enabled.
@@ -543,7 +549,9 @@ impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'stati
 }
 
 // Methods for enabling signals
-impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Tr> Worker<S, T, WithoutSignals, Tr> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Tr>
+    Worker<S, T, WithoutSignals, Tr>
+{
     /// Enables signal processing for this worker.
     ///
     /// Returns a worker in the `WithSignals<Src>` state, which will automatically
@@ -577,7 +585,8 @@ impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'stati
     }
 }
 
-impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Src, Tr> Worker<S, T, WithSignals<Src>, Tr>
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Src, Tr>
+    Worker<S, T, WithSignals<Src>, Tr>
 where
     Src: crate::executor::SignalSource + 'static,
 {
@@ -600,7 +609,9 @@ where
 }
 
 // State transition methods for tracing
-impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Sig> Worker<S, T, Sig, WithoutStructuredTracing> {
+impl<S: ExecutionLog + WorkNotificationSource + TimerNotificationSource + 'static, T, Sig>
+    Worker<S, T, Sig, WithoutStructuredTracing>
+{
     /// Enables structured tracing for this worker.
     ///
     /// Returns a worker in the `WithStructuredTracing` state, which creates
