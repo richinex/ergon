@@ -274,13 +274,14 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                         None => (true, None), // Ok result: cache it, no retryability
                     };
 
+                    // Store the is_retryable flag BEFORE caching (even for retryable errors)
+                    // This allows the flow macro to detect that the error came from a step
+                    if let Some(__is_retryable) = __is_retryable_opt {
+                        let _ = __ctx.update_step_retryability(__step, __is_retryable).await;
+                    }
+
                     if __should_cache {
                         let _ = __ctx.log_step_completion(__step, &__result).await;
-
-                        // If it's an error, update the is_retryable flag using the pre-computed value
-                        if let Some(__is_retryable) = __is_retryable_opt {
-                            let _ = __ctx.update_step_retryability(__step, __is_retryable).await;
-                        }
                     }
                 }
             }

@@ -301,8 +301,13 @@ impl SqliteExecutionLog {
         let retry_policy = retry_policy_json.and_then(|json| serde_json::from_str(&json).ok());
 
         // Parse is_retryable (NULL, 0, or 1)
-        let is_retryable_int: Option<i32> = row.try_get("is_retryable").ok();
-        let is_retryable = is_retryable_int.map(|v| v != 0);
+        // CRITICAL: Must read as Option<i32> to distinguish NULL from 0
+        // SQLite converts NULL to 0 when reading as plain i32
+        let is_retryable: Option<bool> = match row.try_get::<Option<i32>, _>("is_retryable") {
+            Ok(Some(v)) => Some(v != 0), // 0 -> Some(false), 1 -> Some(true)
+            Ok(None) => None,            // NULL -> None
+            Err(_) => None,              // Error -> None (treat as NULL)
+        };
 
         // Parse timer_fire_at from milliseconds since epoch
         let timer_fire_at_millis: Option<i64> = row.try_get("timer_fire_at").ok();
@@ -363,8 +368,8 @@ impl ExecutionLog for SqliteExecutionLog {
         let delay_millis = delay.map(|d| d.as_millis() as i64);
 
         sqlx::query(
-            "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, delay, status, attempts, parameters, params_hash, retry_policy)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, delay, status, attempts, parameters, params_hash, retry_policy, is_retryable)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id, step)
              DO UPDATE SET attempts = attempts + 1",
         )
@@ -379,6 +384,7 @@ impl ExecutionLog for SqliteExecutionLog {
         .bind(parameters)
         .bind(params_hash as i64)
         .bind(retry_policy_json)
+        .bind(None::<i32>)  // is_retryable = NULL by default
         .execute(&self.pool)
         .await?;
 

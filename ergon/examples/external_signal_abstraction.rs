@@ -346,6 +346,7 @@ impl DocumentApprovalFlow {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("data/sig_abstraction.db").await?);
+    storage.reset().await?;
     let signal_source = Arc::new(SimulatedUserInputSource::new());
     let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
