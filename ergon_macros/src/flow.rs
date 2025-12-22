@@ -146,35 +146,18 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #[allow(unused_imports)]
                 use ::ergon::kind::*;
 
-                // Optimization: Only call is_retryable() for errors from the flow body (not steps).
-                // If an inner step already stored a retryability flag, the error came from that step,
-                // and calling is_retryable() again would be redundant.
-                // If no inner step has a flag, the error is from the flow body and we need to store it.
+                // Compute is_retryable and should_cache
                 let (__should_cache, __is_retryable_opt) = match __result.as_ref().err() {
                     Some(__e) => {
-                        // Check if an inner step already stored a retryability flag
-                        let __has_inner_flag = __ctx.has_inner_step_retryability_flag().await;
-
-                        let __is_retryable_opt = if !__has_inner_flag {
-                            // Error is from flow body - call is_retryable() and store it
-                            let __is_ret = (*__e).error_kind().is_retryable(__e);
-                            Some(__is_ret)
-                        } else {
-                            // Error is from inner step - flag already stored, skip redundant call
-                            None
-                        };
-
-                        // Only cache non-retryable errors (retryable errors aren't cached)
-                        let __should_cache = __is_retryable_opt.map(|r| !r).unwrap_or(false);
-
-                        (__should_cache, __is_retryable_opt)
+                        let __is_retryable = (__e).error_kind().is_retryable(__e);
+                        (!__is_retryable, Some(__is_retryable)) // should_cache = !is_retryable
                     }
-                    None => (true, None), // Success - always cache
+                    None => (true, None), // Ok result: cache it, no retryability
                 };
 
-                // Store the is_retryable flag for step 0 (flow) if we computed it
-                if let Some(__is_ret) = __is_retryable_opt {
-                    let _ = __ctx.update_step_retryability(__step, __is_ret).await;
+                // Store the is_retryable flag
+                if let Some(__is_retryable) = __is_retryable_opt {
+                    let _ = __ctx.update_step_retryability(__step, __is_retryable).await;
                 }
 
                 if __should_cache {

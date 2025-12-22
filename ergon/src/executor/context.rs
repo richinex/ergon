@@ -227,36 +227,6 @@ impl ExecutionContext {
         Ok(())
     }
 
-    /// Check if any inner step (step > 0) has a retryability flag stored.
-    ///
-    /// This is used by the flow macro to avoid redundant `is_retryable()` calls:
-    /// - If ANY step has a flag, an error occurred in a step (redundant to call again)
-    /// - If no step has a flag, all steps succeeded → error is from flow body (need to call is_retryable)
-    ///
-    /// # Important Note
-    ///
-    /// We check if ANY step has a flag (not "most recent") because step numbers are HASHES,
-    /// not sequential counters. The step with the highest number isn't necessarily the most
-    /// recent - it's just the one with the highest hash value.
-    ///
-    /// # Returns
-    ///
-    /// Returns `true` if any inner step has a retryability flag stored, `false` otherwise.
-    pub async fn has_inner_step_retryability_flag(&self) -> bool {
-        // Get all invocations for this flow
-        let invocations = match self.storage.get_invocations_for_flow(self.id).await {
-            Ok(invs) => invs,
-            Err(_) => return false, // Error checking - assume no flag (safe default)
-        };
-
-        // Check if ANY inner step (not step 0) has a retryability flag
-        // Note: Don't use max_by_key - step numbers are hashes, not sequential!
-        invocations
-            .iter()
-            .filter(|inv| inv.step() > 0) // Exclude step 0 (the flow itself)
-            .any(|inv| inv.is_retryable().is_some()) // Any step with a flag?
-    }
-
     /// Validates that an invocation matches the expected class/method and parameters.
     ///
     /// This method checks for non-determinism by validating:
