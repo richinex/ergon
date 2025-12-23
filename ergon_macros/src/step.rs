@@ -492,7 +492,6 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         /// - Execution context integration
         /// - Cache checking with non-determinism detection
         /// - Invocation logging
-        /// - Delay support
         /// - Autoref specialization for RetryableError
         #(#attrs)*
         #register_sig
@@ -644,7 +643,6 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         /// - Execution context integration
         /// - Cache checking with non-determinism detection
         /// - Invocation logging
-        /// - Delay support
         /// - Autoref specialization for RetryableError
         #(#attrs)*
         #vis fn #fn_name(#original_fn_params) -> impl std::future::Future<Output = #return_type> {

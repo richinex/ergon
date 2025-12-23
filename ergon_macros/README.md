@@ -75,7 +75,6 @@ impl MyFlow {
 **Step attributes:**
 - `depends_on`: Specify dependencies for DAG execution (e.g., `depends_on = "step1"` or `depends_on = ["step1", "step2"]`)
 - `inputs`: Wire dependency outputs to parameters (e.g., `inputs(data = "step1")`)
-- `delay`: Delay before execution (e.g., `delay = 5, unit = "SECONDS"`)
 
 **Generated code:**
 - Result caching and memoization
