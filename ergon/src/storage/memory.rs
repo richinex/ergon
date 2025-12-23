@@ -548,36 +548,6 @@ impl ExecutionLog for InMemoryExecutionLog {
         Ok(())
     }
 
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-        params: &[u8],
-    ) -> Result<()> {
-        self.store_suspension_result(flow_id, step, signal_name, params)
-            .await
-    }
-
-    async fn get_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<Option<Vec<u8>>> {
-        self.get_suspension_result(flow_id, step, signal_name).await
-    }
-
-    async fn remove_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<()> {
-        self.remove_suspension_result(flow_id, step, signal_name)
-            .await
-    }
-
     async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
         let mut signals = Vec::new();
 

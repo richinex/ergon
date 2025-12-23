@@ -188,7 +188,7 @@ where
             // Check if we're already waiting and signal has arrived
             if inv.status() == crate::core::InvocationStatus::WaitingForSignal {
                 if let Some(params) = storage
-                    .get_signal_params(parent_id, step, &signal_name)
+                    .get_suspension_result(parent_id, step, &signal_name)
                     .await?
                 {
                     let payload: SuspensionPayload = crate::core::deserialize_value(&params)?;
@@ -197,7 +197,7 @@ where
                         .log_invocation_completion(parent_id, step, &params)
                         .await?;
                     storage
-                        .remove_signal_params(parent_id, step, &signal_name)
+                        .remove_suspension_result(parent_id, step, &signal_name)
                         .await?;
 
                     if payload.success {
@@ -274,7 +274,7 @@ where
 
         // Check if signal already arrived (child might have been VERY fast)
         if let Some(params) = storage
-            .get_signal_params(parent_id, step, &signal_name)
+            .get_suspension_result(parent_id, step, &signal_name)
             .await?
         {
             let payload: SuspensionPayload = crate::core::deserialize_value(&params)?;
@@ -283,7 +283,7 @@ where
                 .log_invocation_completion(parent_id, step, &params)
                 .await?;
             storage
-                .remove_signal_params(parent_id, step, &signal_name)
+                .remove_suspension_result(parent_id, step, &signal_name)
                 .await?;
 
             if payload.success {

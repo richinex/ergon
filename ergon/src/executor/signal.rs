@@ -95,7 +95,7 @@ where
             if let Some(signal_data) = self.signal_source.poll_for_signal(signal_name).await {
                 // Store signal params
                 match storage
-                    .store_signal_params(
+                    .store_suspension_result(
                         signal_info.flow_id,
                         signal_info.step,
                         signal_info.signal_name.as_deref().unwrap_or(""),
@@ -277,7 +277,7 @@ where
             // We're waiting for this signal - check if it's arrived
             if let Some(params) = ctx
                 .storage
-                .get_signal_params(ctx.id, current_step, signal_name)
+                .get_suspension_result(ctx.id, current_step, signal_name)
                 .await?
             {
                 // Signal arrived! Deserialize and return the data
@@ -287,7 +287,7 @@ where
                 // and we don't want to cache it as Complete if it fails.
                 // Clean up signal params so they aren't re-delivered on retry
                 ctx.storage
-                    .remove_signal_params(ctx.id, current_step, signal_name)
+                    .remove_suspension_result(ctx.id, current_step, signal_name)
                     .await?;
                 return Ok(result);
             }
@@ -434,7 +434,7 @@ where
 
     // Store signal data
     storage
-        .store_signal_params(
+        .store_suspension_result(
             parent_flow_id,
             waiting_step.step(),
             waiting_step.timer_name().unwrap_or(""),

@@ -429,43 +429,6 @@ pub trait ExecutionLog: Send + Sync {
         Ok(())
     }
 
-    // ===== Legacy Signal Parameters Methods =====
-    // These methods delegate to the unified suspension_result methods above.
-    // They're kept for backwards compatibility with existing code.
-
-    /// Store signal parameters (delegates to store_suspension_result).
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-        params: &[u8],
-    ) -> Result<()> {
-        self.store_suspension_result(flow_id, step, signal_name, params)
-            .await
-    }
-
-    /// Get signal parameters (delegates to get_suspension_result).
-    async fn get_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<Option<Vec<u8>>> {
-        self.get_suspension_result(flow_id, step, signal_name).await
-    }
-
-    /// Remove signal parameters (delegates to remove_suspension_result).
-    async fn remove_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<()> {
-        self.remove_suspension_result(flow_id, step, signal_name)
-            .await
-    }
-
     // ===== External Signal Operations =====
     // These methods support durable external signals that survive crashes.
 
@@ -813,38 +776,6 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
     ) -> Result<()> {
         (**self)
             .remove_suspension_result(flow_id, step, suspension_key)
-            .await
-    }
-
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-        params: &[u8],
-    ) -> Result<()> {
-        (**self)
-            .store_signal_params(flow_id, step, signal_name, params)
-            .await
-    }
-
-    async fn get_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<Option<Vec<u8>>> {
-        (**self).get_signal_params(flow_id, step, signal_name).await
-    }
-
-    async fn remove_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<()> {
-        (**self)
-            .remove_signal_params(flow_id, step, signal_name)
             .await
     }
 

@@ -142,3 +142,7 @@ required-features = ["postgres"]
 [[bench]]
 name = "retryable_overhead"
 harness = false
+
+[[bench]]
+name = "system_bottlenecks"
+harness = false

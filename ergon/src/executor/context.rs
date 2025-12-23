@@ -359,20 +359,21 @@ impl ExecutionContext {
                 // Check if signal result is available (child flow completed)
                 // This prevents re-executing step bodies when replaying flows with child invocations
                 tracing::debug!(
-                    "Step {} is WaitingForSignal, checking for signal params",
+                    "Step {} is WaitingForSignal, checking for suspension result",
                     step
                 );
                 // Use timer_name as the signal name (it stores the signal token for child flows)
                 let signal_name = inv.timer_name().unwrap_or("");
-                if let Ok(Some(signal_params)) = self
+                if let Ok(Some(suspension_result)) = self
                     .storage
-                    .get_signal_params(self.id, step, signal_name)
+                    .get_suspension_result(self.id, step, signal_name)
                     .await
                 {
-                    tracing::debug!("Found signal params for step {}, deserializing", step);
+                    tracing::debug!("Found suspension result for step {}, deserializing", step);
                     // Deserialize the suspension payload to get the result
                     use crate::executor::child_flow::SuspensionPayload;
-                    if let Ok(payload) = deserialize_value::<SuspensionPayload>(&signal_params) {
+                    if let Ok(payload) = deserialize_value::<SuspensionPayload>(&suspension_result)
+                    {
                         if payload.success {
                             // Return the successful result from the child
                             tracing::debug!(
@@ -388,7 +389,7 @@ impl ExecutionContext {
                         tracing::debug!("Failed to deserialize signal payload for step {}", step);
                     }
                 } else {
-                    tracing::debug!("No signal params found for step {} yet", step);
+                    tracing::debug!("No suspension result found for step {} yet", step);
                 }
             } else if inv.status() == InvocationStatus::WaitingForTimer {
                 // Timer suspension handling (similar to signals, but with empty data)

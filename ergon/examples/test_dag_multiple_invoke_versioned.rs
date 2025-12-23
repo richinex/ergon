@@ -151,7 +151,12 @@ fn ts() -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = "/tmp/ergon_test_dag_multiple_invoke_versioned.db";
+    let db = "data/test_dag_multiple_invoke_versioned.db";
+
+    // Ensure data directory exists
+    std::fs::create_dir_all("data")?;
+
+    // Clean up any leftover database
     let _ = std::fs::remove_file(db);
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);

@@ -267,7 +267,7 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
 
         // Persist to storage for crash recovery
         self.storage
-            .store_signal_params(self.id, step, &signal_name, &params_bytes)
+            .store_suspension_result(self.id, step, &signal_name, &params_bytes)
             .await
             .map_err(ExecutionError::from)?;
 

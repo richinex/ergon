@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let signal_data = ergon::core::serialize_value(&decision)?;
 
         storage
-            .store_signal_params(
+            .store_suspension_result(
                 signal_info.flow_id,
                 signal_info.step,
                 "review:POST-AMBIGUOUS",

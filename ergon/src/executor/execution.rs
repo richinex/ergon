@@ -150,7 +150,7 @@ pub(super) async fn complete_child_flow<S: ExecutionLog>(
 
     // CRITICAL: Store signal params - must succeed for parent to resume
     if let Err(e) = storage
-        .store_signal_params(
+        .store_suspension_result(
             parent_id,
             waiting_step.step(),
             waiting_step.timer_name().unwrap_or(""),

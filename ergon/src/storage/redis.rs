@@ -17,7 +17,7 @@
 //! - `ergon:flow:{task_id}` (HASH): Flow metadata (status, timestamps, etc.)
 //! - `ergon:invocations:{flow_id}` (LIST): Invocation history per flow
 //! - `ergon:inv:{flow_id}:{step}` (HASH): Invocation data including timer info
-//! - `ergon:signal:{flow_id}:{step}` (STRING): Signal parameters (with TTL)
+//! - `ergon:suspension:{flow_id}:{step}:{key}` (STRING): Suspension results (signals/timers, with TTL)
 //! - `ergon:timers:pending` (ZSET): Pending timers (score = fire_at timestamp)
 //!
 //! # Key Features
@@ -67,8 +67,8 @@ use uuid::Uuid;
 /// Default TTL for completed flows (7 days in seconds)
 const DEFAULT_COMPLETED_TTL: i64 = 7 * 24 * 3600;
 
-/// Default TTL for signal parameters (30 days in seconds)
-const DEFAULT_SIGNAL_TTL: i64 = 30 * 24 * 3600;
+/// Default TTL for suspension results (signals and timers, 30 days in seconds)
+const DEFAULT_SUSPENSION_TTL: i64 = 30 * 24 * 3600;
 
 /// Default stale message timeout for XAUTOCLAIM (60 seconds in milliseconds)
 const DEFAULT_STALE_MESSAGE_TIMEOUT_MS: i64 = 60 * 1000;
@@ -89,7 +89,7 @@ const MAX_STREAM_LEN: isize = 100_000;
 pub struct RedisExecutionLog {
     pool: Pool,
     completed_ttl: i64,
-    signal_ttl: i64,
+    suspension_ttl: i64,
     stale_message_timeout_ms: i64,
     /// Notify handle for waking workers when work becomes available
     work_notify: Arc<Notify>,
@@ -124,7 +124,7 @@ impl RedisExecutionLog {
         let log = Self {
             pool,
             completed_ttl: DEFAULT_COMPLETED_TTL,
-            signal_ttl: DEFAULT_SIGNAL_TTL,
+            suspension_ttl: DEFAULT_SUSPENSION_TTL,
             stale_message_timeout_ms: DEFAULT_STALE_MESSAGE_TIMEOUT_MS,
             work_notify: Arc::new(Notify::new()),
             status_notify: Arc::new(Notify::new()),
@@ -142,7 +142,7 @@ impl RedisExecutionLog {
     pub async fn with_full_config(
         redis_url: &str,
         completed_ttl_secs: i64,
-        signal_ttl_secs: i64,
+        suspension_ttl_secs: i64,
         stale_message_timeout_ms: i64,
     ) -> Result<Self> {
         let cfg = Config::from_url(redis_url);
@@ -153,7 +153,7 @@ impl RedisExecutionLog {
         let log = Self {
             pool,
             completed_ttl: completed_ttl_secs,
-            signal_ttl: signal_ttl_secs,
+            suspension_ttl: suspension_ttl_secs,
             stale_message_timeout_ms,
             work_notify: Arc::new(Notify::new()),
             status_notify: Arc::new(Notify::new()),
@@ -1536,7 +1536,7 @@ impl ExecutionLog for RedisExecutionLog {
         let _: () = redis::pipe()
             .atomic()
             .set(&key, result)
-            .expire(&key, self.signal_ttl)
+            .expire(&key, self.suspension_ttl)
             .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;
@@ -1584,36 +1584,6 @@ impl ExecutionLog for RedisExecutionLog {
             flow_id, step, suspension_key
         );
         Ok(())
-    }
-
-    async fn store_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-        params: &[u8],
-    ) -> Result<()> {
-        self.store_suspension_result(flow_id, step, signal_name, params)
-            .await
-    }
-
-    async fn get_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<Option<Vec<u8>>> {
-        self.get_suspension_result(flow_id, step, signal_name).await
-    }
-
-    async fn remove_signal_params(
-        &self,
-        flow_id: Uuid,
-        step: i32,
-        signal_name: &str,
-    ) -> Result<()> {
-        self.remove_suspension_result(flow_id, step, signal_name)
-            .await
     }
 
     async fn get_waiting_signals(&self) -> Result<Vec<super::SignalInfo>> {
