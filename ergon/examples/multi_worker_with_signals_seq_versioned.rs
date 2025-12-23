@@ -1,67 +1,8 @@
-//! Complex Multi-Worker with Signals and Flow Versioning (SQLite)
+//! E-commerce order fulfillment with sequential steps, external signals, and flow versioning.
 //!
-//! This example demonstrates the full power of Ergon by combining:
-//! 1. **Multiple Workers** (4 workers) processing concurrently
-//! 2. **Multiple Parent Flows** (3 orders) executing in parallel
-//! 3. **Sequential Steps** with suspension/resumption on signals
-//! 4. **External Signals** for human-in-the-loop approval workflows
-//! 5. **Child Flow Invocation** from workflow steps
-//! 6. **Error Handling** with retryable vs permanent errors
-//! 7. **Load Distribution** across workers
-//! 8. **Flow Versioning** to track which code version executed each flow
+//! Run with
 //!
-//! ## Scenario: E-Commerce Order Fulfillment with Manager Approval
-//!
-//! Each order goes through a SEQUENTIAL workflow with a signal-based approval step:
-//!
-//! ```text
-//! validate_customer → check_fraud → reserve_inventory → await_manager_approval (SIGNAL) →
-//!     process_payment → generate_label (CHILD FLOW) → notify_customer
-//! ```
-//!
-//! **Key behaviors:**
-//! - All steps run SEQUENTIALLY (not parallel)
-//! - await_manager_approval may suspend the flow until signal arrives
-//! - generate_label spawns a CHILD FLOW (separate task)
-//! - On retry, cached results avoid re-suspension (appears as attempt #2)
-//! - **Each order is tagged with a version** (e.g., "v1.0", "v2.0") to track deployments
-//!
-//! ## Flow Versioning
-//!
-//! This example demonstrates how to use flow versioning to track which code version
-//! executed each flow instance:
-//!
-//! - **ORD-001** runs on version "v1.0" (older deployment)
-//! - **ORD-002** runs on version "v2.0" (current deployment)
-//! - **ORD-003** runs on version "v2.1" (latest deployment)
-//!
-//! In production, you would use this to:
-//! - Query which flows are still running on old versions
-//! - Debug issues by checking which code version a flow used
-//! - Gradually migrate flows from old to new versions
-//! - Track version-specific metrics and behavior
-//!
-//! ## Signal Integration
-//!
-//! The example uses `await_external_signal()` to suspend the flow until a manager
-//! provides approval. The signal returns an `ApprovalDecision` which can be either
-//! approved or rejected. This demonstrates:
-//!
-//! - **Flow Suspension**: Flow pauses at signal step until external input arrives
-//! - **Signal Caching**: Once received, signal result is cached (no re-suspension on retry)
-//! - **Human-in-the-Loop**: Real-world approval workflows with external decision makers
-//! - **Signal Source Abstraction**: Easy to swap signal sources (mock, HTTP, Redis, etc.)
-//!
-//! ## Workers
-//!
-//! - validation-worker: Specializes in customer validation
-//! - payment-worker: Handles payment processing
-//! - warehouse-worker: Manages inventory
-//! - shipping-worker: Generates labels and notifications
-//!
-//! ## Run
-//!
-//! ```bash
+//! ```not_rust
 //! cargo run --example multi_worker_with_signals_seq_versioned --features=sqlite
 //! ```
 
@@ -81,7 +22,6 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-// Global execution counters (for summary statistics only)
 static VALIDATE_CUSTOMER_COUNT: AtomicU32 = AtomicU32::new(0);
 static CHECK_FRAUD_COUNT: AtomicU32 = AtomicU32::new(0);
 static RESERVE_INVENTORY_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -90,13 +30,9 @@ static PROCESS_PAYMENT_COUNT: AtomicU32 = AtomicU32::new(0);
 static GENERATE_LABEL_COUNT: AtomicU32 = AtomicU32::new(0);
 static NOTIFY_CUSTOMER_COUNT: AtomicU32 = AtomicU32::new(0);
 
-// Per-order attempt tracking for retry logic
 static ORDER_ATTEMPTS: LazyLock<DashMap<String, OrderAttempts>> = LazyLock::new(DashMap::new);
-
-// Per-order timing tracking
 static ORDER_TIMINGS: LazyLock<DashMap<String, f64>> = LazyLock::new(DashMap::new);
 
-/// Per-order attempt counters (each order tracks its own retry attempts)
 #[derive(Default)]
 struct OrderAttempts {
     validate_customer: AtomicU32,
@@ -109,14 +45,10 @@ struct OrderAttempts {
 }
 
 impl OrderAttempts {
-    /// Increment and return validate_customer attempt counter
     fn inc_validate(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.validate_customer.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -125,14 +57,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return check_fraud attempt counter
     fn inc_fraud(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.check_fraud.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -141,14 +69,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return reserve_inventory attempt counter
     fn inc_reserve(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.reserve_inventory.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -157,14 +81,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return await_approval attempt counter
     fn inc_approval(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.await_approval.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -173,14 +93,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return process_payment attempt counter
     fn inc_payment(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.process_payment.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -189,14 +105,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return generate_label attempt counter
     fn inc_label(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.generate_label.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -205,14 +117,10 @@ impl OrderAttempts {
             + 1
     }
 
-    /// Increment and return notify_customer attempt counter
     fn inc_notify(order_id: &str) -> u32 {
-        // Fast path: use read lock if entry exists
         if let Some(attempts) = ORDER_ATTEMPTS.get(order_id) {
             return attempts.notify_customer.fetch_add(1, Ordering::Relaxed) + 1;
         }
-
-        // Slow path: create entry with write lock only on first access
         ORDER_ATTEMPTS
             .entry(order_id.to_string())
             .or_default()
@@ -222,48 +130,30 @@ impl OrderAttempts {
     }
 }
 
-// =============================================================================
-// Custom Error Types with Retryable
-// =============================================================================
-
-/// Comprehensive order fulfillment error type
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 enum OrderError {
-    // Payment errors - transient
     #[error("Network timeout")]
     PaymentNetworkTimeout,
     #[error("Payment gateway unavailable")]
     PaymentGatewayUnavailable,
-
-    // Payment errors - permanent
     #[error("Insufficient funds")]
     InsufficientFunds,
     #[error("Card declined")]
     CardDeclined,
     #[error("Fraud detected")]
     FraudDetected,
-
-    // Inventory errors - transient
     #[error("Database timeout")]
     InventoryDatabaseTimeout,
     #[error("Warehouse system down")]
     WarehouseSystemDown,
-
-    // Inventory errors - permanent
     #[error("Out of stock: {product} (requested: {requested})")]
     OutOfStock { product: String, requested: u32 },
     #[error("Invalid product ID")]
     InvalidProductId,
-
-    // Approval errors - permanent
     #[error("Manager rejected by {by} - {reason}")]
     ManagerRejected { by: String, reason: String },
-
-    // Infrastructure errors - transient
     #[error("Infrastructure error: {0}")]
     Infrastructure(String),
-
-    // Generic errors
     #[error("{0}")]
     Failed(String),
 }
@@ -293,11 +183,6 @@ impl ergon::Retryable for OrderError {
     }
 }
 
-// =============================================================================
-// Signal-Related Types
-// =============================================================================
-
-/// Decision made by a manager via external signal
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApprovalDecision {
     approved: bool,
@@ -306,7 +191,6 @@ struct ApprovalDecision {
     timestamp: i64,
 }
 
-/// Outcome of an approval step (both approved and rejected are valid outcomes)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum ApprovalOutcome {
     Approved { by: String, comment: String },
@@ -329,16 +213,6 @@ impl From<ApprovalDecision> for ApprovalOutcome {
     }
 }
 
-// =============================================================================
-// Simulated Approval Signal Source
-// =============================================================================
-
-/// Simulates manager approvals with automatic decisions after a delay.
-/// In a real application, this would be replaced with:
-/// - HTTP webhook endpoint receiving approval decisions
-/// - Redis pub/sub listening for approval messages
-/// - Database polling for approval records
-/// - Message queue consumer (Kafka, RabbitMQ, etc.)
 struct SimulatedApprovalSource {
     signals: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
@@ -350,7 +224,6 @@ impl SimulatedApprovalSource {
         }
     }
 
-    /// Simulate manager making an approval decision after a delay
     async fn simulate_approval(&self, signal_name: &str, delay: Duration, approve: bool) {
         tokio::time::sleep(delay).await;
 
@@ -368,11 +241,7 @@ impl SimulatedApprovalSource {
         let data = ergon::core::serialize_value(&decision).unwrap();
         let mut signals = self.signals.write().await;
         signals.insert(signal_name.to_string(), data);
-        println!(
-            "[{:.3}]   [SIGNAL] Manager decision received for '{}'",
-            timestamp(),
-            signal_name
-        );
+        println!("{:.3} signal received: {}", timestamp(), signal_name);
     }
 }
 
@@ -388,10 +257,6 @@ impl SignalSource for SimulatedApprovalSource {
         signals.remove(signal_name);
     }
 }
-
-// =============================================================================
-// Domain Types
-// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ShippingLabel {
@@ -411,10 +276,6 @@ struct OrderSummary {
     notification_sent: bool,
 }
 
-// =============================================================================
-// Parent Flow - Order Fulfillment (with DAG and Signals)
-// =============================================================================
-
 #[derive(Clone, Serialize, Deserialize, FlowType)]
 struct OrderFulfillment {
     order_id: String,
@@ -425,14 +286,13 @@ struct OrderFulfillment {
 }
 
 impl OrderFulfillment {
-    /// Step 1: Validate Customer (runs in parallel with reserve_inventory)
     #[step]
     async fn validate_customer(self: Arc<Self>) -> Result<String, String> {
         let count = OrderAttempts::inc_validate(&self.order_id);
         VALIDATE_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] validate_customer (execution #{})",
+            "{:.3} {} validate_customer #{}",
             timestamp(),
             &self.order_id,
             count
@@ -440,24 +300,22 @@ impl OrderFulfillment {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Simulate occasional transient failure on first attempt for this order
         if count == 1 && self.customer_id == "CUST-RETRY" {
-            println!("[{:.3}]      -> Transient error, will retry", timestamp());
+            println!("{:.3} transient error, will retry", timestamp());
             return Err("Customer validation timeout".to_string());
         }
 
-        println!("[{:.3}]      -> Customer validated", timestamp());
+        println!("{:.3} customer validated", timestamp());
         Ok(self.customer_id.clone())
     }
 
-    /// Step 2: Check Fraud (depends on validate_customer)
     #[step(depends_on = "validate_customer")]
     async fn check_fraud(self: Arc<Self>) -> Result<bool, String> {
         let count = OrderAttempts::inc_fraud(&self.order_id);
         CHECK_FRAUD_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] check_fraud (execution #{})",
+            "{:.3} {} check_fraud #{}",
             timestamp(),
             &self.order_id,
             count
@@ -466,22 +324,21 @@ impl OrderFulfillment {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         if self.customer_id == "CUST-FRAUD" {
-            println!("[{:.3}]      -> FRAUD DETECTED (permanent)", timestamp());
+            println!("{:.3} fraud detected", timestamp());
             return Err("Fraud detected for customer".to_string());
         }
 
-        println!("[{:.3}]      -> No fraud detected", timestamp());
+        println!("{:.3} no fraud detected", timestamp());
         Ok(true)
     }
 
-    /// Step 3: Reserve Inventory (runs in parallel with validation)
     #[step]
     async fn reserve_inventory(self: Arc<Self>) -> Result<bool, OrderError> {
         let count = OrderAttempts::inc_reserve(&self.order_id);
         RESERVE_INVENTORY_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] reserve_inventory (execution #{})",
+            "{:.3} {} reserve_inventory #{}",
             timestamp(),
             &self.order_id,
             count
@@ -489,86 +346,54 @@ impl OrderFulfillment {
 
         tokio::time::sleep(Duration::from_millis(120)).await;
 
-        // Simulate transient error on first attempt for this order
         if count == 1 && self.product_id == "PROD-SLOW" {
-            println!(
-                "[{:.3}]      -> Warehouse system timeout (retryable)",
-                timestamp()
-            );
+            println!("{:.3} warehouse system timeout", timestamp());
             return Err(OrderError::WarehouseSystemDown);
         }
 
-        // Check stock
         if self.product_id == "PROD-OOS" {
-            println!("[{:.3}]      -> Out of stock (permanent)", timestamp());
+            println!("{:.3} out of stock", timestamp());
             return Err(OrderError::OutOfStock {
                 product: self.product_id.clone(),
                 requested: self.quantity,
             });
         }
 
-        println!("[{:.3}]      -> Inventory reserved", timestamp());
+        println!("{:.3} inventory reserved", timestamp());
         Ok(true)
     }
 
-    /// Step 4: Await Manager Approval (SIGNAL - depends on check_fraud)
-    ///
-    /// This step demonstrates REPLAY-BASED RESUMPTION for external signals.
-    ///
-    /// Key behaviors:
-    /// - **Execution #1**: May suspend flow, waiting for signal to arrive
-    /// - **Execution #2**: Replays from beginning, retrieves cached signal result
-    /// - Signal result is cached (replay doesn't re-suspend)
-    /// - Both approval and rejection are valid outcomes (step succeeds)
-    /// - The flow decides what rejection means (permanent failure in this case)
     #[step(depends_on = "check_fraud")]
     async fn await_manager_approval(self: Arc<Self>) -> Result<ApprovalOutcome, OrderError> {
         let count = OrderAttempts::inc_approval(&self.order_id);
         AWAIT_APPROVAL_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] await_manager_approval (execution #{})",
+            "{:.3} {} await_manager_approval #{}",
             timestamp(),
             &self.order_id,
             count
         );
 
-        // REPLAY-BASED RESUMPTION:
-        // Execution #1: await_external_signal() may suspend until signal arrives
-        // Execution #2: await_external_signal() returns cached result immediately
         let decision: ApprovalDecision =
             await_external_signal(&format!("order_approval_{}", self.order_id))
                 .await
                 .map_err(|e| OrderError::Infrastructure(e.to_string()))?;
 
-        // Convert decision to outcome - BOTH approved and rejected are successful step outcomes
         let outcome: ApprovalOutcome = decision.into();
 
-        // Log the outcome
         match &outcome {
             ApprovalOutcome::Approved { by, comment } => {
-                println!(
-                    "[{:.3}]      -> Manager APPROVED by {} - {}",
-                    timestamp(),
-                    by,
-                    comment
-                );
+                println!("{:.3} approved: {} - {}", timestamp(), by, comment);
             }
             ApprovalOutcome::Rejected { by, reason } => {
-                println!(
-                    "[{:.3}]      -> Manager REJECTED by {} - {}",
-                    timestamp(),
-                    by,
-                    reason
-                );
+                println!("{:.3} rejected: {} - {}", timestamp(), by, reason);
             }
         }
 
-        // Step succeeds with the outcome (cached for replay)
         Ok(outcome)
     }
 
-    /// Step 5: Process Payment (depends on manager approval)
     #[step(
         depends_on = "await_manager_approval",
         inputs(approval = "await_manager_approval")
@@ -581,44 +406,31 @@ impl OrderFulfillment {
         PROCESS_PAYMENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] process_payment (execution #{})",
+            "{:.3} {} process_payment #{}",
             timestamp(),
             &self.order_id,
             count
         );
 
-        // Check if manager rejected - this becomes a permanent payment failure
         match approval {
             ApprovalOutcome::Rejected { by, reason } => {
-                println!(
-                    "[{:.3}]      -> Payment blocked: rejected by {} - {}",
-                    timestamp(),
-                    by,
-                    reason
-                );
-                return Err(OrderError::ManagerRejected { by, reason }); // Non-retryable
+                println!("{:.3} payment blocked: {} - {}", timestamp(), by, reason);
+                return Err(OrderError::ManagerRejected { by, reason });
             }
-            ApprovalOutcome::Approved { .. } => {
-                // Continue with payment processing
-            }
+            ApprovalOutcome::Approved { .. } => {}
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Check for insufficient funds
         if self.amount > 10000.0 {
-            println!(
-                "[{:.3}]      -> Insufficient funds (permanent)",
-                timestamp()
-            );
+            println!("{:.3} insufficient funds", timestamp());
             return Err(OrderError::InsufficientFunds);
         }
 
-        println!("[{:.3}]      -> Payment authorized", timestamp());
+        println!("{:.3} payment authorized", timestamp());
         Ok(true)
     }
 
-    /// Step 6: Notify Customer (label comes from flow-level child invocation)
     #[step]
     async fn notify_customer(
         self: Arc<Self>,
@@ -628,7 +440,7 @@ impl OrderFulfillment {
         NOTIFY_CUSTOMER_COUNT.fetch_add(1, Ordering::Relaxed);
 
         println!(
-            "[{:.3}]   [{}] notify_customer (execution #{})",
+            "{:.3} {} notify_customer #{}",
             timestamp(),
             &self.order_id,
             count
@@ -637,38 +449,34 @@ impl OrderFulfillment {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         println!(
-            "[{:.3}]      -> Customer notified (tracking: {})",
+            "{:.3} customer notified: {}",
             timestamp(),
             label.tracking_number
         );
         Ok(label)
     }
 
-    /// Main SEQUENTIAL flow (NO DAG)
     #[flow]
     async fn fulfill_order(self: Arc<Self>) -> Result<OrderSummary, OrderError> {
         println!(
-            "\n[{:.3}] ORDER[{}] Starting SEQUENTIAL fulfillment",
+            "\n{:.3} {} starting fulfillment",
             timestamp(),
             self.order_id
         );
         let start = std::time::Instant::now();
 
-        // Run steps SEQUENTIALLY (no DAG parallelism)
         let _customer = self.clone().validate_customer().await?;
         let _fraud = self.clone().check_fraud().await?;
         let _inventory = self.clone().reserve_inventory().await?;
 
-        // SIGNAL STEP - Flow may suspend here until manager approves
         let approval = self.clone().await_manager_approval().await?;
 
         let _payment = self.clone().process_payment(approval).await?;
 
-        // Child flow invocation happens at flow level (not in a step - steps must be atomic!)
         let count = OrderAttempts::inc_label(&self.order_id);
         GENERATE_LABEL_COUNT.fetch_add(1, Ordering::Relaxed);
         println!(
-            "[{:.3}]   [{}] generate_shipping_label (execution #{})",
+            "{:.3} {} generate_label #{}",
             timestamp(),
             &self.order_id,
             count
@@ -684,7 +492,7 @@ impl OrderFulfillment {
             .map_err(|e| OrderError::Failed(format!("Child flow failed: {}", e)))?;
 
         println!(
-            "[{:.3}]      -> Label generated: {}",
+            "{:.3} label generated: {}",
             timestamp(),
             label.tracking_number
         );
@@ -694,7 +502,7 @@ impl OrderFulfillment {
         let duration = start.elapsed();
         ORDER_TIMINGS.insert(self.order_id.clone(), duration.as_secs_f64());
         println!(
-            "[{:.3}] ORDER[{}] SEQUENTIAL fulfillment complete in {:.3}s\n",
+            "{:.3} {} complete in {:.3}s\n",
             timestamp(),
             self.order_id,
             duration.as_secs_f64()
@@ -711,10 +519,6 @@ impl OrderFulfillment {
         })
     }
 }
-
-// =============================================================================
-// Child Flow - Label Generator
-// =============================================================================
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LabelGenerator {
@@ -740,10 +544,9 @@ impl LabelGenerator {
             .expect("Must be called within flow");
 
         println!(
-            "[{:.3}]     CHILD[{}]: Generating label for order {}",
+            "{:.3} generating label {}",
             timestamp(),
-            &flow_id.to_string()[..8],
-            self.order_id
+            &flow_id.to_string()[..8]
         );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -755,9 +558,8 @@ impl LabelGenerator {
         };
 
         println!(
-            "[{:.3}]     CHILD[{}]: Label complete: {}",
+            "{:.3} label complete: {}",
             timestamp(),
-            &flow_id.to_string()[..8],
             label.tracking_number
         );
 
@@ -765,18 +567,10 @@ impl LabelGenerator {
     }
 }
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
 fn timestamp() -> f64 {
     let now = Utc::now();
     now.timestamp() as f64 + (now.timestamp_subsec_millis() as f64 / 1000.0)
 }
-
-// =============================================================================
-// Main - Multi-Worker with Signals and Versioning
-// =============================================================================
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -789,7 +583,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("This example demonstrates how each flow instance can be tagged with a version");
     println!("to track which code deployment executed it.\n");
 
-    // Schedule 3 orders with DIFFERENT VERSIONS to demonstrate version tracking
     let orders = vec![
         (
             OrderFulfillment {
@@ -799,7 +592,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 amount: 299.99,
                 quantity: 2,
             },
-            "v1.0", // Older deployment
+            "v1.0",
         ),
         (
             OrderFulfillment {
@@ -809,7 +602,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 amount: 149.99,
                 quantity: 1,
             },
-            "v2.0", // Current deployment
+            "v2.0",
         ),
         (
             OrderFulfillment {
@@ -819,34 +612,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 amount: 499.99,
                 quantity: 3,
             },
-            "v2.1", // Latest deployment
+            "v2.1",
         ),
     ];
 
     let mut task_ids = Vec::new();
     for (order, version) in &orders {
-        // Schedule with version
         let scheduler = Scheduler::new(storage.clone()).with_version(*version);
         let task_id = scheduler.schedule(order.clone()).await?;
         task_ids.push((task_id, order.order_id.clone(), version.to_string()));
 
         println!(
-            "   ✓ Scheduled {} with version {} (task_id: {})",
+            "   Scheduled {} with version {} (task_id: {})",
             order.order_id,
             version,
             task_id.to_string()[..8].to_uppercase()
         );
 
-        // Simulate manager approving each order after a delay
-        // In a real application, this would be external (HTTP webhook, Redis pub/sub, etc.)
         let signal_source_clone = signal_source.clone();
         let order_id = order.order_id.clone();
         tokio::spawn(async move {
             signal_source_clone
                 .simulate_approval(
                     &format!("order_approval_{}", order_id),
-                    Duration::from_secs(2), // Approve after 2 seconds
-                    true,                   // All orders approved
+                    Duration::from_secs(2),
+                    true,
                 )
                 .await;
         });
@@ -876,24 +666,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .register(|flow: Arc<LabelGenerator>| flow.generate())
                     .await;
 
-                // IMPORTANT: Enable signal processing with .with_signals()
-                // This allows the worker to deliver signals to suspended flows
                 worker.with_signals(signal_source).start().await
             })
         })
         .collect();
-
-    println!("   ✓ 4 workers started and polling for work\n");
-
-    // ============================================================
-    // PART 3: Client Status Monitoring (Event-Driven)
-    // ============================================================
-    // In production, the CLIENT would poll a status API endpoint:
-    //   GET /api/tasks/:id -> returns {status: "pending|running|complete|failed"}
-    //
-    // This demonstrates event-driven waiting using status notifications
-    // instead of polling every 500ms.
-    // ============================================================
 
     let status_notify = storage.status_notify().clone();
     let timeout_duration = Duration::from_secs(30);
@@ -901,7 +677,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let mut all_complete = true;
             for (task_id, _, _) in &task_ids {
-                // This simulates: GET /api/tasks/{task_id}
                 if let Some(scheduled) = storage.get_scheduled_flow(*task_id).await? {
                     if !matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
                         all_complete = false;
@@ -912,7 +687,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if all_complete {
                 break;
             }
-            // Wait for status change notification instead of polling
             status_notify.notified().await;
         }
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -920,14 +694,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await
     .ok();
 
-    // Shutdown all workers
     for handle in workers {
         handle.await?.shutdown().await;
     }
 
-    // ============================================================
-    // Display Version Information
-    // ============================================================
     println!("\n=== Flow Version Summary ===\n");
     for (task_id, order_id, scheduled_version) in &task_ids {
         if let Some(flow) = storage.get_scheduled_flow(*task_id).await? {
@@ -944,10 +714,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 order_id, status_str, version_str
             );
 
-            // Demonstrate querying flows by version
             if version_str != *scheduled_version {
                 println!(
-                    "      ⚠️ Version mismatch! Expected: {}, Got: {}",
+                    "      Warning: Version mismatch! Expected: {}, Got: {}",
                     scheduled_version, version_str
                 );
             }
@@ -956,10 +725,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Versioning Benefits ===\n");
     println!("With flow versioning, you can:");
-    println!("  • Query which flows are running on old versions");
-    println!("  • Debug issues by checking which code version a flow used");
-    println!("  • Gradually migrate flows from old to new versions");
-    println!("  • Track version-specific metrics and behavior");
+    println!("  * Query which flows are running on old versions");
+    println!("  * Debug issues by checking which code version a flow used");
+    println!("  * Gradually migrate flows from old to new versions");
+    println!("  * Track version-specific metrics and behavior");
     println!();
 
     storage.close().await?;

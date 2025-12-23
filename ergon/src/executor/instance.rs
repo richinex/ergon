@@ -1,7 +1,7 @@
 //! Flow executor module.
 //!
-//! This module provides the Executor type for running flow instances with various
-//! execution strategies (async, sync, resume, signal).
+//! This module provides the Executor type for running flow instances with
+//! async execution, resumption, and signal handling.
 //!
 //! Following Dave Cheney's simplicity principle and the guideline "The name of an
 //! identifier includes its package name," we use `Executor` instead of `FlowExecutor`
@@ -15,16 +15,14 @@ use std::future::Future;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Executes flow instances with various execution strategies.
+/// Executes flow instances with async execution and signal handling.
 ///
 /// Executor holds the complete state of a flow execution (ID, flow object, storage)
-/// and provides methods for executing flows in different contexts:
+/// and provides methods for:
 ///
-/// - `execute`: For async flows (primary API)
-/// - `execute_sync`: For sync flows with manual runtime management (rare)
-/// - `execute_sync_blocking`: For sync flows from async contexts (uses spawn_blocking)
-/// - `resume`: For resuming flows waiting for external signals
-/// - `signal_resume`: For sending signals to waiting flows
+/// - `execute`: Execute async flows (all flows are async due to the #[step] macro)
+/// - `resume`: Resume flows waiting for external signals
+/// - `signal_resume`: Send signals to waiting flows
 ///
 /// # Design Rationale
 ///
@@ -135,54 +133,6 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
         .await
     }
 
-    /// Executes a synchronous flow function that returns a value.
-    ///
-    /// This is a rare case - prefer async flows with `execute()` when possible.
-    ///
-    /// # Requirements
-    ///
-    /// This method requires an active tokio runtime context established via `Runtime::enter()`.
-    ///
-    /// # Important
-    ///
-    /// **Cannot be used from `#[tokio::main]` or async contexts** due to nested block_on restrictions.
-    /// Use `execute_sync_blocking()` instead for those cases.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called outside a tokio runtime context. If you need error handling instead,
-    /// check `tokio::runtime::Handle::try_current()` before calling this method.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// fn main() {
-    ///     let rt = tokio::runtime::Runtime::new().unwrap();
-    ///     let _guard = rt.enter();
-    ///     let result = executor.execute_sync(|f| f.calculate());
-    /// }
-    /// ```
-    pub fn execute_sync<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-        R: Send + 'static,
-    {
-        let context = Arc::new(ExecutionContext::new(self.id, self.storage.clone()));
-        let handle = tokio::runtime::Handle::try_current().expect(
-            "Sync flows require an active tokio runtime created with Runtime::new() + enter(). \
-             Cannot use #[tokio::main] due to nested block_on restriction.",
-        );
-
-        handle.block_on(async {
-            EXECUTION_CONTEXT
-                .scope(
-                    Arc::clone(&context),
-                    CALL_TYPE.scope(CallType::Run, async { f(&self.flow) }),
-                )
-                .await
-        })
-    }
-
     /// Resumes a flow that was waiting for an external signal.
     ///
     /// # Errors
@@ -280,44 +230,5 @@ impl<T, S: ExecutionLog + 'static> Executor<T, S> {
             .map_err(ExecutionError::from)?;
 
         Ok(())
-    }
-}
-
-impl<T, S> Executor<T, S>
-where
-    T: Clone + Send + Sync + 'static,
-    S: ExecutionLog + 'static,
-{
-    /// Executes a synchronous flow function from an async context using spawn_blocking.
-    ///
-    /// This is the recommended method for calling sync flows from `#[tokio::main]` or
-    /// other async contexts. It uses `tokio::task::spawn_blocking` internally to avoid
-    /// nested block_on panics.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let result = executor
-    ///         .execute_sync_blocking(|f| f.calculate_sum(&numbers))
-    ///         .await?;
-    /// }
-    /// ```
-    pub async fn execute_sync_blocking<F, R>(&self, f: F) -> Result<R>
-    where
-        F: FnOnce(&T) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let flow_clone = self.flow.clone();
-        let id = self.id;
-        let storage = Arc::clone(&self.storage);
-
-        tokio::task::spawn_blocking(move || {
-            let executor = Executor::new(id, flow_clone, storage);
-            executor.execute_sync(f)
-        })
-        .await
-        .map_err(|e| ExecutionError::TaskPanic(e.to_string()))
     }
 }

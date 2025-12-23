@@ -1,16 +1,15 @@
-//! Test: Sequential execution with multiple .invoke() calls (versioned)
+//! Sequential execution with multiple .invoke() calls (versioned).
 //!
-//! Note: With atomic steps, .invoke() must be at flow level.
-//! This means we can't use dag! macro when child results are needed in steps.
+//! Run with
+//!
+//! ```not_rust
+//! cargo run --example test_dag_multiple_invoke_versioned --features=sqlite
+//! ```
 
 use chrono::Utc;
 use ergon::executor::{ExecutionError, InvokeChild};
 use ergon::prelude::*;
 use std::time::Duration;
-
-// =============================================================================
-// Parent Flow - Uses DAG execution
-// =============================================================================
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
 struct Order {
@@ -44,13 +43,11 @@ impl Order {
 
     #[flow]
     async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
-        // Validate first
         self.clone()
             .validate()
             .await
             .map_err(ExecutionError::Failed)?;
 
-        // Invoke children at flow level
         println!("[{}] Flow: invoking Payment child", ts());
         let payment_result = self
             .invoke(PaymentFlow {
@@ -70,7 +67,6 @@ impl Order {
             .await
             .map_err(|e| ExecutionError::Failed(e.to_string()))?;
 
-        // Process results in atomic steps
         self.clone()
             .finalize_payment(payment_result)
             .await
@@ -81,10 +77,6 @@ impl Order {
             .map_err(ExecutionError::Failed)
     }
 }
-
-// =============================================================================
-// Child Flow 1 - Payment
-// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PaymentResult {
@@ -110,10 +102,6 @@ impl PaymentFlow {
     }
 }
 
-// =============================================================================
-// Child Flow 2 - Shipment
-// =============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ShipmentResult {
     tracking: String,
@@ -137,26 +125,15 @@ impl ShipmentFlow {
     }
 }
 
-// =============================================================================
-// Utilities
-// =============================================================================
-
 fn ts() -> String {
     Utc::now().format("%H:%M:%S%.3f").to_string()
 }
-
-// =============================================================================
-// Main
-// =============================================================================
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = "data/test_dag_multiple_invoke_versioned.db";
 
-    // Ensure data directory exists
     std::fs::create_dir_all("data")?;
-
-    // Clean up any leftover database
     let _ = std::fs::remove_file(db);
 
     let storage = Arc::new(SqliteExecutionLog::new(db).await?);

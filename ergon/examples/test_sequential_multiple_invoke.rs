@@ -1,17 +1,15 @@
-//! Test: Sequential execution with multiple steps with .invoke()
+//! Sequential execution with multiple .invoke() calls.
 //!
-//! This is a SEQUENTIAL version (no dag! macro) to isolate the bug.
-//! Compare with test_dag_multiple_invoke.rs to determine if the issue
-//! is with DAG execution or general step suspension/resumption.
+//! Run with
+//!
+//! ```not_rust
+//! cargo run --example test_sequential_multiple_invoke --features=sqlite
+//! ```
 
 use chrono::Utc;
 use ergon::executor::{ExecutionError, InvokeChild};
 use ergon::prelude::*;
 use std::time::Duration;
-
-// =============================================================================
-// Parent Flow - Sequential execution (no DAG)
-// =============================================================================
 
 #[derive(Clone, Serialize, Deserialize, FlowType)]
 struct Order {
@@ -43,8 +41,6 @@ impl Order {
         Ok(shipment)
     }
 
-    // Sequential flow - NO dag! macro
-    // Invocations happen at FLOW level, not in steps
     #[flow]
     async fn process(self: Arc<Self>) -> Result<ShipmentResult, ExecutionError> {
         println!("[{}] FLOW: Starting sequential execution", ts());
@@ -55,7 +51,6 @@ impl Order {
             .map_err(ExecutionError::Failed)?;
         println!("[{}] FLOW: Validate complete", ts());
 
-        // Invoke payment child at flow level
         let payment = self
             .invoke(PaymentFlow {
                 order_id: self.id.clone(),
@@ -71,7 +66,6 @@ impl Order {
             .map_err(ExecutionError::Failed)?;
         println!("[{}] FLOW: Payment complete", ts());
 
-        // Invoke shipment child at flow level
         let shipment = self
             .invoke(ShipmentFlow {
                 order_id: self.id.clone(),
@@ -90,10 +84,6 @@ impl Order {
         Ok(result)
     }
 }
-
-// =============================================================================
-// Child Flow 1 - Payment
-// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PaymentResult {
@@ -119,10 +109,6 @@ impl PaymentFlow {
     }
 }
 
-// =============================================================================
-// Child Flow 2 - Shipment
-// =============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ShipmentResult {
     tracking: String,
@@ -146,17 +132,9 @@ impl ShipmentFlow {
     }
 }
 
-// =============================================================================
-// Utilities
-// =============================================================================
-
 fn ts() -> String {
     Utc::now().format("%H:%M:%S%.3f").to_string()
 }
-
-// =============================================================================
-// Main
-// =============================================================================
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
