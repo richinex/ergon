@@ -90,7 +90,7 @@ pub struct RetryPolicy {
     /// - Attempt 2: after initial_delay
     /// - Attempt 3: after initial_delay * backoff_multiplier
     ///
-    /// Default: 1 (no retries, backward compatible)
+    /// Default: 1 (no retries)
     pub max_attempts: u32,
 
     /// Initial delay before the first retry.
@@ -235,10 +235,9 @@ impl RetryPolicy {
 }
 
 impl Default for RetryPolicy {
-    /// Default is NONE (no retries) for backward compatibility.
+    /// Default is NONE (no retries).
     ///
-    /// Existing code without `retry` attribute will continue to work
-    /// with the same behavior (no automatic retries).
+    /// Code without `retry` attribute will not automatically retry.
     fn default() -> Self {
         Self::NONE
     }
@@ -601,7 +600,7 @@ mod tests {
         let policy = RetryPolicy::default();
         assert_eq!(policy, RetryPolicy::NONE);
 
-        // Default should be NONE (no retries) for backward compatibility
+        // Default should be NONE (no retries)
         assert_eq!(policy.max_attempts, 1);
     }
 

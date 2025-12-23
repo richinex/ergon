@@ -124,10 +124,10 @@ pub trait FlowType {
 /// // ^^^^^^^^^^^ Type inferred as InventoryStatus!
 /// ```
 ///
-/// # Backwards Compatibility
+/// # Design
 ///
-/// This trait is separate from `FlowType` to maintain backwards compatibility.
-/// Existing flows that don't use the `invoke()` API don't need to implement it.
+/// This trait is separate from `FlowType` because only flows that are invoked
+/// as child flows need to declare their output type.
 pub trait InvokableFlow: FlowType {
     /// The type returned by this flow's execution.
     ///

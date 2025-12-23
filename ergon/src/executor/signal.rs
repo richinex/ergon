@@ -179,7 +179,7 @@ pub trait SignalSource: Send + Sync {
     async fn consume_signal(&self, signal_name: &str);
 }
 
-/// Wrapper type for step futures (for backwards compatibility with step macro).
+/// Wrapper type for step futures used by the #[step] macro.
 ///
 /// This is used internally by the #[step] macro and should not be used directly.
 pub struct StepFuture<Fut> {

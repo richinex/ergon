@@ -56,7 +56,7 @@ pub struct SuspensionPayload {
     /// - For timers: empty (timer just marks delay completion)
     pub data: Vec<u8>,
     /// Whether the error is retryable (only meaningful when success=false)
-    /// None for success or backward compatibility
+    /// None when success=true
     #[serde(default)]
     pub is_retryable: Option<bool>,
 }
