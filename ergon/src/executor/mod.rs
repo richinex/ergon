@@ -48,8 +48,8 @@ pub use error::{ExecutionError, FlowOutcome, Result, Retryable, SuspendReason};
 pub use instance::Executor;
 pub use scheduler::{Configured, Scheduler, Unconfigured};
 pub use signal::{
-    await_external_signal, signal_parent_flow, SignalProcessing, SignalSource, StepFuture,
-    WithSignals, WithoutSignals,
+    await_external_signal, signal_parent_flow, SignalProcessing, SignalSource, WithSignals,
+    WithoutSignals,
 };
 pub use timer::{schedule_timer, schedule_timer_named, TimerProcessing, WithTimers, WithoutTimers};
 pub use worker::{Registry, WithStructuredTracing, WithoutStructuredTracing, Worker, WorkerHandle};

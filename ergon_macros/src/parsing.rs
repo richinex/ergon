@@ -15,11 +15,7 @@ use syn::{FnArg, ReturnType, Signature, Type};
 ///
 /// Supports all the same attributes as #[step] plus depends_on and inputs
 #[derive(Default)]
-pub(crate) struct DagStepArgs {
-    /// Delay value (in units specified by `unit`)
-    pub delay: Option<i64>,
-    /// Time unit for delay (MILLIS, SECONDS, MINUTES, HOURS)
-    pub unit: Option<String>,
+pub(crate) struct StepArgs {
     /// When true, Err results are cached like Ok results
     pub cache_errors: bool,
     /// List of step names this step depends on
@@ -29,16 +25,10 @@ pub(crate) struct DagStepArgs {
     pub inputs: std::collections::HashMap<String, String>,
 }
 
-impl DagStepArgs {
+impl StepArgs {
     /// Parse a single attribute using ParseNestedMeta
     pub fn parse_meta(&mut self, meta: syn::meta::ParseNestedMeta) -> syn::Result<()> {
-        if meta.path.is_ident("delay") {
-            self.delay = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
-            Ok(())
-        } else if meta.path.is_ident("unit") {
-            self.unit = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-            Ok(())
-        } else if meta.path.is_ident("cache_errors") {
+        if meta.path.is_ident("cache_errors") {
             self.cache_errors = true;
             Ok(())
         } else if meta.path.is_ident("retry") {
@@ -74,23 +64,7 @@ impl DagStepArgs {
             })?;
             Ok(())
         } else {
-            Err(meta.error("expected `delay`, `unit`, `cache_errors`, `depends_on`, or `inputs`"))
-        }
-    }
-
-    /// Calculate delay in milliseconds
-    pub fn delay_ms(&self) -> i64 {
-        if let Some(delay_value) = self.delay {
-            let unit_str = self.unit.as_deref().unwrap_or("SECONDS");
-            match unit_str {
-                "MILLIS" => delay_value,
-                "SECONDS" => delay_value * 1000,
-                "MINUTES" => delay_value * 60 * 1000,
-                "HOURS" => delay_value * 60 * 60 * 1000,
-                _ => delay_value * 1000,
-            }
-        } else {
-            0
+            Err(meta.error("expected `cache_errors`, `depends_on`, or `inputs`"))
         }
     }
 }

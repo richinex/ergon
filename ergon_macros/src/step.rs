@@ -13,7 +13,7 @@
 //! Following Parnas's information hiding principle, this module encapsulates
 //! decisions about how step methods are transformed and instrumented.
 
-use crate::parsing::{build_method_signature, is_result_type, DagStepArgs};
+use crate::parsing::{build_method_signature, is_result_type, StepArgs};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
@@ -35,8 +35,6 @@ use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
 ///
 /// # Attributes
 ///
-/// - `delay = <number>` - Delay before execution
-/// - `unit = "MILLIS"|"SECONDS"|"MINUTES"|"HOURS"` - Time unit for delay
 /// - `cache_errors` - Cache error results (default: use autoref specialization)
 /// - `depends_on = "step_name"` - Single explicit dependency (enables parallelism)
 /// - `depends_on = ["step_a", "step_b"]` - Multiple dependencies
@@ -85,7 +83,7 @@ use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
 /// - `foo(self: Arc<Self>, x) -> T` - Original method for direct execution (with full instrumentation)
 pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse step arguments
-    let mut args = DagStepArgs::default();
+    let mut args = StepArgs::default();
 
     if !attr.is_empty() {
         let attr_parser = syn::meta::parser(|meta| args.parse_meta(meta));
@@ -186,14 +184,6 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         .to_compile_error()
         .into();
     }
-
-    // Calculate delay
-    let delay_ms = args.delay_ms();
-    let delay_duration = if delay_ms > 0 {
-        quote! { Some(std::time::Duration::from_millis(#delay_ms as u64)) }
-    } else {
-        quote! { None }
-    };
 
     // Steps don't have retry policies - only flows do
     // Retry policy is stored at the flow level (step 0)
@@ -615,17 +605,12 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         step: __step,
                                         class_name: __class_name,
                                         method_name: #method_name_str,
-                                        delay: #delay_duration,
+                                        delay: None,
                                         status: ergon::InvocationStatus::Pending,
                                         params: &__params,
                                         retry_policy: #retry_policy_expr,
                                     }
                                 ).await;
-
-                                // Handle delay if specified
-                                if let Some(__delay) = #delay_duration {
-                                    tokio::time::sleep(__delay).await;
-                                }
 
                                 // Execute the step logic via executor function
                                 let __result: #return_type = #executor_call.await;
@@ -662,12 +647,12 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         /// - Delay support
         /// - Autoref specialization for RetryableError
         #(#attrs)*
-        #vis fn #fn_name(#original_fn_params) -> ergon::StepFuture<impl std::future::Future<Output = Option<#return_type>>> {
-            ergon::StepFuture::new(Self::#internal_fn_name(#original_fn_call_args))
+        #vis fn #fn_name(#original_fn_params) -> impl std::future::Future<Output = #return_type> {
+            Self::#internal_fn_name(#original_fn_call_args)
         }
 
         /// Internal implementation with full instrumentation
-        async fn #internal_fn_name(#original_fn_params) -> Option<#return_type> {
+        async fn #internal_fn_name(#original_fn_params) -> #return_type {
             // Try to get execution context
             match ergon::EXECUTION_CONTEXT.try_with(|ctx| ctx.clone()) {
                 Ok(__ctx) => {
@@ -705,26 +690,6 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Set enclosing step so invoke().result() and timers/signals know their parent
                     __ctx.set_enclosing_step(__step);
 
-                    // Handle AWAIT call type
-                    if matches!(__call_type, ergon::CallType::Await) {
-                        let _ = __ctx.log_step_start(
-                            ergon::executor::LogStepStartParams {
-                                step: __step,
-                                class_name: __class_name,
-                                method_name: #method_name_str,
-                                delay: None,
-                                status: ergon::InvocationStatus::WaitingForSignal,
-                                params: &__params,
-                                retry_policy: #retry_policy_expr,
-                            }
-                        ).await;
-                        // Restore enclosing step before returning
-                        if let Some(__prev) = __prev_enclosing_step {
-                            __ctx.set_enclosing_step(__prev);
-                        }
-                        return None;
-                    }
-
                     // Check cache (unless RESUME mode)
                     if !matches!(__call_type, ergon::CallType::Resume) {
                         match __ctx.get_cached_result::<#return_type, _>(
@@ -735,7 +700,7 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 if let Some(__prev) = __prev_enclosing_step {
                                     __ctx.set_enclosing_step(__prev);
                                 }
-                                return Some(__cached_result);
+                                return __cached_result;
                             }
                             Ok(None) => {
                                 // No cache, continue
@@ -769,17 +734,12 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                             step: __step,
                             class_name: __class_name,
                             method_name: #method_name_str,
-                            delay: #delay_duration,
+                            delay: None,
                             status: ergon::InvocationStatus::Pending,
                             params: &__params,
                             retry_policy: #retry_policy_expr,
                         }
                     ).await;
-
-                    // Handle delay
-                    if let Some(__delay) = #delay_duration {
-                        tokio::time::sleep(__delay).await;
-                    }
 
                                     // Execute the step logic (with automatic retry if policy is set)
                     let __result: #return_type = (async { #block }).await;
@@ -794,13 +754,11 @@ pub fn step_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                         __ctx.set_enclosing_step(__prev);
                     }
 
-                    // Return Some to indicate result should be used
-                    // (Factory will check if it was actually logged)
-                    Some(__result)
+                    __result
                 }
                 Err(_) => {
                     // Direct execution without context
-                    Some((async { #block }).await)
+                    (async { #block }).await
                 }
             }
         }

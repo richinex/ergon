@@ -179,45 +179,6 @@ pub trait SignalSource: Send + Sync {
     async fn consume_signal(&self, signal_name: &str);
 }
 
-/// Wrapper type for step futures used by the #[step] macro.
-///
-/// This is used internally by the #[step] macro and should not be used directly.
-pub struct StepFuture<Fut> {
-    pub(crate) inner: Fut,
-}
-
-impl<Fut> StepFuture<Fut> {
-    pub fn new(f: Fut) -> Self {
-        Self { inner: f }
-    }
-}
-
-// Implement Future for StepFuture so it can be awaited directly in flows
-impl<Fut, R> std::future::Future for StepFuture<Fut>
-where
-    Fut: std::future::Future<Output = Option<R>>,
-{
-    type Output = R;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        // SAFETY: We're projecting from Pin<&mut Self> to Pin<&mut Fut>
-        // This is safe because StepFuture is structurally equivalent to Fut and
-        // we never move out of `inner` after it's pinned.
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.inner) };
-
-        match inner.poll(cx) {
-            std::task::Poll::Ready(Some(value)) => std::task::Poll::Ready(value),
-            std::task::Poll::Ready(None) => {
-                panic!("Step returned None outside of signal context (this should not happen with the new signal API)")
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
-
 /// Awaits an external signal with the given name.
 ///
 /// The signal is persisted to storage and will resume even if the worker

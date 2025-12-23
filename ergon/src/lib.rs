@@ -96,7 +96,7 @@ pub use core::kind;
 pub use executor::{
     await_external_signal, idempotency_key, idempotency_key_parts, ArcStepExt, DeferredRegistry,
     ExecutionContext, ExecutionError, Executor, Registry, Result as ExecutionResult, Retryable,
-    Scheduler, StepFuture, StepHandle, Worker, WorkerHandle, CALL_TYPE, EXECUTION_CONTEXT,
+    Scheduler, StepHandle, Worker, WorkerHandle, CALL_TYPE, EXECUTION_CONTEXT,
 };
 
 pub use graph::{Graph, GraphError, GraphResult, StepId, StepNode};

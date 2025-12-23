@@ -44,7 +44,6 @@ impl FromStr for InvocationStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallType {
     Run,
-    Await,
     Resume,
 }
 
