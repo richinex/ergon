@@ -549,7 +549,7 @@ fn bench_end_to_end(c: &mut Criterion) {
                 // Complete
                 if matches!(result, FlowOutcome::Completed(_)) {
                     let _ = storage
-                        .complete_flow(scheduled_flow.flow_id, TaskStatus::Complete)
+                        .complete_flow(scheduled_flow.flow_id, TaskStatus::Complete, None)
                         .await;
                 }
 
@@ -579,7 +579,7 @@ fn bench_end_to_end(c: &mut Criterion) {
                 // Complete
                 if matches!(result, FlowOutcome::Completed(_)) {
                     let _ = storage
-                        .complete_flow(scheduled_flow.flow_id, TaskStatus::Complete)
+                        .complete_flow(scheduled_flow.flow_id, TaskStatus::Complete, None)
                         .await;
                 }
 
