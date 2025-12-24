@@ -676,27 +676,34 @@ impl ExecutionLog for SqliteExecutionLog {
         Ok(flow_opt)
     }
 
-    async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
+    async fn complete_flow(
+        &self,
+        task_id: Uuid,
+        status: super::TaskStatus,
+        error_message: Option<String>,
+    ) -> Result<()> {
         // When marking as SUSPENDED, we need to clear the lock so the flow can be resumed
         let result = if status == super::TaskStatus::Suspended {
             sqlx::query(
                 "UPDATE flow_queue
-                 SET status = ?, locked_by = NULL, updated_at = ?
+                 SET status = ?, locked_by = NULL, updated_at = ?, error_message = ?
                  WHERE task_id = ?",
             )
             .bind(status.as_str())
             .bind(Utc::now().timestamp_millis())
+            .bind(error_message.as_deref())
             .bind(task_id.to_string())
             .execute(&self.pool)
             .await?
         } else {
             sqlx::query(
                 "UPDATE flow_queue
-                 SET status = ?, updated_at = ?
+                 SET status = ?, updated_at = ?, error_message = ?
                  WHERE task_id = ?",
             )
             .bind(status.as_str())
             .bind(Utc::now().timestamp_millis())
+            .bind(error_message.as_deref())
             .bind(task_id.to_string())
             .execute(&self.pool)
             .await?

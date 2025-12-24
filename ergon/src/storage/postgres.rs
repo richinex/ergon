@@ -662,26 +662,33 @@ impl ExecutionLog for PostgresExecutionLog {
         Ok(flow_opt)
     }
 
-    async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
+    async fn complete_flow(
+        &self,
+        task_id: Uuid,
+        status: super::TaskStatus,
+        error_message: Option<String>,
+    ) -> Result<()> {
         let result = if status == super::TaskStatus::Suspended {
             sqlx::query(
                 "UPDATE flow_queue
-                 SET status = $1, locked_by = NULL, updated_at = $2
-                 WHERE task_id = $3",
+                 SET status = $1, locked_by = NULL, updated_at = $2, error_message = $3
+                 WHERE task_id = $4",
             )
             .bind(status.as_str())
             .bind(Utc::now().timestamp_millis())
+            .bind(error_message.as_deref())
             .bind(task_id)
             .execute(&self.pool)
             .await?
         } else {
             sqlx::query(
                 "UPDATE flow_queue
-                 SET status = $1, updated_at = $2
-                 WHERE task_id = $3",
+                 SET status = $1, updated_at = $2, error_message = $3
+                 WHERE task_id = $4",
             )
             .bind(status.as_str())
             .bind(Utc::now().timestamp_millis())
+            .bind(error_message.as_deref())
             .bind(task_id)
             .execute(&self.pool)
             .await?

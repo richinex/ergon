@@ -1051,7 +1051,12 @@ impl ExecutionLog for RedisExecutionLog {
             }
         }
     }
-    async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
+    async fn complete_flow(
+        &self,
+        task_id: Uuid,
+        status: super::TaskStatus,
+        error_message: Option<String>,
+    ) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let flow_key = Self::flow_key(task_id);
 
@@ -1090,12 +1095,19 @@ impl ExecutionLog for RedisExecutionLog {
 
         // Update flow status and set TTL
         let now = Utc::now().timestamp();
-        let _: () = redis::pipe()
-            .atomic()
+        let mut pipe = redis::pipe();
+        pipe.atomic()
             .hset(&flow_key, "status", status.as_str())
-            .hset(&flow_key, "updated_at", now)
-            .hdel(&flow_key, "stream_entry_id") // Clean up
-            .expire(&flow_key, self.completed_ttl)
+            .hset(&flow_key, "updated_at", now);
+
+        if let Some(error_msg) = error_message {
+            pipe.hset(&flow_key, "error_message", error_msg);
+        }
+
+        pipe.hdel(&flow_key, "stream_entry_id") // Clean up
+            .expire(&flow_key, self.completed_ttl);
+
+        let _: () = pipe
             .query_async(&mut *conn)
             .await
             .map_err(|e| StorageError::Connection(e.to_string()))?;

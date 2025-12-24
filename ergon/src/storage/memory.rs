@@ -349,10 +349,18 @@ impl ExecutionLog for InMemoryExecutionLog {
         Ok(None)
     }
 
-    async fn complete_flow(&self, task_id: Uuid, status: super::TaskStatus) -> Result<()> {
+    async fn complete_flow(
+        &self,
+        task_id: Uuid,
+        status: super::TaskStatus,
+        error_message: Option<String>,
+    ) -> Result<()> {
         if let Some(mut entry) = self.flow_queue.get_mut(&task_id) {
             entry.status = status;
             entry.updated_at = Utc::now();
+            if let Some(error_msg) = error_message {
+                entry.error_message = Some(error_msg);
+            }
 
             // Notify any waiters that a flow status changed
             self.status_notify.notify_waiters();
@@ -723,7 +731,7 @@ mod tests {
         log.dequeue_flow("worker-1").await.unwrap();
 
         // Mark as complete
-        log.complete_flow(task_id, TaskStatus::Complete)
+        log.complete_flow(task_id, TaskStatus::Complete, None)
             .await
             .unwrap();
 
@@ -737,7 +745,7 @@ mod tests {
         let log = InMemoryExecutionLog::new();
         let fake_id = Uuid::new_v4();
 
-        let result = log.complete_flow(fake_id, TaskStatus::Complete).await;
+        let result = log.complete_flow(fake_id, TaskStatus::Complete, None).await;
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),

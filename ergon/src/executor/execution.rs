@@ -281,7 +281,7 @@ pub(super) async fn handle_suspended_flow<S: ExecutionLog>(
 
     // Mark flow as SUSPENDED so resume_flow() can re-enqueue it
     if let Err(e) = storage
-        .complete_flow(flow_task_id, TaskStatus::Suspended)
+        .complete_flow(flow_task_id, TaskStatus::Suspended, None)
         .await
     {
         error!("Worker {} failed to mark flow suspended: {}", worker_id, e);
@@ -362,7 +362,7 @@ pub(super) async fn handle_flow_completion<S: ExecutionLog>(
     complete_child_flow(storage, flow_id, parent_metadata, true, None).await;
 
     if let Err(e) = storage
-        .complete_flow(flow_task_id, TaskStatus::Complete)
+        .complete_flow(flow_task_id, TaskStatus::Complete, None)
         .await
     {
         error!("Worker {} failed to mark flow complete: {}", worker_id, e);
@@ -432,7 +432,7 @@ pub(super) async fn handle_flow_error<S: ExecutionLog>(
             .await;
 
             if let Err(e) = storage
-                .complete_flow(flow_task_id, TaskStatus::Failed)
+                .complete_flow(flow_task_id, TaskStatus::Failed, Some(error_msg.clone()))
                 .await
             {
                 error!("Worker {} failed to mark flow failed: {}", worker_id, e);
@@ -456,7 +456,7 @@ pub(super) async fn handle_flow_error<S: ExecutionLog>(
             .await;
 
             if let Err(e) = storage
-                .complete_flow(flow_task_id, TaskStatus::Failed)
+                .complete_flow(flow_task_id, TaskStatus::Failed, Some(error_msg))
                 .await
             {
                 error!("Worker {} failed to mark flow failed: {}", worker_id, e);

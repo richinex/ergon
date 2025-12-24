@@ -209,12 +209,18 @@ pub trait ExecutionLog: Send + Sync {
     ///
     /// * `task_id` - The unique identifier of the scheduled task
     /// * `status` - Final status (Complete or Failed)
+    /// * `error_message` - Optional error message to save (for Failed status)
     ///
     /// # Default Implementation
     ///
     /// Returns `StorageError::Unsupported` by default.
-    async fn complete_flow(&self, task_id: Uuid, status: TaskStatus) -> Result<()> {
-        let _ = (task_id, status);
+    async fn complete_flow(
+        &self,
+        task_id: Uuid,
+        status: TaskStatus,
+        error_message: Option<String>,
+    ) -> Result<()> {
+        let _ = (task_id, status, error_message);
         Err(StorageError::Unsupported(
             "flow queue not implemented for this storage backend".to_string(),
         ))
@@ -702,8 +708,13 @@ impl ExecutionLog for Box<dyn ExecutionLog> {
         (**self).dequeue_flow(worker_id).await
     }
 
-    async fn complete_flow(&self, task_id: Uuid, status: TaskStatus) -> Result<()> {
-        (**self).complete_flow(task_id, status).await
+    async fn complete_flow(
+        &self,
+        task_id: Uuid,
+        status: TaskStatus,
+        error_message: Option<String>,
+    ) -> Result<()> {
+        (**self).complete_flow(task_id, status, error_message).await
     }
 
     async fn get_scheduled_flow(&self, task_id: Uuid) -> Result<Option<ScheduledFlow>> {
