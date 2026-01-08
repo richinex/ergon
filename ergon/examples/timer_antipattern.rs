@@ -9,18 +9,15 @@ struct BadExample {
 }
 
 impl BadExample {
-    // ❌ ANTI-PATTERN: Logic after suspension
+    // ANTI-PATTERN: Logic after suspension
     #[step]
     async fn bad_pattern(self: Arc<Self>) -> Result<String, ExecutionError> {
-        println!("Before timer");
-
+        println!("Before timer"); // Runs on initial + replay
         schedule_timer_named(Duration::from_secs(1), "wait").await?;
-
-        // ⚠️ THIS CODE NEVER EXECUTES!
-        println!("After timer - YOU WILL NEVER SEE THIS!");
+        // This DOES execute, but "Before timer" logged twice
+        println!("After timer");
         let result = format!("Processed {}", self.id);
-
-        Ok(result) // This return value is ignored!
+        Ok(result)
     }
 
     #[flow]
@@ -35,7 +32,7 @@ struct GoodExample {
 }
 
 impl GoodExample {
-    // ✅ GOOD PATTERN: Suspension at end of step
+    // GOOD PATTERN: Suspension at end of step
     #[step]
     async fn wait_step(self: Arc<Self>) -> Result<(), ExecutionError> {
         println!("Before timer");
@@ -101,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notify.notified().await;
     }
 
-    println!("\n✅ Done!");
+    println!("\nDone!");
     worker_handle.shutdown().await;
     Ok(())
 }

@@ -440,7 +440,6 @@ impl RedisExecutionLog {
         let parameters = data.get("parameters").cloned().unwrap_or_default();
         let params_hash = get_str("params_hash")?.parse::<u64>().unwrap_or(0);
         let return_value = data.get("return_value").cloned();
-        let delay_ms = get_i64("delay_ms").ok();
 
         // Parse retry_policy
         let retry_policy_json = get_str("retry_policy").ok();
@@ -478,7 +477,6 @@ impl RedisExecutionLog {
             parameters,
             params_hash,
             return_value,
-            delay_ms,
             retry_policy,
             is_retryable,
         );
@@ -504,14 +502,12 @@ impl ExecutionLog for RedisExecutionLog {
             step,
             class_name,
             method_name,
-            delay,
             status,
             parameters,
             retry_policy,
         } = params;
 
         let params_hash = hash_params(parameters);
-        let delay_ms = delay.map(|d| d.as_millis() as i64).unwrap_or(0);
         let timestamp = Utc::now().timestamp();
 
         // Serialize retry_policy to JSON if present
@@ -538,8 +534,7 @@ impl ExecutionLog for RedisExecutionLog {
                     'attempts', 1,
                     'parameters', ARGV[7],
                     'params_hash', ARGV[8],
-                    'delay_ms', ARGV[9],
-                    'retry_policy', ARGV[10],
+                    'retry_policy', ARGV[9],
                     'is_retryable', '',
                     'timer_fire_at', 0,
                     'timer_name', ''
@@ -560,7 +555,6 @@ impl ExecutionLog for RedisExecutionLog {
             .arg(status.as_str())
             .arg(parameters)
             .arg(params_hash.to_string())
-            .arg(delay_ms)
             .arg(retry_policy_json)
             .invoke_async(&mut *conn)
             .await
@@ -747,7 +741,6 @@ impl ExecutionLog for RedisExecutionLog {
                     invocation_data.insert("attempts".to_string(), "0".to_string().into_bytes());
                     invocation_data.insert("parameters".to_string(), Vec::new());
                     invocation_data.insert("params_hash".to_string(), "0".to_string().into_bytes());
-                    invocation_data.insert("delay_ms".to_string(), "0".to_string().into_bytes());
                     invocation_data.insert("retry_policy".to_string(), "".to_string().into_bytes());
                     invocation_data
                         .insert("is_retryable".to_string(), "true".to_string().into_bytes());

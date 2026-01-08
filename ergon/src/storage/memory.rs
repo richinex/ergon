@@ -94,14 +94,12 @@ impl ExecutionLog for InMemoryExecutionLog {
             step,
             class_name,
             method_name,
-            delay,
             status,
             parameters,
             retry_policy,
         } = params;
 
         let params_hash = hash_params(parameters);
-        let delay_ms = delay.map(|d| d.as_millis() as i64);
 
         let invocation = Invocation::new(
             id,
@@ -114,7 +112,6 @@ impl ExecutionLog for InMemoryExecutionLog {
             parameters.to_vec(),
             params_hash,
             None,
-            delay_ms,
             retry_policy,
             None, // is_retryable (None = not an error yet)
         );
@@ -144,8 +141,6 @@ impl ExecutionLog for InMemoryExecutionLog {
     ) -> Result<Invocation> {
         let key = (id, step);
         if let Some(mut entry) = self.invocations.get_mut(&key) {
-            let delay_ms = entry.delay().map(|d| d.as_millis() as i64);
-
             let invocation = Invocation::new(
                 entry.id(),
                 entry.step(),
@@ -157,7 +152,6 @@ impl ExecutionLog for InMemoryExecutionLog {
                 entry.parameters().to_vec(),
                 entry.params_hash(),
                 Some(return_value.to_vec()),
-                delay_ms,
                 entry.retry_policy(), // Preserve retry policy
                 entry.is_retryable(), // Preserve is_retryable
             );
@@ -229,7 +223,6 @@ impl ExecutionLog for InMemoryExecutionLog {
                         0,
                         vec![],
                         0,
-                        None,
                         None,
                         None,
                         None,

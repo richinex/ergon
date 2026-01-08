@@ -223,8 +223,7 @@ pub fn flow_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                             step: __step,
                             class_name: __class_name,
                             method_name: #method_name_str,
-                            delay: None,
-                            status: ergon::InvocationStatus::Pending,
+                                status: ergon::InvocationStatus::Pending,
                             params: &__params,
                             retry_policy: #retry_policy,
                         }

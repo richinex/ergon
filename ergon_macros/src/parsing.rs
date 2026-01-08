@@ -1,7 +1,7 @@
 //! Attribute parsing for macro arguments.
 //!
 //! This module hides the complexity of parsing #[step] and #[flow] attributes,
-//! including depends_on, inputs, delay, unit, and cache_errors.
+//! including depends_on, inputs, and cache_errors.
 //!
 //! It also provides shared utilities for signature analysis.
 //!

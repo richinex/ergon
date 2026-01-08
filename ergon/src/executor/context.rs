@@ -17,7 +17,6 @@ use crate::storage::{ExecutionLog, InvocationStartParams};
 use serde::de::DeserializeOwned;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 use uuid::Uuid;
 
 /// Parameters for logging a step start.
@@ -27,7 +26,6 @@ pub struct LogStepStartParams<'a, P: serde::Serialize> {
     pub step: i32,
     pub class_name: &'a str,
     pub method_name: &'a str,
-    pub delay: Option<Duration>,
     pub status: InvocationStatus,
     pub params: &'a P,
     pub retry_policy: Option<RetryPolicy>,
@@ -186,7 +184,6 @@ impl ExecutionContext {
                 step: params.step,
                 class_name: params.class_name,
                 method_name: params.method_name,
-                delay: params.delay,
                 status: params.status,
                 parameters: &params_bytes,
                 retry_policy: params.retry_policy,

@@ -1,5 +1,4 @@
 use crate::core::{InvocationStatus, RetryPolicy};
-use std::time::Duration;
 use uuid::Uuid;
 
 /// Parameters for logging the start of a step invocation.
@@ -15,8 +14,6 @@ pub struct InvocationStartParams<'a> {
     pub class_name: &'a str,
     /// Method name (for compatibility tracking)
     pub method_name: &'a str,
-    /// Optional delay before execution
-    pub delay: Option<Duration>,
     /// Current invocation status
     pub status: InvocationStatus,
     /// Serialized parameters

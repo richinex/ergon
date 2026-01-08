@@ -130,7 +130,6 @@ where
                 step,
                 class_name: "<child_flow>",
                 method_name: &format!("invoke({})", self.child_type),
-                delay: None,
                 status: crate::core::InvocationStatus::Pending,
                 params: &(),
                 retry_policy: None,

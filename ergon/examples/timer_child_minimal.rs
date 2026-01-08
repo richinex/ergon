@@ -43,7 +43,7 @@ impl Retryable for TaskError {
     fn is_retryable(&self) -> bool {
         match self {
             TaskError::Timeout => true,
-            TaskError::Failed(_) => false, // Non-retryable
+            TaskError::Failed(_) => false,
         }
     }
 }
@@ -70,11 +70,10 @@ impl InvokableFlow for ChildTask {
 impl ChildTask {
     #[flow]
     async fn execute(self: Arc<Self>) -> Result<String, TaskError> {
-        println!("  [CHILD] Starting task...");
-
-        // Step with timer
+        // Step only handles suspension
         self.clone().wait_step().await?;
 
+        // All logging and business logic AFTER the step
         println!("  [CHILD] Timer completed, checking if should fail...");
 
         if self.should_fail {
@@ -88,12 +87,10 @@ impl ChildTask {
 
     #[step]
     async fn wait_step(self: Arc<Self>) -> Result<(), TaskError> {
-        println!("  [CHILD] Waiting 2 seconds...");
+        // Minimal step: only the suspension point
         schedule_timer_named(Duration::from_secs(2), "child-wait")
             .await
-            .map_err(|_| TaskError::Timeout)?;
-        println!("  [CHILD] Wait complete!");
-        Ok(())
+            .map_err(|_| TaskError::Timeout)
     }
 }
 
@@ -110,24 +107,53 @@ struct ParentTask {
 impl ParentTask {
     #[flow]
     async fn run(self: Arc<Self>) -> Result<String, TaskError> {
-        println!("\n[PARENT] {} - Starting...", self.test_name);
-
-        let result = self
+        // Invoke child and wait for result
+        let child_result = self
             .invoke(ChildTask {
                 should_fail: self.child_should_fail,
             })
             .result()
-            .await
-            .map_err(|e| TaskError::Failed(e.to_string()))?;
+            .await;
 
-        println!("[PARENT] {} - Child succeeded: {}", self.test_name, result);
-        Ok(format!("Parent: child succeeded with {}", result))
+        // All logging AFTER the await
+        match child_result {
+            Ok(result) => {
+                println!("[PARENT] {} - Child succeeded: {}", self.test_name, result);
+                Ok(format!("Parent: child succeeded with {}", result))
+            }
+            Err(e) => {
+                println!("[PARENT] {} - Child failed: {}", self.test_name, e);
+                Err(TaskError::Failed(e.to_string()))
+            }
+        }
     }
 }
 
 // =============================================================================
 // Main
 // =============================================================================
+
+async fn wait_for_completion(
+    storage: &SqliteExecutionLog,
+    task_id: Uuid,
+    timeout: Duration,
+) -> Option<TaskStatus> {
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > timeout {
+            return None;
+        }
+        match storage.get_scheduled_flow(task_id).await {
+            Ok(Some(scheduled)) => {
+                if matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
+                    return Some(scheduled.status);
+                }
+            }
+            _ => return None,
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -145,53 +171,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let scheduler = ergon::executor::Scheduler::new(storage.clone()).with_version("v1.0");
+
+    // Test 1: Child should succeed
+    println!("=== Scheduling Test1 (child should succeed) ===");
     let task1 = ParentTask {
         test_name: "Test1".to_string(),
         child_should_fail: false,
     };
     let task_id_1 = scheduler.schedule_with(task1, Uuid::new_v4()).await?;
 
-    // Wait for completion
-    let start = std::time::Instant::now();
-    loop {
-        if start.elapsed() > Duration::from_secs(10) {
-            break;
-        }
-        match storage.get_scheduled_flow(task_id_1).await? {
-            Some(scheduled) => {
-                if matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
-                    break;
-                }
-            }
-            None => break,
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let status1 = wait_for_completion(&storage, task_id_1, Duration::from_secs(10)).await;
+    println!("=== Test1 final status: {:?} ===\n", status1);
+
+    // Test 2: Child should fail
+    println!("=== Scheduling Test2 (child should fail) ===");
     let task2 = ParentTask {
         test_name: "Test2".to_string(),
         child_should_fail: true,
     };
     let task_id_2 = scheduler.schedule_with(task2, Uuid::new_v4()).await?;
 
-    // Wait for completion
-    let start = std::time::Instant::now();
-    loop {
-        if start.elapsed() > Duration::from_secs(10) {
-            break;
+    let status2 = wait_for_completion(&storage, task_id_2, Duration::from_secs(10)).await;
+    println!("=== Test2 final status: {:?} ===\n", status2);
+
+    // Verify results
+    println!("=== Summary ===");
+    println!(
+        "Test1 (should succeed): {:?} - {}",
+        status1,
+        if matches!(status1, Some(TaskStatus::Complete)) {
+            "PASS"
+        } else {
+            "FAIL"
         }
-        match storage.get_scheduled_flow(task_id_2).await? {
-            Some(scheduled) => {
-                if matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
-                    break;
-                }
-            }
-            None => break,
+    );
+    println!(
+        "Test2 (should fail): {:?} - {}",
+        status2,
+        if matches!(status2, Some(TaskStatus::Failed)) {
+            "PASS"
+        } else {
+            "FAIL"
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    );
 
     worker.shutdown().await;
     storage.close().await?;
 
     Ok(())
 }
+// ```
+
+// ## Changes Made
+
+// 1. **Removed logging before suspension points** - no more "Starting task..." or "Waiting 2 seconds..." that would duplicate on replay
+
+// 2. **Step is minimal** - `wait_step` contains only the timer, nothing else
+
+// 3. **All logging after suspension** - both child and parent log only after their respective awaits complete
+
+// ## Expected Output
+// ```
+// === Scheduling Test1 (child should succeed) ===
+//   [CHILD] Timer completed, checking if should fail...
+//   [CHILD] Task succeeded!
+// [PARENT] Test1 - Child succeeded: Success
+// === Test1 final status: Some(Complete) ===
+
+// === Scheduling Test2 (child should fail) ===
+//   [CHILD] Timer completed, checking if should fail...
+//   [CHILD] Returning error!
+// [PARENT] Test2 - Child failed: timer_child_minimal::TaskError: Task failed: Simulated failure
+// === Test2 final status: Some(Failed) ===
+
+// === Summary ===
+// Test1 (should succeed): Some(Complete) - PASS
+// Test2 (should fail): Some(Failed) - PASS

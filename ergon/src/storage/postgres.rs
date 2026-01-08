@@ -142,7 +142,6 @@ impl PostgresExecutionLog {
                 timestamp BIGINT NOT NULL,
                 class_name TEXT NOT NULL,
                 method_name TEXT NOT NULL,
-                delay BIGINT,
                 status TEXT CHECK( status IN ('PENDING','WAITING_FOR_SIGNAL','WAITING_FOR_TIMER','COMPLETE') ) NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 1,
                 parameters BYTEA,
@@ -302,7 +301,6 @@ impl PostgresExecutionLog {
         let parameters: Vec<u8> = row.try_get("parameters")?;
         let params_hash: i64 = row.try_get("params_hash")?;
         let return_value: Option<Vec<u8>> = row.try_get("return_value")?;
-        let delay: Option<i64> = row.try_get("delay")?;
 
         // Parse retry_policy from JSON if present
         let retry_policy_json: Option<String> = row.try_get("retry_policy")?;
@@ -329,7 +327,6 @@ impl PostgresExecutionLog {
             parameters,
             params_hash as u64,
             return_value,
-            delay,
             retry_policy,
             is_retryable,
         );
@@ -354,7 +351,6 @@ impl ExecutionLog for PostgresExecutionLog {
             step,
             class_name,
             method_name,
-            delay,
             status,
             parameters,
             retry_policy,
@@ -362,11 +358,10 @@ impl ExecutionLog for PostgresExecutionLog {
 
         let params_hash = hash_params(parameters);
         let retry_policy_json = retry_policy.and_then(|p| serde_json::to_string(&p).ok());
-        let delay_millis = delay.map(|d| d.as_millis() as i64);
 
         sqlx::query(
-            "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, delay, status, attempts, parameters, params_hash, retry_policy)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "INSERT INTO execution_log (id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, retry_policy)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT(id, step)
              DO UPDATE SET attempts = execution_log.attempts + 1",
         )
@@ -375,7 +370,6 @@ impl ExecutionLog for PostgresExecutionLog {
         .bind(Utc::now().timestamp_millis())
         .bind(class_name)
         .bind(method_name)
-        .bind(delay_millis)
         .bind(status.as_str())
         .bind(1)
         .bind(parameters)
@@ -410,7 +404,7 @@ impl ExecutionLog for PostgresExecutionLog {
         .await?;
 
         let invocation = sqlx::query(
-            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, retry_policy, is_retryable, timer_fire_at, timer_name
              FROM execution_log
              WHERE id = $1 AND step = $2",
         )
@@ -434,7 +428,7 @@ impl ExecutionLog for PostgresExecutionLog {
 
     async fn get_invocation(&self, id: Uuid, step: i32) -> Result<Option<Invocation>> {
         let invocation = sqlx::query(
-            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, retry_policy, is_retryable, timer_fire_at, timer_name
              FROM execution_log
              WHERE id = $1 AND step = $2",
         )
@@ -450,7 +444,7 @@ impl ExecutionLog for PostgresExecutionLog {
 
     async fn get_latest_invocation(&self, id: Uuid) -> Result<Option<Invocation>> {
         let invocation = sqlx::query(
-            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, retry_policy, is_retryable, timer_fire_at, timer_name
              FROM execution_log
              WHERE id = $1
              ORDER BY step DESC
@@ -467,7 +461,7 @@ impl ExecutionLog for PostgresExecutionLog {
 
     async fn get_invocations_for_flow(&self, id: Uuid) -> Result<Vec<Invocation>> {
         let rows = sqlx::query(
-            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, delay, retry_policy, is_retryable, timer_fire_at, timer_name
+            "SELECT id, step, timestamp, class_name, method_name, status, attempts, parameters, params_hash, return_value, retry_policy, is_retryable, timer_fire_at, timer_name
              FROM execution_log
              WHERE id = $1
              ORDER BY step ASC",
@@ -500,7 +494,6 @@ impl ExecutionLog for PostgresExecutionLog {
                 COALESCE(e.parameters, ''::bytea) as parameters,
                 COALESCE(e.params_hash, 0) as params_hash,
                 e.return_value,
-                e.delay,
                 e.retry_policy,
                 e.is_retryable,
                 e.timer_fire_at,
@@ -1141,7 +1134,6 @@ mod tests {
             step: 0,
             class_name: "TestClass",
             method_name: "testMethod",
-            delay: None,
             status: InvocationStatus::Pending,
             parameters: &params,
             retry_policy: None,
@@ -1177,7 +1169,6 @@ mod tests {
             step: 0,
             class_name: "TestClass",
             method_name: "testMethod",
-            delay: None,
             status: InvocationStatus::Pending,
             parameters: &params,
             retry_policy: None,

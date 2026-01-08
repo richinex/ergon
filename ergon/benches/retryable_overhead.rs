@@ -147,7 +147,6 @@ fn bench_storage_query_overhead(c: &mut Criterion) {
                             step,
                             class_name: "TestFlow",
                             method_name: "test_step",
-                            delay: None,
                             status: ergon::InvocationStatus::Complete,
                             parameters: &params,
                             retry_policy: None,

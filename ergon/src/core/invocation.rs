@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +58,6 @@ pub struct Invocation {
     parameters: Vec<u8>,
     params_hash: u64,
     return_value: Option<Vec<u8>>,
-    delay: Option<i64>,
     /// Retry policy for this invocation (None means no retries)
     #[serde(default)]
     retry_policy: Option<RetryPolicy>,
@@ -87,7 +85,6 @@ impl Invocation {
         parameters: Vec<u8>,
         params_hash: u64,
         return_value: Option<Vec<u8>>,
-        delay: Option<i64>,
         retry_policy: Option<RetryPolicy>,
         is_retryable: Option<bool>,
     ) -> Self {
@@ -102,7 +99,6 @@ impl Invocation {
             parameters,
             params_hash,
             return_value,
-            delay,
             retry_policy,
             is_retryable,
             timer_fire_at: None,
@@ -148,10 +144,6 @@ impl Invocation {
 
     pub fn return_value(&self) -> Option<&[u8]> {
         self.return_value.as_deref()
-    }
-
-    pub fn delay(&self) -> Option<Duration> {
-        self.delay.map(|ms| Duration::from_millis(ms as u64))
     }
 
     pub fn retry_policy(&self) -> Option<RetryPolicy> {
@@ -265,7 +257,6 @@ mod tests {
             vec![],
             0, // params_hash
             None,
-            None,
             None, // retry_policy
             None, // is_retryable
         );
@@ -281,7 +272,6 @@ mod tests {
             1,
             vec![],
             0, // params_hash
-            None,
             None,
             None, // retry_policy
             None, // is_retryable
@@ -307,7 +297,6 @@ mod tests {
             None,
             None,
             None,
-            None,
         );
         assert_eq!(inv1.retry_policy(), None);
 
@@ -322,7 +311,6 @@ mod tests {
             1,
             vec![],
             0,
-            None,
             None,
             Some(RetryPolicy::STANDARD),
             None,
@@ -340,7 +328,6 @@ mod tests {
             1,
             vec![],
             0,
-            None,
             None,
             Some(RetryPolicy::with_max_attempts(3)),
             None,
@@ -367,7 +354,6 @@ mod tests {
             0,
             None,
             None,
-            None,
             Some(true), // retryable error
         );
         assert_eq!(inv1.is_retryable(), Some(true));
@@ -385,7 +371,6 @@ mod tests {
             0,
             None,
             None,
-            None,
             Some(false), // non-retryable error
         );
         assert_eq!(inv2.is_retryable(), Some(false));
@@ -401,7 +386,6 @@ mod tests {
             1,
             vec![],
             0,
-            None,
             None,
             None,
             None, // not an error
