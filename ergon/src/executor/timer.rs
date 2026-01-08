@@ -298,7 +298,7 @@ mod tests {
     use super::*;
     use crate::core::serialize_value;
     use crate::executor::child_flow::SuspensionPayload;
-    use crate::executor::context::ExecutionContext;
+    
     use crate::storage::{InMemoryExecutionLog, InvocationStartParams};
     use uuid::Uuid;
 
@@ -321,9 +321,7 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
 
         // Should not panic or do anything
-        without_timers
-            .process_timers(&storage, "test-worker")
-            .await;
+        without_timers.process_timers(&storage, "test-worker").await;
     }
 
     #[test]
@@ -346,9 +344,7 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
 
         // Should complete without error when no timers are expired
-        with_timers
-            .process_timers(&storage, "test-worker")
-            .await;
+        with_timers.process_timers(&storage, "test-worker").await;
     }
 
     #[tokio::test]
@@ -368,9 +364,7 @@ mod tests {
         };
 
         // Process timers
-        with_timers
-            .process_timers(&storage, "test-worker")
-            .await;
+        with_timers.process_timers(&storage, "test-worker").await;
 
         // Verify timer was claimed and result stored
         let result = storage
@@ -380,8 +374,7 @@ mod tests {
         assert!(result.is_some());
 
         // Verify it's a valid SuspensionPayload
-        let payload: SuspensionPayload =
-            crate::core::deserialize_value(&result.unwrap()).unwrap();
+        let payload: SuspensionPayload = crate::core::deserialize_value(&result.unwrap()).unwrap();
         assert!(payload.success);
         assert!(payload.data.is_empty()); // Timers have empty data
     }
@@ -430,9 +423,7 @@ mod tests {
         };
 
         // Process timers
-        with_timers
-            .process_timers(&storage, "test-worker")
-            .await;
+        with_timers.process_timers(&storage, "test-worker").await;
 
         // Both should have results
         let result1 = storage
@@ -465,9 +456,7 @@ mod tests {
         };
 
         // Process timers
-        with_timers
-            .process_timers(&storage, "test-worker")
-            .await;
+        with_timers.process_timers(&storage, "test-worker").await;
 
         // Should not have a result (not expired)
         let result = storage
@@ -547,10 +536,7 @@ mod tests {
         let past_time = Utc::now() - ChronoDuration::seconds(10);
         let future_time = Utc::now() + ChronoDuration::seconds(60);
 
-        storage
-            .log_timer(flow1, 1, past_time, None)
-            .await
-            .unwrap();
+        storage.log_timer(flow1, 1, past_time, None).await.unwrap();
         storage
             .log_timer(flow2, 1, future_time, None)
             .await
@@ -610,14 +596,8 @@ mod tests {
         let early_time = Utc::now() + ChronoDuration::seconds(10);
         let late_time = Utc::now() + ChronoDuration::seconds(60);
 
-        storage
-            .log_timer(flow1, 1, late_time, None)
-            .await
-            .unwrap();
-        storage
-            .log_timer(flow2, 1, early_time, None)
-            .await
-            .unwrap();
+        storage.log_timer(flow1, 1, late_time, None).await.unwrap();
+        storage.log_timer(flow2, 1, early_time, None).await.unwrap();
 
         let next = storage.get_next_timer_fire_time().await.unwrap();
         assert!(next.is_some());
@@ -639,8 +619,7 @@ mod tests {
         };
 
         let serialized = serialize_value(&payload).unwrap();
-        let deserialized: SuspensionPayload =
-            crate::core::deserialize_value(&serialized).unwrap();
+        let deserialized: SuspensionPayload = crate::core::deserialize_value(&serialized).unwrap();
 
         assert!(deserialized.success);
         assert!(deserialized.data.is_empty());
@@ -667,9 +646,7 @@ mod tests {
         let with_timers = WithTimers {
             timer_poll_interval: Duration::from_millis(100),
         };
-        with_timers
-            .process_timers(&storage, "test-worker")
-            .await;
+        with_timers.process_timers(&storage, "test-worker").await;
 
         // Step 3: Verify timer fired
         let result = storage
@@ -678,8 +655,7 @@ mod tests {
             .unwrap();
         assert!(result.is_some());
 
-        let payload: SuspensionPayload =
-            crate::core::deserialize_value(&result.unwrap()).unwrap();
+        let payload: SuspensionPayload = crate::core::deserialize_value(&result.unwrap()).unwrap();
         assert!(payload.success);
         assert!(payload.data.is_empty());
     }
@@ -745,7 +721,10 @@ mod tests {
         for i in 0..5 {
             let flow_id = Uuid::new_v4();
             let past_time = Utc::now() - ChronoDuration::seconds(10);
-            storage.log_timer(flow_id, i, past_time, None).await.unwrap();
+            storage
+                .log_timer(flow_id, i, past_time, None)
+                .await
+                .unwrap();
         }
 
         // Create two workers
@@ -773,9 +752,6 @@ mod tests {
 
         // All timers should be claimed (no duplicates due to optimistic locking)
         let remaining_expired = storage.get_expired_timers(Utc::now()).await.unwrap();
-        assert!(
-            remaining_expired.is_empty(),
-            "All timers should be claimed"
-        );
+        assert!(remaining_expired.is_empty(), "All timers should be claimed");
     }
 }

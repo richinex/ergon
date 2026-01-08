@@ -1162,11 +1162,6 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
             Ok(self.value * 2)
         }
-
-        async fn failing_execute(self: Arc<Self>) -> Result<i32, String> {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            Err("intentional failure".to_string())
-        }
     }
 
     #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, FlowType)]
@@ -1287,8 +1282,7 @@ mod tests {
     #[tokio::test]
     async fn test_worker_with_max_concurrent_flows() {
         let storage = Arc::new(InMemoryExecutionLog::new());
-        let worker = Worker::new(storage.clone(), "test-worker")
-            .with_max_concurrent_flows(10);
+        let worker = Worker::new(storage.clone(), "test-worker").with_max_concurrent_flows(10);
 
         assert!(worker.max_concurrent_flows.is_some());
         // Verify semaphore has correct capacity by trying to acquire
@@ -1302,7 +1296,10 @@ mod tests {
         let worker = Worker::new(storage.clone(), "test-worker").with_timers();
 
         // Worker should now be in WithTimers state (verified by compilation)
-        assert_eq!(worker.timer_state.timer_poll_interval, Duration::from_secs(1));
+        assert_eq!(
+            worker.timer_state.timer_poll_interval,
+            Duration::from_secs(1)
+        );
     }
 
     #[tokio::test]
@@ -1325,10 +1322,7 @@ mod tests {
 
         // Worker should now be in WithStructuredTracing state
         // Verify by checking tracing behavior
-        assert!(worker
-            .tracing_state
-            .worker_loop_span("test")
-            .is_some());
+        assert!(worker.tracing_state.worker_loop_span("test").is_some());
     }
 
     #[tokio::test]
@@ -1343,7 +1337,11 @@ mod tests {
 
         assert_eq!(worker.poll_interval, Duration::from_millis(250));
         assert_eq!(
-            worker.max_concurrent_flows.as_ref().unwrap().available_permits(),
+            worker
+                .max_concurrent_flows
+                .as_ref()
+                .unwrap()
+                .available_permits(),
             50
         );
         assert_eq!(
@@ -1564,7 +1562,11 @@ mod tests {
             }
         }
 
-        assert!(completed >= 8, "Expected at least 8 flows completed, got {}", completed);
+        assert!(
+            completed >= 8,
+            "Expected at least 8 flows completed, got {}",
+            completed
+        );
 
         handle.shutdown().await;
     }
@@ -1593,10 +1595,10 @@ mod tests {
         let scheduler = Scheduler::new(storage.clone()).unversioned();
 
         // Create two workers
-        let worker1 = Worker::new(storage.clone(), "worker-1")
-            .with_poll_interval(Duration::from_millis(50));
-        let worker2 = Worker::new(storage.clone(), "worker-2")
-            .with_poll_interval(Duration::from_millis(50));
+        let worker1 =
+            Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(50));
+        let worker2 =
+            Worker::new(storage.clone(), "worker-2").with_poll_interval(Duration::from_millis(50));
 
         worker1.register(|flow: Arc<TestFlow>| flow.execute()).await;
         worker2.register(|flow: Arc<TestFlow>| flow.execute()).await;
@@ -1625,7 +1627,11 @@ mod tests {
             }
         }
 
-        assert!(completed >= 8, "Expected at least 8 flows completed, got {}", completed);
+        assert!(
+            completed >= 8,
+            "Expected at least 8 flows completed, got {}",
+            completed
+        );
 
         handle1.shutdown().await;
         handle2.shutdown().await;

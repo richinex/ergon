@@ -831,9 +831,8 @@ mod tests {
         ctx.log_step_start(params).await.unwrap();
 
         // Try to get cached result with different class name
-        let result: Result<Option<i32>> = ctx
-            .get_cached_result(step, "FlowB", "test_step", &())
-            .await;
+        let result: Result<Option<i32>> =
+            ctx.get_cached_result(step, "FlowB", "test_step", &()).await;
 
         assert!(result.is_err());
         match result {

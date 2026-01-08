@@ -851,9 +851,8 @@ mod tests {
     #[tokio::test]
     async fn test_step_handle_accessors() {
         let mut registry = DeferredRegistry::new();
-        let handle = registry.register::<i32, _, _>("test_step", &["dep1", "dep2"], |_| async {
-            Ok(42)
-        });
+        let handle =
+            registry.register::<i32, _, _>("test_step", &["dep1", "dep2"], |_| async { Ok(42) });
 
         assert_eq!(handle.step_id(), &StepId::new("test_step"));
         assert_eq!(handle.dependencies().len(), 2);
@@ -1058,9 +1057,10 @@ mod tests {
         // Create 10 independent steps
         let mut handles = vec![];
         for i in 0..10 {
-            let handle = registry.register::<i32, _, _>(&format!("step{}", i), &[], move |_| async move {
-                Ok(i)
-            });
+            let handle =
+                registry.register::<i32, _, _>(&format!("step{}", i), &[], move |_| async move {
+                    Ok(i)
+                });
             handles.push(handle);
         }
 

@@ -52,7 +52,10 @@ struct TaskResult {
 impl LongRunningTask {
     #[flow]
     async fn execute(self: Arc<Self>) -> Result<TaskResult, String> {
-        println!("[{}] Starting long-running task ({}s)", self.task_id, self.duration_secs);
+        println!(
+            "[{}] Starting long-running task ({}s)",
+            self.task_id, self.duration_secs
+        );
 
         // Simulate multiple steps of long work
         self.clone().step_1().await?;
@@ -104,14 +107,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start 2 workers
     println!("Starting workers...");
-    let worker1 = Worker::new(storage.clone(), "worker-1")
-        .with_poll_interval(Duration::from_millis(100));
-    worker1.register(|f: Arc<LongRunningTask>| f.execute()).await;
+    let worker1 =
+        Worker::new(storage.clone(), "worker-1").with_poll_interval(Duration::from_millis(100));
+    worker1
+        .register(|f: Arc<LongRunningTask>| f.execute())
+        .await;
     let handle1 = worker1.start().await;
 
-    let worker2 = Worker::new(storage.clone(), "worker-2")
-        .with_poll_interval(Duration::from_millis(100));
-    worker2.register(|f: Arc<LongRunningTask>| f.execute()).await;
+    let worker2 =
+        Worker::new(storage.clone(), "worker-2").with_poll_interval(Duration::from_millis(100));
+    worker2
+        .register(|f: Arc<LongRunningTask>| f.execute())
+        .await;
     let handle2 = worker2.start().await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -121,7 +128,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let num_tasks = 10;
     let task_duration = 3;
 
-    println!("Scheduling {} tasks with {}s duration each...\n", num_tasks, task_duration);
+    println!(
+        "Scheduling {} tasks with {}s duration each...\n",
+        num_tasks, task_duration
+    );
     let start_time = Instant::now();
     let mut task_ids = Vec::new();
 

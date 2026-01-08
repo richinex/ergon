@@ -504,9 +504,7 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
 
         // Should complete without error when no flows are waiting
-        with_signals
-            .process_signals(&storage, "test-worker")
-            .await;
+        with_signals.process_signals(&storage, "test-worker").await;
     }
 
     #[tokio::test]
@@ -528,9 +526,7 @@ mod tests {
         };
 
         // Process signals
-        with_signals
-            .process_signals(&storage, "test-worker")
-            .await;
+        with_signals.process_signals(&storage, "test-worker").await;
 
         // Verify signal was delivered
         let result = storage
@@ -558,9 +554,7 @@ mod tests {
         };
 
         // Process signals
-        with_signals
-            .process_signals(&storage, "test-worker")
-            .await;
+        with_signals.process_signals(&storage, "test-worker").await;
 
         // Signal should be consumed (not available anymore)
         assert!(signal_source.signals.read().unwrap().is_empty());
@@ -585,9 +579,7 @@ mod tests {
         };
 
         // Should not panic or error when signal not available
-        with_signals
-            .process_signals(&storage, "test-worker")
-            .await;
+        with_signals.process_signals(&storage, "test-worker").await;
 
         // Signal should not be stored
         let result = storage
@@ -781,10 +773,7 @@ mod tests {
         let flow_id = Uuid::new_v4();
 
         // Step 1: Flow waits for signal
-        storage
-            .log_signal(flow_id, 1, "approval")
-            .await
-            .unwrap();
+        storage.log_signal(flow_id, 1, "approval").await.unwrap();
 
         // Step 2: External system provides signal
         let approval_data = serialize_value(&"APPROVED".to_string()).unwrap();
@@ -795,9 +784,7 @@ mod tests {
             signal_source: signal_source.clone(),
             signal_poll_interval: Duration::from_millis(100),
         };
-        with_signals
-            .process_signals(&storage, "test-worker")
-            .await;
+        with_signals.process_signals(&storage, "test-worker").await;
 
         // Step 4: Verify signal was delivered
         let result = storage
@@ -829,9 +816,7 @@ mod tests {
             signal_source: signal_source.clone(),
             signal_poll_interval: Duration::from_millis(100),
         };
-        with_signals
-            .process_signals(&storage, "test-worker")
-            .await;
+        with_signals.process_signals(&storage, "test-worker").await;
 
         // Both should be delivered
         let result1 = storage
