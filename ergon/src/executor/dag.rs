@@ -892,12 +892,14 @@ mod tests {
         let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
         let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
 
-        let temp_file = "/tmp/test_dag.dot";
-        let result = registry.save_dot(temp_file);
+        // Use platform-agnostic temporary directory
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("test_dag.dot");
+        let result = registry.save_dot(temp_file.to_str().unwrap());
         assert!(result.is_ok());
 
         // Verify file was created
-        let contents = std::fs::read_to_string(temp_file).unwrap();
+        let contents = std::fs::read_to_string(&temp_file).unwrap();
         assert!(contents.contains("digraph"));
 
         // Cleanup
