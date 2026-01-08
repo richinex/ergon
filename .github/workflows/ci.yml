@@ -123,11 +123,17 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate coverage
-        run: cargo llvm-cov --lib --ignore-run-fail --lcov --output-path lcov.info
+      - name: Generate coverage report
+        run: |
+          cargo llvm-cov --lib --ignore-run-fail --summary-only | tee coverage.txt
+          echo "## Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          COVERAGE=$(cargo llvm-cov --lib --ignore-run-fail --summary-only | grep "TOTAL" | awk '{print $10}' | sed 's/%//')
+          echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "Coverage: $COVERAGE%"
