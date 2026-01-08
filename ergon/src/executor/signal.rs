@@ -415,3 +415,435 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::serialize_value;
+    use crate::executor::context::ExecutionContext;
+    use crate::storage::{InMemoryExecutionLog, InvocationStartParams};
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    // =========================================================================
+    // Mock SignalSource for Testing
+    // =========================================================================
+
+    struct TestSignalSource {
+        signals: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    }
+
+    impl TestSignalSource {
+        fn new() -> Self {
+            Self {
+                signals: Arc::new(RwLock::new(HashMap::new())),
+            }
+        }
+
+        fn add_signal(&self, name: &str, data: Vec<u8>) {
+            self.signals.write().unwrap().insert(name.to_string(), data);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SignalSource for TestSignalSource {
+        async fn poll_for_signal(&self, signal_name: &str) -> Option<Vec<u8>> {
+            self.signals.write().unwrap().remove(signal_name)
+        }
+
+        async fn consume_signal(&self, _signal_name: &str) {
+            // Already consumed in poll_for_signal
+        }
+    }
+
+    // =========================================================================
+    // SignalProcessing Trait Tests
+    // =========================================================================
+
+    #[test]
+    fn test_without_signals_poll_interval() {
+        let without_signals = WithoutSignals;
+        assert_eq!(
+            without_signals.signal_poll_interval(),
+            Duration::from_secs(3600)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_without_signals_process_is_noop() {
+        let without_signals = WithoutSignals;
+        let storage = Arc::new(InMemoryExecutionLog::new());
+
+        // Should not panic or do anything
+        without_signals
+            .process_signals(&storage, "test-worker")
+            .await;
+    }
+
+    #[test]
+    fn test_with_signals_poll_interval() {
+        let signal_source = Arc::new(TestSignalSource::new());
+        let with_signals = WithSignals {
+            signal_source,
+            signal_poll_interval: Duration::from_millis(100),
+        };
+
+        assert_eq!(
+            with_signals.signal_poll_interval(),
+            Duration::from_millis(100)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_with_signals_process_no_waiting() {
+        let signal_source = Arc::new(TestSignalSource::new());
+        let with_signals = WithSignals {
+            signal_source,
+            signal_poll_interval: Duration::from_millis(100),
+        };
+        let storage = Arc::new(InMemoryExecutionLog::new());
+
+        // Should complete without error when no flows are waiting
+        with_signals
+            .process_signals(&storage, "test-worker")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_with_signals_process_delivers_signal() {
+        let signal_source = Arc::new(TestSignalSource::new());
+        let flow_id = Uuid::new_v4();
+
+        // Setup: Create a flow waiting for a signal
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        storage.log_signal(flow_id, 1, "test-signal").await.unwrap();
+
+        // Add signal data to the source
+        let signal_data = serialize_value(&"test-data".to_string()).unwrap();
+        signal_source.add_signal("test-signal", signal_data.clone());
+
+        let with_signals = WithSignals {
+            signal_source: signal_source.clone(),
+            signal_poll_interval: Duration::from_millis(100),
+        };
+
+        // Process signals
+        with_signals
+            .process_signals(&storage, "test-worker")
+            .await;
+
+        // Verify signal was delivered
+        let result = storage
+            .get_suspension_result(flow_id, 1, "test-signal")
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), signal_data);
+    }
+
+    #[tokio::test]
+    async fn test_with_signals_process_consumes_signal() {
+        let signal_source = Arc::new(TestSignalSource::new());
+        let flow_id = Uuid::new_v4();
+
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        storage.log_signal(flow_id, 1, "test-signal").await.unwrap();
+
+        let signal_data = serialize_value(&42).unwrap();
+        signal_source.add_signal("test-signal", signal_data.clone());
+
+        let with_signals = WithSignals {
+            signal_source: signal_source.clone(),
+            signal_poll_interval: Duration::from_millis(100),
+        };
+
+        // Process signals
+        with_signals
+            .process_signals(&storage, "test-worker")
+            .await;
+
+        // Signal should be consumed (not available anymore)
+        assert!(signal_source.signals.read().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_with_signals_process_handles_missing_signal() {
+        let signal_source = Arc::new(TestSignalSource::new());
+        let flow_id = Uuid::new_v4();
+
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        storage
+            .log_signal(flow_id, 1, "waiting-signal")
+            .await
+            .unwrap();
+
+        // Don't add the signal to the source
+
+        let with_signals = WithSignals {
+            signal_source: signal_source.clone(),
+            signal_poll_interval: Duration::from_millis(100),
+        };
+
+        // Should not panic or error when signal not available
+        with_signals
+            .process_signals(&storage, "test-worker")
+            .await;
+
+        // Signal should not be stored
+        let result = storage
+            .get_suspension_result(flow_id, 1, "waiting-signal")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    // =========================================================================
+    // signal_parent_flow() Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_signal_parent_flow_success() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let parent_flow_id = Uuid::new_v4();
+        let child_flow_id = Uuid::new_v4();
+
+        // Create parent flow waiting for signal at method "await_result"
+        let params = InvocationStartParams {
+            id: parent_flow_id,
+            step: 1,
+            class_name: "ParentFlow",
+            method_name: "await_result()",
+            status: InvocationStatus::WaitingForSignal,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
+        // Create execution context for child flow
+        let child_ctx = Arc::new(ExecutionContext::new(child_flow_id, storage.clone()));
+
+        // Signal parent from within child context
+        let result = EXECUTION_CONTEXT
+            .scope(child_ctx.clone(), async {
+                signal_parent_flow(parent_flow_id, "await_result", "success".to_string()).await
+            })
+            .await;
+
+        assert!(result.is_ok());
+
+        // Verify signal was stored for parent
+        let suspension_result = storage
+            .get_suspension_result(parent_flow_id, 1, "")
+            .await
+            .unwrap();
+        assert!(suspension_result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_signal_parent_flow_parent_not_waiting() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let parent_flow_id = Uuid::new_v4();
+        let child_flow_id = Uuid::new_v4();
+
+        // Create parent flow but NOT waiting for signal (status is Complete)
+        let params = InvocationStartParams {
+            id: parent_flow_id,
+            step: 1,
+            class_name: "ParentFlow",
+            method_name: "some_other_method()",
+            status: InvocationStatus::Complete,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
+        let child_ctx = Arc::new(ExecutionContext::new(child_flow_id, storage.clone()));
+
+        // Try to signal parent
+        let result = EXECUTION_CONTEXT
+            .scope(child_ctx.clone(), async {
+                signal_parent_flow(parent_flow_id, "await_result", "success".to_string()).await
+            })
+            .await;
+
+        // Should fail because parent is not waiting
+        assert!(result.is_err());
+        match result {
+            Err(ExecutionError::Failed(msg)) => {
+                assert!(msg.contains("not waiting for signal"));
+            }
+            _ => panic!("Expected Failed error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_signal_parent_flow_parent_wrong_method() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let parent_flow_id = Uuid::new_v4();
+        let child_flow_id = Uuid::new_v4();
+
+        // Create parent flow waiting for signal at different method
+        let params = InvocationStartParams {
+            id: parent_flow_id,
+            step: 1,
+            class_name: "ParentFlow",
+            method_name: "other_method()",
+            status: InvocationStatus::WaitingForSignal,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
+        let child_ctx = Arc::new(ExecutionContext::new(child_flow_id, storage.clone()));
+
+        // Try to signal parent at wrong method
+        let result = EXECUTION_CONTEXT
+            .scope(child_ctx.clone(), async {
+                signal_parent_flow(parent_flow_id, "await_result", "success".to_string()).await
+            })
+            .await;
+
+        // Should fail because parent is waiting at different method
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_signal_parent_flow_parent_not_found() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let non_existent_parent_id = Uuid::new_v4();
+        let child_flow_id = Uuid::new_v4();
+
+        let child_ctx = Arc::new(ExecutionContext::new(child_flow_id, storage.clone()));
+
+        // Try to signal non-existent parent
+        let result = EXECUTION_CONTEXT
+            .scope(child_ctx.clone(), async {
+                signal_parent_flow(
+                    non_existent_parent_id,
+                    "await_result",
+                    "success".to_string(),
+                )
+                .await
+            })
+            .await;
+
+        // Should fail because parent doesn't exist
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // SignalSource Trait Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_signal_source_poll() {
+        let source = TestSignalSource::new();
+        let data = serialize_value(&123).unwrap();
+        source.add_signal("test", data.clone());
+
+        let result = source.poll_for_signal("test").await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), data);
+
+        // Should be consumed
+        let result2 = source.poll_for_signal("test").await;
+        assert!(result2.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_signal_source_poll_missing() {
+        let source = TestSignalSource::new();
+        let result = source.poll_for_signal("nonexistent").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_signal_source_multiple_signals() {
+        let source = TestSignalSource::new();
+        source.add_signal("signal1", vec![1, 2, 3]);
+        source.add_signal("signal2", vec![4, 5, 6]);
+
+        let result1 = source.poll_for_signal("signal1").await;
+        assert_eq!(result1.unwrap(), vec![1, 2, 3]);
+
+        let result2 = source.poll_for_signal("signal2").await;
+        assert_eq!(result2.unwrap(), vec![4, 5, 6]);
+    }
+
+    // =========================================================================
+    // Integration Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_signal_workflow_end_to_end() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let signal_source = Arc::new(TestSignalSource::new());
+        let flow_id = Uuid::new_v4();
+
+        // Step 1: Flow waits for signal
+        storage
+            .log_signal(flow_id, 1, "approval")
+            .await
+            .unwrap();
+
+        // Step 2: External system provides signal
+        let approval_data = serialize_value(&"APPROVED".to_string()).unwrap();
+        signal_source.add_signal("approval", approval_data.clone());
+
+        // Step 3: Worker processes signals
+        let with_signals = WithSignals {
+            signal_source: signal_source.clone(),
+            signal_poll_interval: Duration::from_millis(100),
+        };
+        with_signals
+            .process_signals(&storage, "test-worker")
+            .await;
+
+        // Step 4: Verify signal was delivered
+        let result = storage
+            .get_suspension_result(flow_id, 1, "approval")
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), approval_data);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_flows_waiting_for_signals() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let signal_source = Arc::new(TestSignalSource::new());
+
+        let flow1 = Uuid::new_v4();
+        let flow2 = Uuid::new_v4();
+
+        // Two flows waiting for different signals
+        storage.log_signal(flow1, 1, "signal1").await.unwrap();
+        storage.log_signal(flow2, 1, "signal2").await.unwrap();
+
+        // Provide both signals
+        signal_source.add_signal("signal1", serialize_value(&"data1").unwrap());
+        signal_source.add_signal("signal2", serialize_value(&"data2").unwrap());
+
+        // Process signals
+        let with_signals = WithSignals {
+            signal_source: signal_source.clone(),
+            signal_poll_interval: Duration::from_millis(100),
+        };
+        with_signals
+            .process_signals(&storage, "test-worker")
+            .await;
+
+        // Both should be delivered
+        let result1 = storage
+            .get_suspension_result(flow1, 1, "signal1")
+            .await
+            .unwrap();
+        let result2 = storage
+            .get_suspension_result(flow2, 1, "signal2")
+            .await
+            .unwrap();
+
+        assert!(result1.is_some());
+        assert!(result2.is_some());
+    }
+}

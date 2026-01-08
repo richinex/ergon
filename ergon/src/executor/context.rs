@@ -539,3 +539,553 @@ impl ExecutionContext {
 
 // Note: No Drop implementation needed for ExecutionContext with the new signal API.
 // The database-backed signal system doesn't require in-memory cleanup.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::InMemoryExecutionLog;
+
+    fn create_test_context() -> ExecutionContext {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        ExecutionContext::new(Uuid::new_v4(), storage)
+    }
+
+    // =========================================================================
+    // Step Counter Tests
+    // =========================================================================
+
+    #[test]
+    fn test_new_context_starts_at_zero() {
+        let ctx = create_test_context();
+        assert_eq!(ctx.current_step(), 0);
+    }
+
+    #[test]
+    fn test_next_step_increments() {
+        let ctx = create_test_context();
+        assert_eq!(ctx.next_step(), 0);
+        assert_eq!(ctx.next_step(), 1);
+        assert_eq!(ctx.next_step(), 2);
+        assert_eq!(ctx.current_step(), 3);
+    }
+
+    #[test]
+    fn test_current_step_does_not_increment() {
+        let ctx = create_test_context();
+        ctx.next_step(); // step = 1
+        assert_eq!(ctx.current_step(), 1);
+        assert_eq!(ctx.current_step(), 1);
+        assert_eq!(ctx.current_step(), 1);
+    }
+
+    #[test]
+    fn test_last_allocated_step_none_initially() {
+        let ctx = create_test_context();
+        assert_eq!(ctx.last_allocated_step(), None);
+    }
+
+    #[test]
+    fn test_last_allocated_step_after_allocation() {
+        let ctx = create_test_context();
+        ctx.next_step(); // Returns 0, counter becomes 1
+        assert_eq!(ctx.last_allocated_step(), Some(0));
+        ctx.next_step(); // Returns 1, counter becomes 2
+        assert_eq!(ctx.last_allocated_step(), Some(1));
+        ctx.next_step(); // Returns 2, counter becomes 3
+        assert_eq!(ctx.last_allocated_step(), Some(2));
+    }
+
+    #[test]
+    fn test_step_counter_thread_safety() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let ctx = Arc::new(create_test_context());
+        let mut handles = vec![];
+
+        // Spawn 10 threads that each call next_step() 100 times
+        for _ in 0..10 {
+            let ctx_clone = Arc::clone(&ctx);
+            let handle = thread::spawn(move || {
+                for _ in 0..100 {
+                    ctx_clone.next_step();
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Should have 1000 total steps allocated
+        assert_eq!(ctx.current_step(), 1000);
+    }
+
+    // =========================================================================
+    // Dependency Graph Tests
+    // =========================================================================
+
+    #[test]
+    fn test_register_step_no_dependencies() {
+        let ctx = create_test_context();
+        let result = ctx.register_step("step1", &[]);
+        assert!(result.is_ok());
+
+        let graph = ctx.dependency_graph();
+        assert!(graph.contains_step(&StepId::new("step1")));
+    }
+
+    #[test]
+    fn test_register_step_with_dependencies() {
+        let ctx = create_test_context();
+        ctx.register_step("step1", &[]).unwrap();
+        ctx.register_step("step2", &["step1"]).unwrap();
+
+        let graph = ctx.dependency_graph();
+        assert!(graph.contains_step(&StepId::new("step1")));
+        assert!(graph.contains_step(&StepId::new("step2")));
+    }
+
+    #[test]
+    fn test_register_step_creates_missing_dependencies() {
+        let ctx = create_test_context();
+        // Register step2 with dependency on step1 (which doesn't exist yet)
+        // This should auto-create step1
+        ctx.register_step("step2", &["step1"]).unwrap();
+
+        let graph = ctx.dependency_graph();
+        assert!(graph.contains_step(&StepId::new("step1")));
+        assert!(graph.contains_step(&StepId::new("step2")));
+    }
+
+    #[test]
+    fn test_register_step_cycle_detection() {
+        let ctx = create_test_context();
+        ctx.register_step("step1", &[]).unwrap();
+        ctx.register_step("step2", &["step1"]).unwrap();
+
+        // Try to create a cycle: step1 -> step2 -> step1
+        let result = ctx.register_step("step1", &["step2"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_register_duplicate_step_idempotent() {
+        let ctx = create_test_context();
+        ctx.register_step("step1", &[]).unwrap();
+        // Registering again should work (idempotent)
+        let result = ctx.register_step("step1", &[]);
+        assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // Logging Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_log_step_start() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        let params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "test_step",
+            status: InvocationStatus::Complete,
+            params: &42,
+            retry_policy: None,
+        };
+
+        let result = ctx.log_step_start(params).await;
+        assert!(result.is_ok());
+
+        // Verify invocation was logged
+        let inv = ctx
+            .storage
+            .get_invocation(ctx.id, step)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(inv.class_name(), "TestFlow");
+        assert_eq!(inv.method_name(), "test_step");
+    }
+
+    #[tokio::test]
+    async fn test_log_step_completion() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // First log the start
+        let start_params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "test_step",
+            status: InvocationStatus::Complete,
+            params: &(),
+            retry_policy: None,
+        };
+        ctx.log_step_start(start_params).await.unwrap();
+
+        // Now log completion
+        let result = ctx.log_step_completion(step, &"success").await;
+        assert!(result.is_ok());
+
+        // Verify return value was stored
+        let inv = ctx
+            .storage
+            .get_invocation(ctx.id, step)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(inv.return_value().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_update_step_retryability() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // First log the start
+        let params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "test_step",
+            status: InvocationStatus::Complete,
+            params: &(),
+            retry_policy: Some(RetryPolicy::STANDARD),
+        };
+        ctx.log_step_start(params).await.unwrap();
+
+        // Update retryability
+        ctx.update_step_retryability(step, true).await.unwrap();
+
+        // Verify flag was updated
+        let inv = ctx
+            .storage
+            .get_invocation(ctx.id, step)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(inv.is_retryable(), Some(true));
+    }
+
+    // =========================================================================
+    // Cache Retrieval Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_get_cached_result_miss() {
+        let ctx = create_test_context();
+        let step = 0;
+
+        let result: Result<Option<i32>> = ctx
+            .get_cached_result(step, "TestFlow", "test_step", &())
+            .await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_cached_result_hit() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // Log step start and completion
+        let params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "test_step",
+            status: InvocationStatus::Complete,
+            params: &42,
+            retry_policy: None,
+        };
+        ctx.log_step_start(params).await.unwrap();
+        ctx.log_step_completion(step, &"success").await.unwrap();
+
+        // Try to get cached result
+        let result: Option<String> = ctx
+            .get_cached_result(step, "TestFlow", "test_step", &42)
+            .await
+            .unwrap();
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "success");
+    }
+
+    #[tokio::test]
+    async fn test_get_cached_result_class_mismatch() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // Log step with one class name
+        let params = LogStepStartParams {
+            step,
+            class_name: "FlowA",
+            method_name: "test_step",
+            status: InvocationStatus::Complete,
+            params: &(),
+            retry_policy: None,
+        };
+        ctx.log_step_start(params).await.unwrap();
+
+        // Try to get cached result with different class name
+        let result: Result<Option<i32>> = ctx
+            .get_cached_result(step, "FlowB", "test_step", &())
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(ExecutionError::Incompatible(msg)) => {
+                assert!(msg.contains("Non-determinism detected"));
+                assert!(msg.contains("FlowA.test_step"));
+                assert!(msg.contains("FlowB.test_step"));
+            }
+            _ => panic!("Expected Incompatible error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_cached_result_method_mismatch() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // Log step with one method name
+        let params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "method_a",
+            status: InvocationStatus::Complete,
+            params: &(),
+            retry_policy: None,
+        };
+        ctx.log_step_start(params).await.unwrap();
+
+        // Try to get cached result with different method name
+        let result: Result<Option<i32>> = ctx
+            .get_cached_result(step, "TestFlow", "method_b", &())
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(ExecutionError::Incompatible(msg)) => {
+                assert!(msg.contains("Non-determinism detected"));
+            }
+            _ => panic!("Expected Incompatible error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_cached_result_params_mismatch() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // Log step with one param value
+        let params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "test_step",
+            status: InvocationStatus::Complete,
+            params: &42,
+            retry_policy: None,
+        };
+        ctx.log_step_start(params).await.unwrap();
+
+        // Try to get cached result with different param value
+        let result: Result<Option<i32>> = ctx
+            .get_cached_result(step, "TestFlow", "test_step", &99)
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(ExecutionError::Incompatible(msg)) => {
+                assert!(msg.contains("different parameter values"));
+            }
+            _ => panic!("Expected Incompatible error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_cached_result_incomplete_step() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // Log step start but don't complete it
+        let params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "test_step",
+            status: InvocationStatus::Pending,
+            params: &(),
+            retry_policy: None,
+        };
+        ctx.log_step_start(params).await.unwrap();
+
+        // Try to get cached result - should return None (not complete)
+        let result: Option<i32> = ctx
+            .get_cached_result(step, "TestFlow", "test_step", &())
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_cached_result_empty_return_value() {
+        let ctx = create_test_context();
+        let step = ctx.next_step();
+
+        // Log step and mark as complete but with empty return value
+        let params = LogStepStartParams {
+            step,
+            class_name: "TestFlow",
+            method_name: "test_step",
+            status: InvocationStatus::Complete,
+            params: &(),
+            retry_policy: None,
+        };
+        ctx.log_step_start(params).await.unwrap();
+
+        // Manually set empty return value using storage API
+        ctx.storage
+            .log_invocation_completion(ctx.id, step, &[])
+            .await
+            .unwrap();
+
+        // Should treat empty return value as cache miss
+        let result: Option<i32> = ctx
+            .get_cached_result(step, "TestFlow", "test_step", &())
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    // =========================================================================
+    // Suspension Tracking Tests
+    // =========================================================================
+
+    #[test]
+    fn test_suspend_reason_initially_none() {
+        let ctx = create_test_context();
+        assert!(!ctx.has_suspend_reason());
+        assert!(ctx.get_suspend_reason().is_none());
+    }
+
+    #[test]
+    fn test_set_and_get_suspend_reason() {
+        let ctx = create_test_context();
+        let reason = SuspendReason::Timer {
+            flow_id: ctx.flow_id(),
+            step: 1,
+        };
+
+        ctx.set_suspend_reason(reason.clone());
+
+        assert!(ctx.has_suspend_reason());
+        let retrieved = ctx.get_suspend_reason();
+        assert!(retrieved.is_some());
+    }
+
+    #[test]
+    fn test_take_suspend_reason_clears() {
+        let ctx = create_test_context();
+        let reason = SuspendReason::Timer {
+            flow_id: ctx.flow_id(),
+            step: 1,
+        };
+
+        ctx.set_suspend_reason(reason);
+        assert!(ctx.has_suspend_reason());
+
+        let taken = ctx.take_suspend_reason();
+        assert!(taken.is_some());
+
+        // After taking, should be None
+        assert!(!ctx.has_suspend_reason());
+        assert!(ctx.get_suspend_reason().is_none());
+        assert!(ctx.take_suspend_reason().is_none());
+    }
+
+    #[test]
+    fn test_get_suspend_reason_does_not_clear() {
+        let ctx = create_test_context();
+        let reason = SuspendReason::Signal {
+            flow_id: ctx.flow_id(),
+            step: 2,
+            signal_name: "test_signal".to_string(),
+        };
+
+        ctx.set_suspend_reason(reason);
+
+        // Get should not clear
+        let _retrieved1 = ctx.get_suspend_reason();
+        assert!(ctx.has_suspend_reason());
+        let _retrieved2 = ctx.get_suspend_reason();
+        assert!(ctx.has_suspend_reason());
+    }
+
+    // =========================================================================
+    // Enclosing Step Tests
+    // =========================================================================
+
+    #[test]
+    fn test_enclosing_step_initially_none() {
+        let ctx = create_test_context();
+        assert_eq!(ctx.get_enclosing_step(), None);
+    }
+
+    #[test]
+    fn test_set_and_get_enclosing_step() {
+        let ctx = create_test_context();
+        ctx.set_enclosing_step(5);
+        assert_eq!(ctx.get_enclosing_step(), Some(5));
+
+        ctx.set_enclosing_step(10);
+        assert_eq!(ctx.get_enclosing_step(), Some(10));
+    }
+
+    #[test]
+    fn test_clear_enclosing_step() {
+        let ctx = create_test_context();
+        ctx.set_enclosing_step(5);
+        assert_eq!(ctx.get_enclosing_step(), Some(5));
+
+        // Set to -1 to clear
+        ctx.set_enclosing_step(-1);
+        assert_eq!(ctx.get_enclosing_step(), None);
+    }
+
+    // =========================================================================
+    // Accessor Tests
+    // =========================================================================
+
+    #[test]
+    fn test_flow_id_accessor() {
+        let flow_id = Uuid::new_v4();
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let ctx = ExecutionContext::new(flow_id, storage);
+
+        assert_eq!(ctx.flow_id(), flow_id);
+    }
+
+    #[test]
+    fn test_step_accessor() {
+        let ctx = create_test_context();
+        ctx.next_step(); // step = 1
+        assert_eq!(ctx.step(), 1);
+        assert_eq!(ctx.step(), ctx.current_step());
+    }
+
+    #[test]
+    fn test_storage_accessor() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let ctx = ExecutionContext::new(Uuid::new_v4(), storage);
+
+        // Verify storage is accessible (we can call methods on it)
+        let _id = ctx.flow_id();
+        let _storage = ctx.storage();
+        // If we got here without panic, storage is accessible
+    }
+}

@@ -464,3 +464,7 @@ pub(super) async fn handle_flow_error<S: ExecutionLog>(
         }
     }
 }
+
+// Note: Tests for execution.rs functions would require them to be public
+// or would need to be integration tests. The functions in this module are
+// primarily called by the worker and are tested through integration tests.

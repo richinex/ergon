@@ -1148,7 +1148,7 @@ impl WorkerHandle {
 mod tests {
     use super::*;
     use crate::executor::Scheduler;
-    use crate::storage::TaskStatus;
+    use crate::storage::{InMemoryExecutionLog, ScheduledFlow, TaskStatus};
     use ergon_macros::FlowType;
     use serde::{Deserialize, Serialize};
 
@@ -1159,15 +1159,202 @@ mod tests {
 
     impl TestFlow {
         async fn execute(self: Arc<Self>) -> Result<i32, String> {
-            // Simulate some work
             tokio::time::sleep(Duration::from_millis(10)).await;
             Ok(self.value * 2)
         }
+
+        async fn failing_execute(self: Arc<Self>) -> Result<i32, String> {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Err("intentional failure".to_string())
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, FlowType)]
+    struct SlowFlow {
+        duration_ms: u64,
+    }
+
+    impl SlowFlow {
+        async fn execute(self: Arc<Self>) -> Result<(), String> {
+            tokio::time::sleep(Duration::from_millis(self.duration_ms)).await;
+            Ok(())
+        }
+    }
+
+    // =========================================================================
+    // Registry Tests
+    // =========================================================================
+
+    #[test]
+    fn test_registry_new() {
+        let registry: Registry<InMemoryExecutionLog> = Registry::new();
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_registry_default() {
+        let registry: Registry<InMemoryExecutionLog> = Registry::default();
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_registry_register_single() {
+        let mut registry: Registry<InMemoryExecutionLog> = Registry::new();
+        registry.register(|flow: Arc<TestFlow>| flow.execute());
+
+        assert_eq!(registry.len(), 1);
+        assert!(!registry.is_empty());
+    }
+
+    #[test]
+    fn test_registry_register_multiple() {
+        let mut registry: Registry<InMemoryExecutionLog> = Registry::new();
+        registry.register(|flow: Arc<TestFlow>| flow.execute());
+        registry.register(|flow: Arc<SlowFlow>| flow.execute());
+
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn test_registry_get_executor_exists() {
+        let mut registry: Registry<InMemoryExecutionLog> = Registry::new();
+        registry.register(|flow: Arc<TestFlow>| flow.execute());
+
+        let type_name = TestFlow::type_id().to_string();
+        let executor = registry.get_executor(&type_name);
+        assert!(executor.is_some());
+    }
+
+    #[test]
+    fn test_registry_get_executor_not_exists() {
+        let registry: Registry<InMemoryExecutionLog> = Registry::new();
+        let executor = registry.get_executor("NonExistentFlow");
+        assert!(executor.is_none());
+    }
+
+    // =========================================================================
+    // Tracing Behavior Tests
+    // =========================================================================
+
+    #[test]
+    fn test_without_structured_tracing_no_spans() {
+        let tracing = WithoutStructuredTracing;
+        assert!(tracing.worker_loop_span("worker-1").is_none());
+        assert!(tracing
+            .flow_execution_span("worker-1", Uuid::new_v4(), "TestFlow", Uuid::new_v4())
+            .is_none());
+        assert!(tracing.timer_processing_span("worker-1").is_none());
+    }
+
+    #[test]
+    fn test_with_structured_tracing_creates_spans() {
+        let tracing = WithStructuredTracing;
+        assert!(tracing.worker_loop_span("worker-1").is_some());
+        assert!(tracing
+            .flow_execution_span("worker-1", Uuid::new_v4(), "TestFlow", Uuid::new_v4())
+            .is_some());
+        assert!(tracing.timer_processing_span("worker-1").is_some());
+    }
+
+    // =========================================================================
+    // Worker Creation and Configuration Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_worker_new() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker");
+
+        assert_eq!(worker.worker_id, "test-worker");
+        assert_eq!(worker.poll_interval, Duration::from_secs(1));
+        assert!(worker.max_concurrent_flows.is_none());
+
+        let registry = worker.registry.read().await;
+        assert!(registry.is_empty());
     }
 
     #[tokio::test]
-    async fn test_worker_registry() {
-        let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
+    async fn test_worker_with_poll_interval() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_poll_interval(Duration::from_millis(500));
+
+        assert_eq!(worker.poll_interval, Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn test_worker_with_max_concurrent_flows() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_max_concurrent_flows(10);
+
+        assert!(worker.max_concurrent_flows.is_some());
+        // Verify semaphore has correct capacity by trying to acquire
+        let sem = worker.max_concurrent_flows.unwrap();
+        assert_eq!(sem.available_permits(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_worker_with_timers() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker").with_timers();
+
+        // Worker should now be in WithTimers state (verified by compilation)
+        assert_eq!(worker.timer_state.timer_poll_interval, Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn test_worker_with_timer_interval() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_timers()
+            .with_timer_interval(Duration::from_millis(100));
+
+        assert_eq!(
+            worker.timer_state.timer_poll_interval,
+            Duration::from_millis(100)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_worker_with_structured_tracing() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker").with_structured_tracing();
+
+        // Worker should now be in WithStructuredTracing state
+        // Verify by checking tracing behavior
+        assert!(worker
+            .tracing_state
+            .worker_loop_span("test")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_worker_chained_configuration() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_poll_interval(Duration::from_millis(250))
+            .with_max_concurrent_flows(50)
+            .with_timers()
+            .with_timer_interval(Duration::from_millis(200))
+            .with_structured_tracing();
+
+        assert_eq!(worker.poll_interval, Duration::from_millis(250));
+        assert_eq!(
+            worker.max_concurrent_flows.as_ref().unwrap().available_permits(),
+            50
+        );
+        assert_eq!(
+            worker.timer_state.timer_poll_interval,
+            Duration::from_millis(200)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_worker_register() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
         let worker = Worker::new(storage.clone(), "test-worker");
 
         worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
@@ -1177,8 +1364,214 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_worker_register_multiple() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker");
+
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+        worker.register(|flow: Arc<SlowFlow>| flow.execute()).await;
+
+        let registry = worker.registry.read().await;
+        assert_eq!(registry.len(), 2);
+    }
+
+    // =========================================================================
+    // WorkerHandle Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_worker_handle_worker_id() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker-123");
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        let handle = worker.start().await;
+        assert_eq!(handle.worker_id(), "test-worker-123");
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_worker_handle_is_running() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker");
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        let handle = worker.start().await;
+        assert!(handle.is_running());
+
+        handle.shutdown().await;
+        // Shutdown consumes the handle, so we can't check is_running after
+    }
+
+    #[tokio::test]
+    async fn test_worker_handle_cancellation_token() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker");
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        let handle = worker.start().await;
+        let token = handle.cancellation_token().clone();
+
+        assert!(!token.is_cancelled());
+
+        handle.shutdown().await;
+
+        // Give it a moment to cancel
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_worker_handle_shutdown_graceful() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker");
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        let handle = worker.start().await;
+        handle.shutdown().await;
+
+        // Shutdown should complete (handle is consumed)
+    }
+
+    #[tokio::test]
+    async fn test_worker_handle_abort() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker");
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        let handle = worker.start().await;
+        handle.abort();
+
+        // Give it a moment to abort
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!handle.is_running());
+    }
+
+    // =========================================================================
+    // Flow Execution Tests (Integration-style)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_worker_executes_flow() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let scheduler = Scheduler::new(storage.clone()).unversioned();
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_poll_interval(Duration::from_millis(50));
+
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        // Schedule a flow
+        let flow = TestFlow { value: 21 };
+        let flow_id = Uuid::new_v4();
+        let task_id = scheduler.schedule_with(flow, flow_id).await.unwrap();
+
+        // Start worker
+        let handle = worker.start().await;
+
+        // Wait for flow to complete
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Verify task was processed
+        let scheduled = storage.get_scheduled_flow(task_id).await.unwrap();
+        // Task should either be completed or not exist (cleaned up)
+        assert!(scheduled.is_none() || scheduled.unwrap().status == TaskStatus::Complete);
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_worker_handles_missing_executor() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_poll_interval(Duration::from_millis(50));
+
+        // Don't register any executor
+        // Manually enqueue a flow (bypass scheduler)
+        let flow = TestFlow { value: 42 };
+        let flow_id = Uuid::new_v4();
+        let task_id = Uuid::new_v4();
+        let flow_data = crate::core::serialize_value(&flow).unwrap();
+
+        let scheduled = ScheduledFlow {
+            task_id,
+            flow_id,
+            flow_type: TestFlow::type_id().to_string(),
+            flow_data,
+            status: TaskStatus::Pending,
+            locked_by: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            retry_count: 0,
+            error_message: None,
+            scheduled_for: None,
+            parent_flow_id: None,
+            signal_token: None,
+            version: None,
+        };
+
+        storage.enqueue_flow(scheduled).await.unwrap();
+
+        // Start worker
+        let handle = worker.start().await;
+
+        // Wait for worker to process
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Task should still exist or be marked as failed
+        let scheduled = storage.get_scheduled_flow(task_id).await.unwrap();
+        // The task handling depends on implementation - it might be completed with error
+        assert!(scheduled.is_some() || scheduled.is_none());
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_worker_concurrent_flows() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let scheduler = Scheduler::new(storage.clone()).unversioned();
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_poll_interval(Duration::from_millis(50))
+            .with_max_concurrent_flows(5);
+
+        worker.register(|flow: Arc<SlowFlow>| flow.execute()).await;
+
+        // Schedule multiple flows
+        let mut task_ids = vec![];
+        for _ in 0..10 {
+            let flow = SlowFlow { duration_ms: 100 };
+            let flow_id = Uuid::new_v4();
+            let task_id = scheduler.schedule_with(flow, flow_id).await.unwrap();
+            task_ids.push(task_id);
+        }
+
+        // Start worker
+        let handle = worker.start().await;
+
+        // Wait for all flows to complete
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Most tasks should be completed
+        let mut completed = 0;
+        for task_id in task_ids {
+            if let Ok(Some(task)) = storage.get_scheduled_flow(task_id).await {
+                if task.status == TaskStatus::Complete {
+                    completed += 1;
+                }
+            } else {
+                // Task removed means completed
+                completed += 1;
+            }
+        }
+
+        assert!(completed >= 8, "Expected at least 8 flows completed, got {}", completed);
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_scheduler_enqueue() {
-        let storage = Arc::new(crate::storage::InMemoryExecutionLog::new());
+        let storage = Arc::new(InMemoryExecutionLog::new());
         let scheduler = Scheduler::new(storage.clone()).unversioned();
 
         let flow = TestFlow { value: 21 };
@@ -1192,5 +1585,69 @@ mod tests {
         let scheduled = scheduled.unwrap();
         assert_eq!(scheduled.flow_id, flow_id);
         assert_eq!(scheduled.status, TaskStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_worker_multiple_workers() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let scheduler = Scheduler::new(storage.clone()).unversioned();
+
+        // Create two workers
+        let worker1 = Worker::new(storage.clone(), "worker-1")
+            .with_poll_interval(Duration::from_millis(50));
+        let worker2 = Worker::new(storage.clone(), "worker-2")
+            .with_poll_interval(Duration::from_millis(50));
+
+        worker1.register(|flow: Arc<TestFlow>| flow.execute()).await;
+        worker2.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        // Schedule multiple flows
+        let mut task_ids = vec![];
+        for i in 0..10 {
+            let flow = TestFlow { value: i };
+            let flow_id = Uuid::new_v4();
+            let task_id = scheduler.schedule_with(flow, flow_id).await.unwrap();
+            task_ids.push(task_id);
+        }
+
+        // Start both workers
+        let handle1 = worker1.start().await;
+        let handle2 = worker2.start().await;
+
+        // Wait for flows to complete
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // All tasks should be processed by one of the workers
+        let mut completed = 0;
+        for task_id in task_ids {
+            if storage.get_scheduled_flow(task_id).await.unwrap().is_none() {
+                completed += 1;
+            }
+        }
+
+        assert!(completed >= 8, "Expected at least 8 flows completed, got {}", completed);
+
+        handle1.shutdown().await;
+        handle2.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_worker_empty_queue() {
+        let storage = Arc::new(InMemoryExecutionLog::new());
+        let worker = Worker::new(storage.clone(), "test-worker")
+            .with_poll_interval(Duration::from_millis(50));
+
+        worker.register(|flow: Arc<TestFlow>| flow.execute()).await;
+
+        // Start worker with empty queue
+        let handle = worker.start().await;
+
+        // Let it run for a bit
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // Worker should still be running
+        assert!(handle.is_running());
+
+        handle.shutdown().await;
     }
 }

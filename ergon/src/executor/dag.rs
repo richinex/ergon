@@ -814,4 +814,332 @@ mod tests {
         // a=10, b=11, c=12, d=23
         assert_eq!(d, 23);
     }
+
+    // =========================================================================
+    // Validation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_success() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+
+        assert!(registry.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cycle() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &["b"], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+
+        let result = registry.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_registry() {
+        let registry = DeferredRegistry::new();
+        assert!(registry.validate().is_ok());
+    }
+
+    // =========================================================================
+    // Step Handle Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_step_handle_accessors() {
+        let mut registry = DeferredRegistry::new();
+        let handle = registry.register::<i32, _, _>("test_step", &["dep1", "dep2"], |_| async {
+            Ok(42)
+        });
+
+        assert_eq!(handle.step_id(), &StepId::new("test_step"));
+        assert_eq!(handle.dependencies().len(), 2);
+        assert_eq!(handle.dependencies()[0], StepId::new("dep1"));
+        assert_eq!(handle.dependencies()[1], StepId::new("dep2"));
+
+        registry.execute().await.unwrap();
+        let result = handle.resolve().await.unwrap();
+        assert_eq!(result, 42);
+    }
+
+    // =========================================================================
+    // Visualization Tests
+    // =========================================================================
+
+    #[test]
+    fn test_to_dot() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+
+        let dot = registry.to_dot();
+        assert!(dot.contains("digraph"));
+        assert!(dot.contains("a"));
+        assert!(dot.contains("b"));
+    }
+
+    #[test]
+    fn test_save_dot() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+
+        let temp_file = "/tmp/test_dag.dot";
+        let result = registry.save_dot(temp_file);
+        assert!(result.is_ok());
+
+        // Verify file was created
+        let contents = std::fs::read_to_string(temp_file).unwrap();
+        assert!(contents.contains("digraph"));
+
+        // Cleanup
+        std::fs::remove_file(temp_file).ok();
+    }
+
+    #[test]
+    fn test_ascii_tree() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("root", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("child", &["root"], |_| async { Ok(2) });
+
+        let tree = registry.ascii_tree();
+        assert!(tree.contains("DAG Structure"));
+        assert!(tree.contains("root"));
+        assert!(tree.contains("child"));
+    }
+
+    #[test]
+    fn test_ascii_tree_empty() {
+        let registry = DeferredRegistry::new();
+        let tree = registry.ascii_tree();
+        assert!(tree.contains("DAG Structure (0 steps)"));
+        assert!(tree.contains("No root nodes found"));
+    }
+
+    #[test]
+    fn test_level_graph() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &[], |_| async { Ok(2) });
+        let _c = registry.register::<i32, _, _>("c", &["a", "b"], |_| async { Ok(3) });
+
+        let graph = registry.level_graph();
+        assert!(graph.contains("DAG Execution Levels"));
+        assert!(graph.contains("Level 0"));
+        assert!(graph.contains("Level 1"));
+        assert!(graph.contains("parallel steps"));
+    }
+
+    #[test]
+    fn test_summary() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("root", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("child", &["root"], |_| async { Ok(2) });
+        let _c = registry.register::<i32, _, _>("leaf", &["child"], |_| async { Ok(3) });
+
+        let summary = registry.summary();
+        assert_eq!(summary.total_steps, 3);
+        assert_eq!(summary.root_count, 1);
+        assert_eq!(summary.leaf_count, 1);
+        assert_eq!(summary.max_depth, 2);
+        assert_eq!(summary.roots, vec![StepId::new("root")]);
+        assert_eq!(summary.leaves, vec![StepId::new("leaf")]);
+    }
+
+    #[test]
+    fn test_summary_empty() {
+        let registry = DeferredRegistry::new();
+        let summary = registry.summary();
+        assert_eq!(summary.total_steps, 0);
+        assert_eq!(summary.root_count, 0);
+        assert_eq!(summary.leaf_count, 0);
+        assert_eq!(summary.max_depth, 0);
+    }
+
+    #[test]
+    fn test_summary_multiple_roots_and_leaves() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("root1", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("root2", &[], |_| async { Ok(2) });
+        let _c = registry.register::<i32, _, _>("leaf1", &["root1"], |_| async { Ok(3) });
+        let _d = registry.register::<i32, _, _>("leaf2", &["root2"], |_| async { Ok(4) });
+
+        let summary = registry.summary();
+        assert_eq!(summary.total_steps, 4);
+        assert_eq!(summary.root_count, 2);
+        assert_eq!(summary.leaf_count, 2);
+    }
+
+    // =========================================================================
+    // Error Handling Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_step_failure_propagates() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async {
+            Err(ExecutionError::Failed("Intentional failure".to_string()))
+        });
+
+        let result = registry.execute().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_dependent_step_not_run_on_failure() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async {
+            Err(ExecutionError::Failed("Fail first".to_string()))
+        });
+        let handle_b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+
+        let result = registry.execute().await;
+        assert!(result.is_err());
+
+        // b should not have been executed
+        let b_result = handle_b.resolve().await;
+        assert!(b_result.is_err());
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_single_step() {
+        let mut registry = DeferredRegistry::new();
+        let handle = registry.register::<i32, _, _>("single", &[], |_| async { Ok(42) });
+
+        registry.execute().await.unwrap();
+        let result = handle.resolve().await.unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[tokio::test]
+    async fn test_empty_registry_execution() {
+        let registry = DeferredRegistry::new();
+        let result = registry.execute().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_long_chain() {
+        let mut registry = DeferredRegistry::new();
+
+        let h1 = registry.register::<i32, _, _>("step1", &[], |_| async { Ok(1) });
+        let h2 = registry.register::<i32, _, _>("step2", &["step1"], |inputs| async move {
+            let v: i32 = deserialize_value(inputs.get(&StepId::new("step1")).unwrap())?;
+            Ok(v + 1)
+        });
+        let h3 = registry.register::<i32, _, _>("step3", &["step2"], |inputs| async move {
+            let v: i32 = deserialize_value(inputs.get(&StepId::new("step2")).unwrap())?;
+            Ok(v + 1)
+        });
+        let h4 = registry.register::<i32, _, _>("step4", &["step3"], |inputs| async move {
+            let v: i32 = deserialize_value(inputs.get(&StepId::new("step3")).unwrap())?;
+            Ok(v + 1)
+        });
+
+        registry.execute().await.unwrap();
+
+        assert_eq!(h1.resolve().await.unwrap(), 1);
+        assert_eq!(h2.resolve().await.unwrap(), 2);
+        assert_eq!(h3.resolve().await.unwrap(), 3);
+        assert_eq!(h4.resolve().await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_wide_parallelism() {
+        let mut registry = DeferredRegistry::new();
+
+        // Create 10 independent steps
+        let mut handles = vec![];
+        for i in 0..10 {
+            let handle = registry.register::<i32, _, _>(&format!("step{}", i), &[], move |_| async move {
+                Ok(i)
+            });
+            handles.push(handle);
+        }
+
+        registry.execute().await.unwrap();
+
+        for (i, handle) in handles.into_iter().enumerate() {
+            assert_eq!(handle.resolve().await.unwrap(), i as i32);
+        }
+    }
+
+    #[test]
+    fn test_default_registry() {
+        let registry = DeferredRegistry::default();
+        let summary = registry.summary();
+        assert_eq!(summary.total_steps, 0);
+    }
+
+    // =========================================================================
+    // Complex DAG Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_complex_dag_with_multiple_paths() {
+        let mut registry = DeferredRegistry::new();
+
+        //       a
+        //      / \
+        //     b   c
+        //    / \ / \
+        //   d   e   f
+        //    \ / \ /
+        //     g   h
+        //      \ /
+        //       i
+
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+        let _c = registry.register::<i32, _, _>("c", &["a"], |_| async { Ok(3) });
+        let _d = registry.register::<i32, _, _>("d", &["b"], |_| async { Ok(4) });
+        let _e = registry.register::<i32, _, _>("e", &["b", "c"], |_| async { Ok(5) });
+        let _f = registry.register::<i32, _, _>("f", &["c"], |_| async { Ok(6) });
+        let _g = registry.register::<i32, _, _>("g", &["d", "e"], |_| async { Ok(7) });
+        let _h = registry.register::<i32, _, _>("h", &["e", "f"], |_| async { Ok(8) });
+        let handle_i = registry.register::<i32, _, _>("i", &["g", "h"], |_| async { Ok(9) });
+
+        registry.execute().await.unwrap();
+
+        let result = handle_i.resolve().await.unwrap();
+        assert_eq!(result, 9);
+    }
+
+    #[test]
+    fn test_calculate_depths() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+        let _c = registry.register::<i32, _, _>("c", &["b"], |_| async { Ok(3) });
+
+        let depths = registry.calculate_depths();
+        assert_eq!(depths.get(&StepId::new("a")), Some(&0));
+        assert_eq!(depths.get(&StepId::new("b")), Some(&1));
+        assert_eq!(depths.get(&StepId::new("c")), Some(&2));
+    }
+
+    #[test]
+    fn test_calculate_max_depth() {
+        let mut registry = DeferredRegistry::new();
+        let _a = registry.register::<i32, _, _>("a", &[], |_| async { Ok(1) });
+        let _b = registry.register::<i32, _, _>("b", &["a"], |_| async { Ok(2) });
+        let _c = registry.register::<i32, _, _>("c", &["b"], |_| async { Ok(3) });
+
+        let max_depth = registry.calculate_max_depth();
+        assert_eq!(max_depth, 2);
+    }
+
+    #[test]
+    fn test_calculate_max_depth_empty() {
+        let registry = DeferredRegistry::new();
+        let max_depth = registry.calculate_max_depth();
+        assert_eq!(max_depth, 0);
+    }
 }

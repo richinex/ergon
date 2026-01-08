@@ -382,3 +382,436 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{deserialize_value, serialize_value, InvokableFlow};
+    use crate::executor::context::ExecutionContext;
+    use crate::storage::InMemoryExecutionLog;
+    use ergon_macros::FlowType;
+
+    // =========================================================================
+    // Test Flows
+    // =========================================================================
+
+    #[derive(Clone, Serialize, Deserialize, FlowType)]
+    struct TestChildFlow {
+        data: String,
+    }
+
+    impl InvokableFlow for TestChildFlow {
+        type Output = String;
+    }
+
+    #[derive(Clone, Serialize, Deserialize, FlowType)]
+    struct TestParentFlow {
+        id: String,
+    }
+
+    // =========================================================================
+    // SuspensionPayload Tests
+    // =========================================================================
+
+    #[test]
+    fn test_suspension_payload_success() {
+        let payload = SuspensionPayload {
+            success: true,
+            data: vec![1, 2, 3],
+            is_retryable: None,
+        };
+
+        let serialized = serialize_value(&payload).unwrap();
+        let deserialized: SuspensionPayload = deserialize_value(&serialized).unwrap();
+
+        assert!(deserialized.success);
+        assert_eq!(deserialized.data, vec![1, 2, 3]);
+        assert!(deserialized.is_retryable.is_none());
+    }
+
+    #[test]
+    fn test_suspension_payload_failure_retryable() {
+        let payload = SuspensionPayload {
+            success: false,
+            data: serialize_value(&"Error message".to_string()).unwrap(),
+            is_retryable: Some(true),
+        };
+
+        let serialized = serialize_value(&payload).unwrap();
+        let deserialized: SuspensionPayload = deserialize_value(&serialized).unwrap();
+
+        assert!(!deserialized.success);
+        assert_eq!(deserialized.is_retryable, Some(true));
+
+        let error_msg: String = deserialize_value(&deserialized.data).unwrap();
+        assert_eq!(error_msg, "Error message");
+    }
+
+    #[test]
+    fn test_suspension_payload_failure_non_retryable() {
+        let payload = SuspensionPayload {
+            success: false,
+            data: serialize_value(&"Fatal error".to_string()).unwrap(),
+            is_retryable: Some(false),
+        };
+
+        let serialized = serialize_value(&payload).unwrap();
+        let deserialized: SuspensionPayload = deserialize_value(&serialized).unwrap();
+
+        assert!(!deserialized.success);
+        assert_eq!(deserialized.is_retryable, Some(false));
+    }
+
+    #[test]
+    fn test_suspension_payload_empty_data() {
+        let payload = SuspensionPayload {
+            success: true,
+            data: vec![],
+            is_retryable: None,
+        };
+
+        let serialized = serialize_value(&payload).unwrap();
+        let deserialized: SuspensionPayload = deserialize_value(&serialized).unwrap();
+
+        assert!(deserialized.success);
+        assert!(deserialized.data.is_empty());
+    }
+
+    // =========================================================================
+    // InvokeChild Trait Tests
+    // =========================================================================
+
+    #[test]
+    fn test_invoke_child_creates_pending() {
+        let parent = Arc::new(TestParentFlow {
+            id: "parent".to_string(),
+        });
+
+        let child = TestChildFlow {
+            data: "test data".to_string(),
+        };
+
+        let pending: PendingChild<String> = parent.invoke(child.clone());
+
+        // Verify child_type is set correctly
+        assert_eq!(pending.child_type, TestChildFlow::type_id().to_string());
+
+        // Verify child_bytes can be deserialized back
+        let deserialized: TestChildFlow = deserialize_value(&pending.child_bytes).unwrap();
+        assert_eq!(deserialized.data, "test data");
+    }
+
+    #[test]
+    fn test_invoke_child_different_types() {
+        #[derive(Clone, Serialize, Deserialize, FlowType)]
+        struct ChildA {
+            value: i32,
+        }
+
+        impl InvokableFlow for ChildA {
+            type Output = i32;
+        }
+
+        #[derive(Clone, Serialize, Deserialize, FlowType)]
+        struct ChildB {
+            name: String,
+        }
+
+        impl InvokableFlow for ChildB {
+            type Output = String;
+        }
+
+        let parent = Arc::new(TestParentFlow {
+            id: "parent".to_string(),
+        });
+
+        let pending_a: PendingChild<i32> = parent.invoke(ChildA { value: 42 });
+        let pending_b: PendingChild<String> = parent.invoke(ChildB {
+            name: "test".to_string(),
+        });
+
+        assert_eq!(pending_a.child_type, ChildA::type_id().to_string());
+        assert_eq!(pending_b.child_type, ChildB::type_id().to_string());
+    }
+
+    // =========================================================================
+    // Child UUID Generation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_child_uuid_deterministic() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let parent_id = Uuid::new_v4();
+        let child = TestChildFlow {
+            data: "same data".to_string(),
+        };
+        let child_bytes = serialize_value(&child).unwrap();
+        let child_type = TestChildFlow::type_id().to_string();
+
+        // Generate UUID twice with same inputs
+        let mut hasher1 = DefaultHasher::new();
+        child_bytes.hash(&mut hasher1);
+        let child_hash1 = hasher1.finish();
+
+        let mut seed1 = Vec::new();
+        seed1.extend_from_slice(child_type.as_bytes());
+        seed1.extend_from_slice(&child_hash1.to_le_bytes());
+        let uuid1 = Uuid::new_v5(&parent_id, &seed1);
+
+        let mut hasher2 = DefaultHasher::new();
+        child_bytes.hash(&mut hasher2);
+        let child_hash2 = hasher2.finish();
+
+        let mut seed2 = Vec::new();
+        seed2.extend_from_slice(child_type.as_bytes());
+        seed2.extend_from_slice(&child_hash2.to_le_bytes());
+        let uuid2 = Uuid::new_v5(&parent_id, &seed2);
+
+        // Should be identical
+        assert_eq!(uuid1, uuid2);
+    }
+
+    #[test]
+    fn test_child_uuid_different_data() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let parent_id = Uuid::new_v4();
+        let child_type = TestChildFlow::type_id().to_string();
+
+        let child1 = TestChildFlow {
+            data: "data1".to_string(),
+        };
+        let child2 = TestChildFlow {
+            data: "data2".to_string(),
+        };
+
+        let bytes1 = serialize_value(&child1).unwrap();
+        let bytes2 = serialize_value(&child2).unwrap();
+
+        let mut hasher1 = DefaultHasher::new();
+        bytes1.hash(&mut hasher1);
+        let hash1 = hasher1.finish();
+        let mut seed1 = Vec::new();
+        seed1.extend_from_slice(child_type.as_bytes());
+        seed1.extend_from_slice(&hash1.to_le_bytes());
+        let uuid1 = Uuid::new_v5(&parent_id, &seed1);
+
+        let mut hasher2 = DefaultHasher::new();
+        bytes2.hash(&mut hasher2);
+        let hash2 = hasher2.finish();
+        let mut seed2 = Vec::new();
+        seed2.extend_from_slice(child_type.as_bytes());
+        seed2.extend_from_slice(&hash2.to_le_bytes());
+        let uuid2 = Uuid::new_v5(&parent_id, &seed2);
+
+        // Should be different
+        assert_ne!(uuid1, uuid2);
+    }
+
+    // =========================================================================
+    // Step ID Generation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_step_id_deterministic() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let child_type = "TestFlow".to_string();
+        let child_bytes = vec![1, 2, 3, 4];
+
+        // Generate step ID twice
+        let mut hasher1 = DefaultHasher::new();
+        child_type.hash(&mut hasher1);
+        child_bytes.hash(&mut hasher1);
+        let step1 = (hasher1.finish() & 0x7FFFFFFF) as i32;
+
+        let mut hasher2 = DefaultHasher::new();
+        child_type.hash(&mut hasher2);
+        child_bytes.hash(&mut hasher2);
+        let step2 = (hasher2.finish() & 0x7FFFFFFF) as i32;
+
+        assert_eq!(step1, step2);
+    }
+
+    #[test]
+    fn test_step_id_non_negative() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let child_type = "TestFlow".to_string();
+        let child_bytes = vec![1, 2, 3, 4];
+
+        let mut hasher = DefaultHasher::new();
+        child_type.hash(&mut hasher);
+        child_bytes.hash(&mut hasher);
+        let step = (hasher.finish() & 0x7FFFFFFF) as i32;
+
+        // Verify positive (due to masking with 0x7FFFFFFF)
+        assert!(step >= 0);
+    }
+
+    // =========================================================================
+    // Error Parsing Tests
+    // =========================================================================
+
+    #[test]
+    fn test_error_message_parsing_with_colon() {
+        let error_msg = "MyError: Something went wrong";
+
+        let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
+            (
+                error_msg[..colon_pos].to_string(),
+                error_msg[colon_pos + 2..].to_string(),
+            )
+        } else {
+            ("unknown".to_string(), error_msg.to_string())
+        };
+
+        assert_eq!(type_name, "MyError");
+        assert_eq!(message, "Something went wrong");
+    }
+
+    #[test]
+    fn test_error_message_parsing_without_colon() {
+        let error_msg = "Simple error message";
+
+        let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
+            (
+                error_msg[..colon_pos].to_string(),
+                error_msg[colon_pos + 2..].to_string(),
+            )
+        } else {
+            ("unknown".to_string(), error_msg.to_string())
+        };
+
+        assert_eq!(type_name, "unknown");
+        assert_eq!(message, "Simple error message");
+    }
+
+    #[test]
+    fn test_error_message_parsing_multiple_colons() {
+        let error_msg = "namespace::MyError: Value: 42 is invalid";
+
+        let (type_name, message) = if let Some(colon_pos) = error_msg.find(": ") {
+            (
+                error_msg[..colon_pos].to_string(),
+                error_msg[colon_pos + 2..].to_string(),
+            )
+        } else {
+            ("unknown".to_string(), error_msg.to_string())
+        };
+
+        assert_eq!(type_name, "namespace::MyError");
+        assert_eq!(message, "Value: 42 is invalid");
+    }
+
+    // =========================================================================
+    // Integration Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_invoke_serialization_roundtrip() {
+        let parent = Arc::new(TestParentFlow {
+            id: "parent".to_string(),
+        });
+
+        let child = TestChildFlow {
+            data: "test data".to_string(),
+        };
+
+        let pending: PendingChild<String> = parent.invoke(child.clone());
+
+        // Verify we can deserialize child_bytes back to original
+        let deserialized: TestChildFlow = deserialize_value(&pending.child_bytes).unwrap();
+        assert_eq!(deserialized.data, child.data);
+    }
+
+    #[test]
+    fn test_suspension_payload_with_complex_data() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct ComplexResult {
+            id: u32,
+            name: String,
+            tags: Vec<String>,
+        }
+
+        let result = ComplexResult {
+            id: 123,
+            name: "Test".to_string(),
+            tags: vec!["tag1".to_string(), "tag2".to_string()],
+        };
+
+        let payload = SuspensionPayload {
+            success: true,
+            data: serialize_value(&result).unwrap(),
+            is_retryable: None,
+        };
+
+        let serialized = serialize_value(&payload).unwrap();
+        let deserialized: SuspensionPayload = deserialize_value(&serialized).unwrap();
+
+        assert!(deserialized.success);
+
+        let recovered: ComplexResult = deserialize_value(&deserialized.data).unwrap();
+        assert_eq!(recovered, result);
+    }
+
+    #[test]
+    fn test_pending_child_type_safety() {
+        let parent = Arc::new(TestParentFlow {
+            id: "parent".to_string(),
+        });
+
+        // Type inference works correctly
+        let _pending: PendingChild<String> = parent.invoke(TestChildFlow {
+            data: "test".to_string(),
+        });
+
+        // This would be a compile error (type mismatch):
+        // let _wrong: PendingChild<i32> = parent.invoke(TestChildFlow { data: "test".to_string() });
+    }
+
+    #[test]
+    fn test_signal_name_is_child_uuid() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let parent_id = Uuid::new_v4();
+        let child = TestChildFlow {
+            data: "test".to_string(),
+        };
+        let child_bytes = serialize_value(&child).unwrap();
+        let child_type = TestChildFlow::type_id().to_string();
+
+        // Generate child UUID (same logic as result())
+        let mut hasher = DefaultHasher::new();
+        child_bytes.hash(&mut hasher);
+        let child_hash = hasher.finish();
+
+        let mut seed = Vec::new();
+        seed.extend_from_slice(child_type.as_bytes());
+        seed.extend_from_slice(&child_hash.to_le_bytes());
+        let child_flow_id = Uuid::new_v5(&parent_id, &seed);
+
+        let signal_name = child_flow_id.to_string();
+
+        // Signal name should be the string representation of child UUID
+        assert_eq!(signal_name.len(), 36); // UUID string length
+        assert!(signal_name.contains('-')); // UUID format
+    }
+
+    #[tokio::test]
+    async fn test_suspension_payload_default_is_retryable() {
+        // Test that is_retryable defaults to None during deserialization
+        // This tests the #[serde(default)] attribute
+        let json_without_retryable = r#"{"success":true,"data":[]}"#;
+        let payload: SuspensionPayload = serde_json::from_str(json_without_retryable).unwrap();
+
+        assert!(payload.success);
+        assert!(payload.is_retryable.is_none());
+    }
+}
