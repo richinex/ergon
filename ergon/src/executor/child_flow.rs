@@ -387,8 +387,7 @@ where
 mod tests {
     use super::*;
     use crate::core::{deserialize_value, serialize_value, InvokableFlow};
-    
-    
+
     use ergon_macros::FlowType;
 
     // =========================================================================

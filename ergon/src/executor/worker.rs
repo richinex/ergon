@@ -1622,8 +1622,10 @@ mod tests {
         // All tasks should be processed by one of the workers
         let mut completed = 0;
         for task_id in task_ids {
-            if storage.get_scheduled_flow(task_id).await.unwrap().is_none() {
-                completed += 1;
+            if let Some(flow) = storage.get_scheduled_flow(task_id).await.unwrap() {
+                if flow.status == TaskStatus::Complete {
+                    completed += 1;
+                }
             }
         }
 

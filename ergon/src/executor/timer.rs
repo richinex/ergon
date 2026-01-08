@@ -298,7 +298,7 @@ mod tests {
     use super::*;
     use crate::core::serialize_value;
     use crate::executor::child_flow::SuspensionPayload;
-    
+
     use crate::storage::{InMemoryExecutionLog, InvocationStartParams};
     use uuid::Uuid;
 
@@ -352,6 +352,18 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         // Setup: Create a timer that has already expired
         let past_time = Utc::now() - ChronoDuration::seconds(10);
         storage
@@ -384,6 +396,18 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         // Create an expired timer
         let past_time = Utc::now() - ChronoDuration::seconds(5);
         storage
@@ -406,6 +430,20 @@ mod tests {
 
         let flow1 = Uuid::new_v4();
         let flow2 = Uuid::new_v4();
+
+        // Create invocations first
+        for (flow_id, step) in [(flow1, 1), (flow2, 1)] {
+            let params = InvocationStartParams {
+                id: flow_id,
+                step,
+                class_name: "TestFlow",
+                method_name: "test_step()",
+                status: InvocationStatus::Pending,
+                parameters: &serialize_value(&()).unwrap(),
+                retry_policy: None,
+            };
+            storage.log_invocation_start(params).await.unwrap();
+        }
 
         // Create two expired timers
         let past_time = Utc::now() - ChronoDuration::seconds(10);
@@ -444,6 +482,18 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         // Create a timer that hasn't expired yet
         let future_time = Utc::now() + ChronoDuration::seconds(60);
         storage
@@ -476,6 +526,18 @@ mod tests {
         let flow_id = Uuid::new_v4();
         let fire_at = Utc::now() + ChronoDuration::seconds(30);
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         let result = storage.log_timer(flow_id, 1, fire_at, None).await;
         assert!(result.is_ok());
 
@@ -489,6 +551,18 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
         let fire_at = Utc::now() + ChronoDuration::seconds(30);
+
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
 
         let result = storage
             .log_timer(flow_id, 1, fire_at, Some("my-timer"))
@@ -513,6 +587,18 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         // Create an expired timer
         let past_time = Utc::now() - ChronoDuration::seconds(10);
         storage
@@ -531,6 +617,20 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow1 = Uuid::new_v4();
         let flow2 = Uuid::new_v4();
+
+        // Create invocations first
+        for (flow_id, step) in [(flow1, 1), (flow2, 1)] {
+            let params = InvocationStartParams {
+                id: flow_id,
+                step,
+                class_name: "TestFlow",
+                method_name: "test_step()",
+                status: InvocationStatus::Pending,
+                parameters: &serialize_value(&()).unwrap(),
+                retry_policy: None,
+            };
+            storage.log_invocation_start(params).await.unwrap();
+        }
 
         // One expired, one future
         let past_time = Utc::now() - ChronoDuration::seconds(10);
@@ -551,6 +651,18 @@ mod tests {
     async fn test_claim_timer_updates_status() {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
+
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
 
         // Create timer
         let past_time = Utc::now() - ChronoDuration::seconds(5);
@@ -581,6 +693,18 @@ mod tests {
         let flow_id = Uuid::new_v4();
         let fire_at = Utc::now() + ChronoDuration::seconds(30);
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         storage.log_timer(flow_id, 1, fire_at, None).await.unwrap();
 
         let next = storage.get_next_timer_fire_time().await.unwrap();
@@ -592,6 +716,20 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow1 = Uuid::new_v4();
         let flow2 = Uuid::new_v4();
+
+        // Create invocations first
+        for (flow_id, step) in [(flow1, 1), (flow2, 1)] {
+            let params = InvocationStartParams {
+                id: flow_id,
+                step,
+                class_name: "TestFlow",
+                method_name: "test_step()",
+                status: InvocationStatus::Pending,
+                parameters: &serialize_value(&()).unwrap(),
+                retry_policy: None,
+            };
+            storage.log_invocation_start(params).await.unwrap();
+        }
 
         let early_time = Utc::now() + ChronoDuration::seconds(10);
         let late_time = Utc::now() + ChronoDuration::seconds(60);
@@ -635,6 +773,18 @@ mod tests {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         // Step 1: Schedule a timer that's already expired
         let past_time = Utc::now() - ChronoDuration::seconds(1);
         storage
@@ -664,6 +814,18 @@ mod tests {
     async fn test_concurrent_timer_claiming() {
         let storage = Arc::new(InMemoryExecutionLog::new());
         let flow_id = Uuid::new_v4();
+
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
 
         // Create an expired timer
         let past_time = Utc::now() - ChronoDuration::seconds(10);
@@ -720,6 +882,19 @@ mod tests {
         // Create multiple expired timers
         for i in 0..5 {
             let flow_id = Uuid::new_v4();
+
+            // Create invocation first
+            let params = InvocationStartParams {
+                id: flow_id,
+                step: i,
+                class_name: "TestFlow",
+                method_name: "test_step()",
+                status: InvocationStatus::Pending,
+                parameters: &serialize_value(&()).unwrap(),
+                retry_policy: None,
+            };
+            storage.log_invocation_start(params).await.unwrap();
+
             let past_time = Utc::now() - ChronoDuration::seconds(10);
             storage
                 .log_timer(flow_id, i, past_time, None)

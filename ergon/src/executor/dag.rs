@@ -841,7 +841,8 @@ mod tests {
     #[test]
     fn test_validate_empty_registry() {
         let registry = DeferredRegistry::new();
-        assert!(registry.validate().is_ok());
+        // Empty registries are invalid - must have at least one step
+        assert!(registry.validate().is_err());
     }
 
     // =========================================================================
@@ -851,6 +852,11 @@ mod tests {
     #[tokio::test]
     async fn test_step_handle_accessors() {
         let mut registry = DeferredRegistry::new();
+
+        // Create dependencies first
+        let _dep1 = registry.register::<i32, _, _>("dep1", &[], |_| async { Ok(1) });
+        let _dep2 = registry.register::<i32, _, _>("dep2", &[], |_| async { Ok(2) });
+
         let handle =
             registry.register::<i32, _, _>("test_step", &["dep1", "dep2"], |_| async { Ok(42) });
 
@@ -1021,7 +1027,8 @@ mod tests {
     async fn test_empty_registry_execution() {
         let registry = DeferredRegistry::new();
         let result = registry.execute().await;
-        assert!(result.is_ok());
+        // Empty registries are invalid - must have at least one step
+        assert!(result.is_err());
     }
 
     #[tokio::test]

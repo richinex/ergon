@@ -514,6 +514,19 @@ mod tests {
 
         // Setup: Create a flow waiting for a signal
         let storage = Arc::new(InMemoryExecutionLog::new());
+
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         storage.log_signal(flow_id, 1, "test-signal").await.unwrap();
 
         // Add signal data to the source
@@ -543,6 +556,19 @@ mod tests {
         let flow_id = Uuid::new_v4();
 
         let storage = Arc::new(InMemoryExecutionLog::new());
+
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         storage.log_signal(flow_id, 1, "test-signal").await.unwrap();
 
         let signal_data = serialize_value(&42).unwrap();
@@ -566,6 +592,19 @@ mod tests {
         let flow_id = Uuid::new_v4();
 
         let storage = Arc::new(InMemoryExecutionLog::new());
+
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         storage
             .log_signal(flow_id, 1, "waiting-signal")
             .await
@@ -772,6 +811,18 @@ mod tests {
         let signal_source = Arc::new(TestSignalSource::new());
         let flow_id = Uuid::new_v4();
 
+        // Create invocation first
+        let params = InvocationStartParams {
+            id: flow_id,
+            step: 1,
+            class_name: "TestFlow",
+            method_name: "test_step()",
+            status: InvocationStatus::Pending,
+            parameters: &serialize_value(&()).unwrap(),
+            retry_policy: None,
+        };
+        storage.log_invocation_start(params).await.unwrap();
+
         // Step 1: Flow waits for signal
         storage.log_signal(flow_id, 1, "approval").await.unwrap();
 
@@ -802,6 +853,20 @@ mod tests {
 
         let flow1 = Uuid::new_v4();
         let flow2 = Uuid::new_v4();
+
+        // Create invocations first
+        for (flow_id, step) in [(flow1, 1), (flow2, 1)] {
+            let params = InvocationStartParams {
+                id: flow_id,
+                step,
+                class_name: "TestFlow",
+                method_name: "test_step()",
+                status: InvocationStatus::Pending,
+                parameters: &serialize_value(&()).unwrap(),
+                retry_policy: None,
+            };
+            storage.log_invocation_start(params).await.unwrap();
+        }
 
         // Two flows waiting for different signals
         storage.log_signal(flow1, 1, "signal1").await.unwrap();
