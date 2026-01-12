@@ -52,8 +52,8 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
-serial_test = "3.2.0"
-criterion = { version = "0.5", features = ["html_reports"] }
+serial_test = "3.3.1"
+criterion = { version = "0.8", features = ["html_reports"] }
 
 # Example configurations with required features
 [[example]]
