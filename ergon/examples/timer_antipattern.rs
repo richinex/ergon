@@ -68,35 +68,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== BAD PATTERN (logic after suspension) ===");
     let bad_id = scheduler.schedule(BadExample { id: "BAD".into() }).await?;
 
-    let notify = storage.status_notify().clone();
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(bad_id).await? {
-            if matches!(
-                task.status,
-                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-            ) {
-                break;
-            }
-        }
-        notify.notified().await;
-    }
+    // Race-condition-free completion waiting
+    storage.wait_for_completion(bad_id).await?;
 
     println!("\n=== GOOD PATTERN (separate steps) ===");
     let good_id = scheduler
         .schedule(GoodExample { id: "GOOD".into() })
         .await?;
 
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(good_id).await? {
-            if matches!(
-                task.status,
-                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-            ) {
-                break;
-            }
-        }
-        notify.notified().await;
-    }
+    storage.wait_for_completion(good_id).await?;
 
     println!("\nDone!");
     worker_handle.shutdown().await;

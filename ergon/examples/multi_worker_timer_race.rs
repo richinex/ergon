@@ -82,35 +82,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Scheduled flow {}", i);
     }
 
-    // Wait for all flows to complete
-    let status_notify = storage.status_notify().clone();
-    let mut completed = 0;
-
     println!("\nWaiting for timers to fire...\n");
 
-    let mut completed_tasks = std::collections::HashSet::new();
+    let all_task_ids: Vec<Uuid> = task_ids.iter().map(|(_, id, _)| *id).collect();
+    storage.wait_for_all(&all_task_ids).await?;
 
-    while completed < 10 {
-        status_notify.notified().await;
-
-        for (flow_num, task_id, _) in &task_ids {
-            if completed_tasks.contains(task_id) {
-                continue; // Already counted this task
-            }
-
-            if let Some(task) = storage.get_scheduled_flow(*task_id).await? {
-                if task.status == ergon::storage::TaskStatus::Complete {
-                    let elapsed = start.elapsed();
-                    println!(
-                        "[{:?}] Flow {} completed (worker: {})",
-                        elapsed,
-                        flow_num,
-                        task.locked_by.as_deref().unwrap_or("unknown")
-                    );
-                    completed_tasks.insert(*task_id);
-                    completed += 1;
-                }
-            }
+    for (flow_num, task_id, _) in &task_ids {
+        if let Some(task) = storage.get_scheduled_flow(*task_id).await? {
+            let elapsed = start.elapsed();
+            println!(
+                "[{:?}] Flow {} completed (worker: {})",
+                elapsed,
+                flow_num,
+                task.locked_by.as_deref().unwrap_or("unknown")
+            );
         }
     }
 

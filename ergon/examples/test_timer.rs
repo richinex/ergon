@@ -230,29 +230,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   • Watch automatic resumption after timers fire");
     println!("   • Each order takes ~6 seconds total\n");
 
-    // Event-driven completion waiting (no polling!)
-    let status_notify = storage.status_notify().clone();
-    let timeout_duration = Duration::from_secs(30);
-    tokio::time::timeout(timeout_duration, async {
-        loop {
-            let mut all_complete = true;
-            for &task_id in &task_ids {
-                if let Some(scheduled) = storage.get_scheduled_flow(task_id).await? {
-                    if !matches!(
-                        scheduled.status,
-                        ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-                    ) {
-                        all_complete = false;
-                        break;
-                    }
-                }
-            }
-            if all_complete {
-                break;
-            }
-            // Wait for status change notification instead of polling
-            status_notify.notified().await;
-        }
+    tokio::time::timeout(Duration::from_secs(30), async {
+        storage.wait_for_all(&task_ids).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
     .await

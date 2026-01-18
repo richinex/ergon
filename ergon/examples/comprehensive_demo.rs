@@ -299,39 +299,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[Client] Scheduled {}, task_id={}", order.order_id, task_id);
     }
 
-    println!("\n[Client] Waiting for completion (event-driven)...\n");
+    println!("\n[Client] Waiting for completion (race-condition-free)...\n");
 
-    let status_notify = storage.status_notify().clone();
     let timeout = Duration::from_secs(30);
 
-    tokio::time::timeout(timeout, async {
-        loop {
-            let mut all_complete = true;
+    // Use storage's race-condition-free wait_for_all (no polling!)
+    let results = tokio::time::timeout(timeout, storage.wait_for_all(&task_ids)).await??;
 
-            for &task_id in &task_ids {
-                if let Some(task) = storage.get_scheduled_flow(task_id).await? {
-                    match task.status {
-                        TaskStatus::Complete => {}
-                        TaskStatus::Failed => {
-                            println!("[Client] Flow {} failed: {:?}", task_id, task.error_message);
-                        }
-                        _ => {
-                            all_complete = false;
-                        }
-                    }
-                }
+    // Check for failures
+    for (task_id, status) in &results {
+        if *status == TaskStatus::Failed {
+            if let Some(task) = storage.get_scheduled_flow(*task_id).await? {
+                println!("[Client] Flow {} failed: {:?}", task_id, task.error_message);
             }
-
-            if all_complete {
-                break;
-            }
-
-            status_notify.notified().await;
         }
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    })
-    .await??;
+    }
 
     println!("\n[Client] All orders complete!");
     println!("\n=== FINAL RESULTS ===\n");

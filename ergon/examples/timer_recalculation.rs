@@ -136,52 +136,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_time()
     );
 
-    // Wait for both flows to complete
-    let status_notify = storage.status_notify().clone();
-    let mut completed = 0;
-    let mut completed_tasks = std::collections::HashSet::new();
+    storage.wait_for_all(&[short_task_id, long_task_id]).await?;
 
-    while completed < 2 {
-        status_notify.notified().await;
-
-        if !completed_tasks.contains(&short_task_id) {
-            if let Some(task) = storage.get_scheduled_flow(short_task_id).await? {
-                if task.status == ergon::storage::TaskStatus::Complete {
-                    let elapsed = start.elapsed();
-                    let worker_id = task.locked_by.as_deref().unwrap_or("unknown");
-                    println!(
-                        "\n[RESULT] Short timer completed at {:?} (worker: {})",
-                        elapsed, worker_id
-                    );
-                    if elapsed.as_secs() >= 2 && elapsed.as_secs() <= 4 {
-                        println!("✓ Short timer fired correctly (~2s)");
-                    } else {
-                        println!("✗ Short timer timing unexpected!");
-                    }
-                    completed_tasks.insert(short_task_id);
-                    completed += 1;
-                }
-            }
+    if let Some(task) = storage.get_scheduled_flow(short_task_id).await? {
+        let elapsed = start.elapsed();
+        let worker_id = task.locked_by.as_deref().unwrap_or("unknown");
+        println!(
+            "\n[RESULT] Short timer completed at {:?} (worker: {})",
+            elapsed, worker_id
+        );
+        if elapsed.as_secs() >= 2 && elapsed.as_secs() <= 4 {
+            println!("✓ Short timer fired correctly (~2s)");
+        } else {
+            println!("✗ Short timer timing unexpected!");
         }
+    }
 
-        if !completed_tasks.contains(&long_task_id) {
-            if let Some(task) = storage.get_scheduled_flow(long_task_id).await? {
-                if task.status == ergon::storage::TaskStatus::Complete {
-                    let elapsed = start.elapsed();
-                    let worker_id = task.locked_by.as_deref().unwrap_or("unknown");
-                    println!(
-                        "\n[RESULT] Long timer completed at {:?} (worker: {})",
-                        elapsed, worker_id
-                    );
-                    if elapsed.as_secs() >= 10 && elapsed.as_secs() <= 12 {
-                        println!("✓ Long timer fired correctly (~10s)");
-                    } else {
-                        println!("✗ Long timer timing unexpected!");
-                    }
-                    completed_tasks.insert(long_task_id);
-                    completed += 1;
-                }
-            }
+    if let Some(task) = storage.get_scheduled_flow(long_task_id).await? {
+        let elapsed = start.elapsed();
+        let worker_id = task.locked_by.as_deref().unwrap_or("unknown");
+        println!(
+            "\n[RESULT] Long timer completed at {:?} (worker: {})",
+            elapsed, worker_id
+        );
+        if elapsed.as_secs() >= 10 && elapsed.as_secs() <= 12 {
+            println!("✓ Long timer fired correctly (~10s)");
+        } else {
+            println!("✗ Long timer timing unexpected!");
         }
     }
 

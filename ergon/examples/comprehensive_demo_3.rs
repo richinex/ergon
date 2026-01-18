@@ -9,7 +9,6 @@
 use ergon::core::RetryPolicy;
 use ergon::executor::{schedule_timer_named, ExecutionError, InvokeChild};
 use ergon::prelude::*;
-use ergon::storage::TaskStatus;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -217,26 +216,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         task_ids.push((task_id, version.to_string()));
     }
 
-    let status_notify = storage.status_notify().clone();
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let mut all_complete = true;
-            for (task_id, _) in &task_ids {
-                if let Some(task) = storage.get_scheduled_flow(*task_id).await? {
-                    if !matches!(task.status, TaskStatus::Complete | TaskStatus::Failed) {
-                        all_complete = false;
-                        break;
-                    }
-                }
-            }
-            if all_complete {
-                break;
-            }
-            status_notify.notified().await;
-        }
-        Ok::<(), Box<dyn std::error::Error>>(())
-    })
-    .await??;
+    // Use storage's race-condition-free wait_for_all (no polling!)
+    let task_id_list: Vec<Uuid> = task_ids.iter().map(|(id, _)| *id).collect();
+    tokio::time::timeout(Duration::from_secs(30), storage.wait_for_all(&task_id_list)).await??;
 
     for (task_id, _scheduled_version) in &task_ids {
         if let Some(task) = storage.get_scheduled_flow(*task_id).await? {

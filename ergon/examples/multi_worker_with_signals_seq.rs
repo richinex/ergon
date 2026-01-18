@@ -13,7 +13,6 @@ use ergon::core::{FlowType, InvokableFlow};
 use ergon::executor::{await_external_signal, InvokeChild, SignalSource, Worker};
 use ergon::prelude::*;
 use ergon::storage::SqliteExecutionLog;
-use ergon::TaskStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -647,24 +646,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    let status_notify = storage.status_notify().clone();
-    let timeout_duration = Duration::from_secs(30);
-    tokio::time::timeout(timeout_duration, async {
-        loop {
-            let mut all_complete = true;
-            for &task_id in &task_ids {
-                if let Some(scheduled) = storage.get_scheduled_flow(task_id).await? {
-                    if !matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
-                        all_complete = false;
-                        break;
-                    }
-                }
-            }
-            if all_complete {
-                break;
-            }
-            status_notify.notified().await;
-        }
+    tokio::time::timeout(Duration::from_secs(30), async {
+        storage.wait_for_all(&task_ids).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
     .await

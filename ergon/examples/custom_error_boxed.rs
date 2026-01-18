@@ -6,7 +6,6 @@
 //! ```
 
 use ergon::prelude::*;
-use ergon::storage::TaskStatus;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use thiserror::Error;
@@ -196,23 +195,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     task_ids.push(("Out of stock (permanent)", task_id));
 
-    let notify = storage.status_notify().clone();
+    // Race-condition-free waiting for all tasks
+    let task_id_list: Vec<Uuid> = task_ids.iter().map(|(_, id)| *id).collect();
     tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let mut all_complete = true;
-            for (_, task_id) in &task_ids {
-                if let Some(task) = storage.get_scheduled_flow(*task_id).await? {
-                    if !matches!(task.status, TaskStatus::Complete | TaskStatus::Failed) {
-                        all_complete = false;
-                        break;
-                    }
-                }
-            }
-            if all_complete {
-                break;
-            }
-            notify.notified().await;
-        }
+        storage.wait_for_all(&task_id_list).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
     .await??;

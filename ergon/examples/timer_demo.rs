@@ -191,20 +191,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = std::time::Instant::now();
 
-    // Wait for flow to complete using event-driven notifications (no polling!)
-    let status_notify = storage.status_notify().clone();
-    while let Some(task) = storage.get_scheduled_flow(_task_id).await? {
-        match task.status {
-            ergon::storage::TaskStatus::Complete => break,
-            ergon::storage::TaskStatus::Failed => {
-                println!("\n[WARNING] Flow failed");
-                break;
-            }
-            _ => {
-                // Still running or pending - wait for status change notification
-                status_notify.notified().await;
-            }
-        }
+    // Wait for flow to complete using race-condition-free wait_for_completion (no polling!)
+    let final_status = storage.wait_for_completion(_task_id).await?;
+    if final_status == ergon::storage::TaskStatus::Failed {
+        println!("\n[WARNING] Flow failed");
     }
 
     let elapsed = start.elapsed();

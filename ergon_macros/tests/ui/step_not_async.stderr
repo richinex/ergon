@@ -1,0 +1,5 @@
+error: #[step] can only be applied to async functions
+  --> tests/ui/step_not_async.rs:10:5
+   |
+10 |     fn not_async_step(&self) -> Result<i32, ExecutionError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -47,19 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    // Event-driven completion waiting
-    let notify = storage.status_notify().clone();
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(task_id).await? {
-            if matches!(
-                task.status,
-                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-            ) {
-                break;
-            }
-        }
-        notify.notified().await;
-    }
+    // Race-condition-free completion waiting (no polling!)
+    storage.wait_for_completion(task_id).await?;
     println!("Pipeline complete!");
     worker_handle.shutdown().await;
     Ok(())

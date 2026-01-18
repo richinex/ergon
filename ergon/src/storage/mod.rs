@@ -566,6 +566,103 @@ pub trait ExecutionLog: Send + Sync {
     async fn ping(&self) -> Result<()> {
         Ok(())
     }
+
+    // ===== High-Level Wait Helpers =====
+    // These methods provide race-condition-free waiting for flow completion.
+    // They encapsulate the pin-before-check pattern to avoid missing notifications.
+
+    /// Wait for a single task to complete.
+    ///
+    /// This method waits until the specified task reaches a terminal state
+    /// (Complete or Failed) and returns the final status.
+    ///
+    /// # Race-Condition Safety
+    ///
+    /// This method uses the pin-before-check pattern internally to avoid
+    /// missing status notifications. It's safe to call concurrently from
+    /// multiple waiters.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The task to wait for
+    ///
+    /// # Returns
+    ///
+    /// Returns the final TaskStatus (Complete or Failed).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::ScheduledFlowNotFound` if the task doesn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let task_id = scheduler.schedule(my_flow).await?;
+    /// let status = storage.wait_for_completion(task_id).await?;
+    /// match status {
+    ///     TaskStatus::Complete => println!("Success!"),
+    ///     TaskStatus::Failed => println!("Failed"),
+    ///     _ => unreachable!(),
+    /// }
+    /// ```
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default. Storage backends that
+    /// implement the distributed queue should override this method.
+    async fn wait_for_completion(&self, task_id: Uuid) -> Result<TaskStatus> {
+        let _ = task_id;
+        Err(StorageError::Unsupported(
+            "wait_for_completion not implemented for this storage backend".to_string(),
+        ))
+    }
+
+    /// Wait for all tasks to complete.
+    ///
+    /// This method waits until all specified tasks reach terminal states
+    /// (Complete or Failed) and returns their final statuses.
+    ///
+    /// # Race-Condition Safety
+    ///
+    /// This method uses the pin-before-check pattern internally to avoid
+    /// missing status notifications. It's safe to call concurrently.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_ids` - The tasks to wait for
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of (task_id, status) pairs for all tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any task doesn't exist or if there's a storage error.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let task_ids = vec![
+    ///     scheduler.schedule(flow1).await?,
+    ///     scheduler.schedule(flow2).await?,
+    ///     scheduler.schedule(flow3).await?,
+    /// ];
+    /// let results = storage.wait_for_all(&task_ids).await?;
+    /// for (task_id, status) in results {
+    ///     println!("{}: {:?}", task_id, status);
+    /// }
+    /// ```
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::Unsupported` by default. Storage backends that
+    /// implement the distributed queue should override this method.
+    async fn wait_for_all(&self, task_ids: &[Uuid]) -> Result<Vec<(Uuid, TaskStatus)>> {
+        let _ = task_ids;
+        Err(StorageError::Unsupported(
+            "wait_for_all not implemented for this storage backend".to_string(),
+        ))
+    }
 }
 
 /// Trait for storage backends that support event-driven work notifications.

@@ -67,23 +67,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    let notify = storage.status_notify().clone();
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(task_id).await? {
-            if matches!(
-                task.status,
-                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-            ) {
-                println!(
-                    "Final status: {:?}, Attempts: {}",
-                    task.status,
-                    ATTEMPTS.load(Ordering::SeqCst)
-                );
-                break;
-            }
-        }
-        notify.notified().await;
-    }
+    // Race-condition-free completion waiting
+    let final_status = storage.wait_for_completion(task_id).await?;
+    println!(
+        "Final status: {:?}, Attempts: {}",
+        final_status,
+        ATTEMPTS.load(Ordering::SeqCst)
+    );
     worker_handle.shutdown().await;
     Ok(())
 }

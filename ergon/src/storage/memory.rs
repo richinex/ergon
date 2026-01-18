@@ -1,5 +1,5 @@
 use super::{
-    error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog,
+    error::Result, error::StorageError, params::InvocationStartParams, ExecutionLog, TaskStatus,
     TimerNotificationSource, WorkNotificationSource,
 };
 use crate::core::{hash_params, Invocation, InvocationStatus};
@@ -626,6 +626,57 @@ impl ExecutionLog for InMemoryExecutionLog {
         }
 
         Ok(false)
+    }
+
+    async fn wait_for_completion(&self, task_id: Uuid) -> Result<TaskStatus> {
+        use std::pin::pin;
+
+        loop {
+            // Pin BEFORE checking status (critical for race-condition safety)
+            let notified = pin!(self.status_notify.notified());
+
+            // Check current status after pinning
+            if let Some(flow) = self.get_scheduled_flow(task_id).await? {
+                if matches!(flow.status, TaskStatus::Complete | TaskStatus::Failed) {
+                    return Ok(flow.status);
+                }
+            } else {
+                return Err(StorageError::ScheduledFlowNotFound(task_id));
+            }
+
+            // Already registered for notifications, safe to wait
+            notified.await;
+        }
+    }
+
+    async fn wait_for_all(&self, task_ids: &[Uuid]) -> Result<Vec<(Uuid, TaskStatus)>> {
+        use std::pin::pin;
+
+        loop {
+            // Pin BEFORE checking statuses (critical for race-condition safety)
+            let notified = pin!(self.status_notify.notified());
+
+            let mut all_complete = true;
+            let mut results = Vec::with_capacity(task_ids.len());
+
+            for &task_id in task_ids {
+                if let Some(flow) = self.get_scheduled_flow(task_id).await? {
+                    results.push((task_id, flow.status));
+                    if !matches!(flow.status, TaskStatus::Complete | TaskStatus::Failed) {
+                        all_complete = false;
+                    }
+                } else {
+                    return Err(StorageError::ScheduledFlowNotFound(task_id));
+                }
+            }
+
+            if all_complete {
+                return Ok(results);
+            }
+
+            // Already registered for notifications, safe to wait
+            notified.await;
+        }
     }
 }
 

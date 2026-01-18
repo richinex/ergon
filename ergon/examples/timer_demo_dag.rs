@@ -200,15 +200,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    println!("\n=== Event-Driven Timer Demo with DAG Execution ===\n");
-    println!("This demo shows:");
-    println!("  • Timers working with parallel DAG execution");
-    println!("  • fraud_check and reserve_inventory run in PARALLEL");
-    println!("  • process_payment waits for BOTH to complete");
-    println!("  • Zero polling - workers wake only when timers fire");
-    println!("  • Event-driven notifications for instant status updates");
-    println!("\nExpected total time: ~6 seconds\n");
-
     // Create SQLite storage for durability
     let storage = Arc::new(SqliteExecutionLog::new("timer_demo_dag.db").await?);
     storage.reset().await?;
@@ -244,20 +235,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = std::time::Instant::now();
 
-    // Wait for flow to complete using event-driven notifications (no polling!)
-    let status_notify = storage.status_notify().clone();
-    while let Some(task) = storage.get_scheduled_flow(task_id).await? {
-        match task.status {
-            ergon::storage::TaskStatus::Complete => break,
-            ergon::storage::TaskStatus::Failed => {
-                println!("\n[ERROR] Flow failed");
-                break;
-            }
-            _ => {
-                // Still running or pending - wait for status change notification
-                status_notify.notified().await;
-            }
-        }
+    let final_status = storage.wait_for_completion(task_id).await?;
+    if final_status == ergon::storage::TaskStatus::Failed {
+        println!("\n[ERROR] Flow failed");
     }
 
     let elapsed = start.elapsed();
@@ -285,25 +265,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify timing expectations
     if elapsed.as_secs() >= 5 && elapsed.as_secs() <= 7 {
-        println!("\n✅ [SUCCESS] Timers worked correctly with DAG execution!");
+        println!("\n[SUCCESS] Timers worked correctly with DAG execution!");
         println!("   • fraud_check (2s) and reserve_inventory ran in parallel");
         println!("   • process_payment (3s) waited for both");
         println!("   • ship_order (1s) ran after payment");
         println!("   • Total: 2s + 3s + 1s = 6s (not 2s+3s+1s+2s = 8s sequential)");
     } else {
-        println!("\n⚠️  [WARNING] Unexpected timing (might be system load)");
+        println!("\n[WARNING] Unexpected timing (might be system load)");
         println!("   Expected: 5-7 seconds");
         println!("   Got: {:?}", elapsed);
     }
-
-    // Verify event-driven behavior
-    println!("\n=== Event-Driven Timer Verification ===");
-    println!("✅ Timer demo completed successfully");
-    println!("   • Workers woke up only when timers fired (event-driven)");
-    println!("   • Zero CPU overhead while waiting");
-    println!("   • Instant notification on timer expiration");
-    println!("   • Parallel steps (fraud_check + reserve_inventory) executed concurrently");
-    println!("   • Multi-dependency step (process_payment) waited for both");
 
     worker_handle.shutdown().await;
 

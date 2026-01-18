@@ -133,28 +133,6 @@ impl ParentTask {
 // Main
 // =============================================================================
 
-async fn wait_for_completion(
-    storage: &SqliteExecutionLog,
-    task_id: Uuid,
-    timeout: Duration,
-) -> Option<TaskStatus> {
-    let start = std::time::Instant::now();
-    loop {
-        if start.elapsed() > timeout {
-            return None;
-        }
-        match storage.get_scheduled_flow(task_id).await {
-            Ok(Some(scheduled)) => {
-                if matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
-                    return Some(scheduled.status);
-                }
-            }
-            _ => return None,
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(SqliteExecutionLog::new("timer_child_minimal.db").await?);
@@ -180,7 +158,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let task_id_1 = scheduler.schedule_with(task1, Uuid::new_v4()).await?;
 
-    let status1 = wait_for_completion(&storage, task_id_1, Duration::from_secs(10)).await;
+    // Use storage's race-condition-free wait_for_completion (no polling!)
+    let status1 = tokio::time::timeout(
+        Duration::from_secs(10),
+        storage.wait_for_completion(task_id_1),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
     println!("=== Test1 final status: {:?} ===\n", status1);
 
     // Test 2: Child should fail
@@ -191,7 +176,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let task_id_2 = scheduler.schedule_with(task2, Uuid::new_v4()).await?;
 
-    let status2 = wait_for_completion(&storage, task_id_2, Duration::from_secs(10)).await;
+    // Use storage's race-condition-free wait_for_completion (no polling!)
+    let status2 = tokio::time::timeout(
+        Duration::from_secs(10),
+        storage.wait_for_completion(task_id_2),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
     println!("=== Test2 final status: {:?} ===\n", status2);
 
     // Verify results

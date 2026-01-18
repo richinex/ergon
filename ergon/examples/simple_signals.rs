@@ -67,7 +67,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Send signal after task suspends, then wait for completion
-    let notify = storage.status_notify().clone();
     tokio::spawn({
         let sig = sig.clone();
         async move {
@@ -75,17 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(task_id).await? {
-            if matches!(
-                task.status,
-                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-            ) {
-                break;
-            }
-        }
-        notify.notified().await;
-    }
+    // Race-condition-free completion waiting
+    storage.wait_for_completion(task_id).await?;
     println!("Signal task complete!");
     worker_handle.shutdown().await;
     Ok(())

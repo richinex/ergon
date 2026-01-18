@@ -78,39 +78,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_handle = worker.start().await;
 
     let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
-    let notify = storage.status_notify().clone();
 
     println!("=== Flow-based logic (✅ GOOD) ===");
     let task1 = scheduler
         .schedule(FlowLogicExample { id: "FLOW".into() })
         .await?;
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(task1).await? {
-            if matches!(
-                task.status,
-                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-            ) {
-                break;
-            }
-        }
-        notify.notified().await;
-    }
+    // Race-condition-free completion waiting
+    storage.wait_for_completion(task1).await?;
 
     println!("\n=== Step-based logic (⚠️ CONFUSING) ===");
     let task2 = scheduler
         .schedule(StepLogicExample { id: "STEP".into() })
         .await?;
-    loop {
-        if let Some(task) = storage.get_scheduled_flow(task2).await? {
-            if matches!(
-                task.status,
-                ergon::storage::TaskStatus::Complete | ergon::storage::TaskStatus::Failed
-            ) {
-                break;
-            }
-        }
-        notify.notified().await;
-    }
+    storage.wait_for_completion(task2).await?;
 
     println!("\n=== Results ===");
     println!(

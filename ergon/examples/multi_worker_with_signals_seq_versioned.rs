@@ -671,24 +671,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    let status_notify = storage.status_notify().clone();
-    let timeout_duration = Duration::from_secs(30);
-    tokio::time::timeout(timeout_duration, async {
-        loop {
-            let mut all_complete = true;
-            for (task_id, _, _) in &task_ids {
-                if let Some(scheduled) = storage.get_scheduled_flow(*task_id).await? {
-                    if !matches!(scheduled.status, TaskStatus::Complete | TaskStatus::Failed) {
-                        all_complete = false;
-                        break;
-                    }
-                }
-            }
-            if all_complete {
-                break;
-            }
-            status_notify.notified().await;
-        }
+    let all_task_ids: Vec<Uuid> = task_ids.iter().map(|(id, _, _)| *id).collect();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        storage.wait_for_all(&all_task_ids).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
     .await
