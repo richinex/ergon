@@ -1,5 +1,4 @@
 use ergon::prelude::*;
-use std::sync::Arc;
 
 #[derive(FlowType)]
 struct TestFlow {
@@ -8,7 +7,7 @@ struct TestFlow {
 
 impl TestFlow {
     #[flow]
-    fn not_async_flow(self: Arc<Self>) -> Result<i32, ExecutionError> {
+    fn not_async_flow(self) -> Result<i32, ExecutionError> {
         Ok(self.value)
     }
 }

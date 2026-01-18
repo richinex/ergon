@@ -1,13 +1,5 @@
 error: #[flow] can only be applied to async functions
-  --> tests/ui/flow_not_async.rs:11:5
+  --> tests/ui/flow_not_async.rs:10:5
    |
-11 |     fn not_async_flow(self: Arc<Self>) -> Result<i32, ExecutionError> {
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: unused import: `std::sync::Arc`
- --> tests/ui/flow_not_async.rs:2:5
-  |
-2 | use std::sync::Arc;
-  |     ^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` on by default
+10 |     fn not_async_flow(self) -> Result<i32, ExecutionError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
