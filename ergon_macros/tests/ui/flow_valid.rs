@@ -1,5 +1,5 @@
 use ergon::prelude::*;
-use ergon::executor::{ExecutionError, Retryable};
+use ergon::executor::ExecutionError;
 use ergon::core::RetryPolicy;
 
 #[derive(FlowType, Serialize, Deserialize)]
