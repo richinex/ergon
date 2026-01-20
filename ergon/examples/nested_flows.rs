@@ -1,33 +1,8 @@
-//! Nested flows and composition example
+//! Nested flows example - parent flow actually spawns and awaits child flows
 //!
-//! This example demonstrates:
-//! - Flows that schedule other flows (nested/sub-workflows)
-//! - Steps that call helper methods (composition without tracking)
-//! - Hierarchical workflow orchestration
-//! - Parent-child flow relationships
-//! - Helper methods vs steps (what gets tracked)
-//!
-//! ## Scenario
-//! - Parent flow: OrderProcessor orchestrates the entire order
-//!   - Step 1: Validate order (uses helper methods for validation)
-//!   - Step 2: Process payment (conceptually schedules child payment flow)
-//!   - Step 3: Reserve inventory (conceptually schedules child inventory flow)
-//!   - Step 4: Finalize order
-//! - Child flow: PaymentFlow processes payment independently
-//!   - Authorize -> Capture -> Confirm
-//! - Child flow: InventoryFlow manages inventory independently
-//!   - Check stock -> Reserve items -> Confirm reservation
-//!
-//! ## Key Takeaways
-//! - Parent flows can orchestrate multiple child flows
-//! - Helper methods provide composition without creating tracked steps
-//! - Child flows run independently and can be scheduled dynamically
-//! - The `inputs` attribute enables data flow between steps in any flow
-//! - One worker can handle multiple flow types simultaneously
-//!
-//! ## Run with
+//! Run with:
 //! ```bash
-//! cargo run --example nested_flows
+//! cargo run --example nested_flows_real
 //! ```
 
 use ergon::prelude::*;
@@ -35,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // ============================================================================
-// PARENT FLOW: Orchestrates the entire order processing
+// PARENT FLOW: Actually spawns child flows
 // ============================================================================
 
 #[derive(Serialize, Deserialize, Clone, FlowType)]
@@ -43,61 +18,33 @@ struct OrderProcessor {
     order_id: String,
     items: Vec<String>,
     total_amount: f64,
-    customer_id: String,
 }
 
 impl OrderProcessor {
     #[flow]
     async fn process_order(self: Arc<Self>) -> Result<OrderResult, String> {
-        println!("\n[PARENT FLOW] Processing order: {}", self.order_id);
+        println!("\n[PARENT] Processing order: {}", self.order_id);
 
-        // Generate non-deterministic values at flow level
-        let validated_at = chrono::Utc::now().timestamp();
-        let transaction_id = format!("TXN-{}", uuid::Uuid::new_v4());
-        let reservation_id = format!("RES-{}", uuid::Uuid::new_v4());
+        let validation = self.clone().validate_order().await?;
+        let payment = self.clone().process_payment(validation).await?;
+        let inventory = self.clone().reserve_inventory(payment).await?;
+        let result = self.clone().finalize_order(inventory).await?;
 
-        // Step 1: Validate order
-        let validation = self.clone().validate_order(validated_at).await?;
-
-        // Step 2: Process payment (this will schedule a CHILD FLOW!)
-        let payment_result = self
-            .clone()
-            .process_payment(validation, transaction_id)
-            .await?;
-
-        // Step 3: Reserve inventory (this will schedule another CHILD FLOW!)
-        let inventory_result = self
-            .clone()
-            .reserve_inventory(payment_result, reservation_id)
-            .await?;
-
-        // Step 4: Finalize order
-        let result = self.clone().finalize_order(inventory_result).await?;
-
-        println!("[PARENT FLOW] Order {} completed!", self.order_id);
+        println!("[PARENT] Order {} completed!", self.order_id);
         Ok(result)
     }
 
     #[step]
-    async fn validate_order(
-        self: Arc<Self>,
-        validated_at: i64,
-    ) -> Result<ValidationResult, String> {
+    async fn validate_order(self: Arc<Self>) -> Result<ValidationResult, String> {
         println!("  [Step] Validating order {}", self.order_id);
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Call helper method (not tracked as separate step)
-        let items_valid = self.validate_items();
-        let amount_valid = self.validate_amount();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        if !items_valid || !amount_valid {
-            return Err("Order validation failed".to_string());
+        if self.items.is_empty() || self.total_amount <= 0.0 {
+            return Err("Invalid order".to_string());
         }
 
         Ok(ValidationResult {
             order_id: self.order_id.clone(),
-            validated_at,
         })
     }
 
@@ -105,62 +52,57 @@ impl OrderProcessor {
     async fn process_payment(
         self: Arc<Self>,
         validation: ValidationResult,
-        transaction_id: String,
-    ) -> Result<PaymentInfo, String> {
+    ) -> Result<PaymentResult, String> {
         println!(
-            "  [Step] Processing payment for order {}",
+            "  [Step] Spawning child payment flow for {}",
             validation.order_id
         );
 
-        // Here we would schedule a CHILD FLOW for payment processing
-        // In a real scenario, you'd use the scheduler to create a new flow
-        println!("    [Child Flow] Payment flow would be scheduled here");
-        println!("    [Child Flow] Amount: ${:.2}", self.total_amount);
-
-        // Simulate payment processing
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        Ok(PaymentInfo {
-            transaction_id,
+        // Create and execute child flow inline
+        let child = PaymentFlow {
+            transaction_id: format!("TXN-{}", self.order_id),
             amount: self.total_amount,
-            status: "completed".to_string(),
-        })
+        };
+
+        // Execute child flow directly (it has its own steps)
+        let result = Arc::new(child).process().await?;
+
+        println!("  [Step] Child payment completed: {:?}", result);
+        Ok(result)
     }
 
     #[step(inputs(payment = "process_payment"))]
     async fn reserve_inventory(
         self: Arc<Self>,
-        payment: PaymentInfo,
-        reservation_id: String,
-    ) -> Result<InventoryReservation, String> {
+        payment: PaymentResult,
+    ) -> Result<InventoryResult, String> {
         println!(
-            "  [Step] Reserving inventory (payment: {})",
+            "  [Step] Spawning child inventory flow (payment: {})",
             payment.transaction_id
         );
 
-        // Schedule another CHILD FLOW for inventory management
-        println!("    [Child Flow] Inventory flow would be scheduled here");
-        println!("    [Child Flow] Items: {:?}", self.items);
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        Ok(InventoryReservation {
-            reservation_id,
+        // Create and execute child flow inline
+        let child = InventoryFlow {
+            reservation_id: format!("RES-{}", self.order_id),
             items: self.items.clone(),
-        })
+        };
+
+        let result = Arc::new(child).process().await?;
+
+        println!("  [Step] Child inventory completed: {:?}", result);
+        Ok(result)
     }
 
     #[step(inputs(inventory = "reserve_inventory"))]
     async fn finalize_order(
         self: Arc<Self>,
-        inventory: InventoryReservation,
+        inventory: InventoryResult,
     ) -> Result<OrderResult, String> {
         println!(
             "  [Step] Finalizing order (reservation: {})",
             inventory.reservation_id
         );
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         Ok(OrderResult {
             order_id: self.order_id.clone(),
@@ -168,105 +110,51 @@ impl OrderProcessor {
             items_count: self.items.len(),
         })
     }
-
-    // ========================================================================
-    // HELPER METHODS (not tracked as steps)
-    // ========================================================================
-
-    fn validate_items(&self) -> bool {
-        println!("    [Helper] Validating {} items", self.items.len());
-        !self.items.is_empty()
-    }
-
-    fn validate_amount(&self) -> bool {
-        println!("    [Helper] Validating amount: ${:.2}", self.total_amount);
-        self.total_amount > 0.0
-    }
 }
 
 // ============================================================================
-// CHILD FLOW: Independent payment processing
+// CHILD FLOW: Payment processing
 // ============================================================================
 
 #[derive(Serialize, Deserialize, Clone, FlowType)]
 struct PaymentFlow {
     transaction_id: String,
     amount: f64,
-    payment_method: String,
 }
 
 impl PaymentFlow {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<PaymentResult, String> {
-        println!(
-            "\n  [CHILD FLOW - Payment] Processing: {}",
-            self.transaction_id
-        );
+        println!("    [CHILD-Payment] Starting: {}", self.transaction_id);
 
-        // Generate non-deterministic values at flow level
-        let auth_code = format!("AUTH-{}", uuid::Uuid::new_v4());
-        let capture_id = format!("CAP-{}", uuid::Uuid::new_v4());
+        let auth = self.clone().authorize().await?;
+        let result = self.clone().capture(auth).await?;
 
-        let auth = self.clone().authorize_payment(auth_code).await?;
-        let capture = self.clone().capture_payment(auth, capture_id).await?;
-        let result = self.clone().confirm_payment(capture).await?;
-
-        println!(
-            "  [CHILD FLOW - Payment] Completed: {}",
-            self.transaction_id
-        );
+        println!("    [CHILD-Payment] Done: {}", self.transaction_id);
         Ok(result)
     }
 
     #[step]
-    async fn authorize_payment(self: Arc<Self>, auth_code: String) -> Result<AuthResult, String> {
-        println!(
-            "    [Step] Authorizing ${:.2} via {}",
-            self.amount, self.payment_method
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        Ok(AuthResult {
-            auth_code,
-            authorized_amount: self.amount,
-        })
+    async fn authorize(self: Arc<Self>) -> Result<String, String> {
+        println!("      [Step] Authorizing ${:.2}", self.amount);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        Ok(format!("AUTH-{}", self.transaction_id))
     }
 
-    #[step(inputs(auth = "authorize_payment"))]
-    async fn capture_payment(
-        self: Arc<Self>,
-        auth: AuthResult,
-        capture_id: String,
-    ) -> Result<CaptureResult, String> {
-        println!("    [Step] Capturing payment (auth: {})", auth.auth_code);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        Ok(CaptureResult {
-            capture_id,
-            captured_amount: auth.authorized_amount,
-        })
-    }
-
-    #[step(inputs(capture = "capture_payment"))]
-    async fn confirm_payment(
-        self: Arc<Self>,
-        capture: CaptureResult,
-    ) -> Result<PaymentResult, String> {
-        println!(
-            "    [Step] Confirming payment (capture: {})",
-            capture.capture_id
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    #[step(inputs(auth_code = "authorize"))]
+    async fn capture(self: Arc<Self>, auth_code: String) -> Result<PaymentResult, String> {
+        println!("      [Step] Capturing payment (auth: {})", auth_code);
+        tokio::time::sleep(Duration::from_millis(30)).await;
 
         Ok(PaymentResult {
             transaction_id: self.transaction_id.clone(),
-            status: "confirmed".to_string(),
+            status: "captured".to_string(),
         })
     }
 }
 
 // ============================================================================
-// CHILD FLOW: Independent inventory management
+// CHILD FLOW: Inventory management
 // ============================================================================
 
 #[derive(Serialize, Deserialize, Clone, FlowType)]
@@ -278,72 +166,31 @@ struct InventoryFlow {
 impl InventoryFlow {
     #[flow]
     async fn process(self: Arc<Self>) -> Result<InventoryResult, String> {
-        println!(
-            "\n  [CHILD FLOW - Inventory] Processing: {}",
-            self.reservation_id
-        );
+        println!("    [CHILD-Inventory] Starting: {}", self.reservation_id);
 
-        let check = self.clone().check_stock().await?;
-        let reserve = self.clone().reserve_items(check).await?;
-        let result = self.clone().confirm_reservation(reserve).await?;
+        let checked = self.clone().check_stock().await?;
+        let result = self.clone().reserve(checked).await?;
 
-        println!(
-            "  [CHILD FLOW - Inventory] Completed: {}",
-            self.reservation_id
-        );
+        println!("    [CHILD-Inventory] Done: {}", self.reservation_id);
         Ok(result)
     }
 
     #[step]
-    async fn check_stock(self: Arc<Self>) -> Result<StockCheck, String> {
-        println!("    [Step] Checking stock for {} items", self.items.len());
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Use helper method to validate each item
-        for item in &self.items {
-            if !self.is_item_available(item) {
-                return Err(format!("Item not available: {}", item));
-            }
-        }
-
-        Ok(StockCheck {
-            all_available: true,
-            items: self.items.clone(),
-        })
+    async fn check_stock(self: Arc<Self>) -> Result<Vec<String>, String> {
+        println!("      [Step] Checking stock for {} items", self.items.len());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        Ok(self.items.clone())
     }
 
-    #[step(inputs(stock = "check_stock"))]
-    async fn reserve_items(self: Arc<Self>, stock: StockCheck) -> Result<ReservationData, String> {
-        println!("    [Step] Reserving {} items", stock.items.len());
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        Ok(ReservationData {
-            reservation_id: self.reservation_id.clone(),
-            items: stock.items,
-        })
-    }
-
-    #[step(inputs(reservation = "reserve_items"))]
-    async fn confirm_reservation(
-        self: Arc<Self>,
-        reservation: ReservationData,
-    ) -> Result<InventoryResult, String> {
-        println!(
-            "    [Step] Confirming reservation: {}",
-            reservation.reservation_id
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    #[step(inputs(items = "check_stock"))]
+    async fn reserve(self: Arc<Self>, items: Vec<String>) -> Result<InventoryResult, String> {
+        println!("      [Step] Reserving {} items", items.len());
+        tokio::time::sleep(Duration::from_millis(30)).await;
 
         Ok(InventoryResult {
-            reservation_id: reservation.reservation_id,
-            status: "confirmed".to_string(),
+            reservation_id: self.reservation_id.clone(),
+            status: "reserved".to_string(),
         })
-    }
-
-    // Helper method (not a step)
-    fn is_item_available(&self, item: &str) -> bool {
-        println!("      [Helper] Checking availability: {}", item);
-        true // Simplified - always available
     }
 }
 
@@ -351,23 +198,21 @@ impl InventoryFlow {
 // Data structures
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone, FlowType)]
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
 struct ValidationResult {
     order_id: String,
-    validated_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, FlowType)]
-struct PaymentInfo {
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
+struct PaymentResult {
     transaction_id: String,
-    amount: f64,
     status: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, FlowType)]
-struct InventoryReservation {
+#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
+struct InventoryResult {
     reservation_id: String,
-    items: Vec<String>,
+    status: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
@@ -377,42 +222,6 @@ struct OrderResult {
     items_count: usize,
 }
 
-#[derive(Serialize, Deserialize, Clone, FlowType)]
-struct AuthResult {
-    auth_code: String,
-    authorized_amount: f64,
-}
-
-#[derive(Serialize, Deserialize, Clone, FlowType)]
-struct CaptureResult {
-    capture_id: String,
-    captured_amount: f64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
-struct PaymentResult {
-    transaction_id: String,
-    status: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, FlowType)]
-struct StockCheck {
-    all_available: bool,
-    items: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, FlowType)]
-struct ReservationData {
-    reservation_id: String,
-    items: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, FlowType)]
-struct InventoryResult {
-    reservation_id: String,
-    status: String,
-}
-
 // ============================================================================
 // Main
 // ============================================================================
@@ -420,60 +229,38 @@ struct InventoryResult {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(InMemoryExecutionLog::new());
-    let scheduler = Scheduler::new(storage.clone()).unversioned();
+    let scheduler = Scheduler::new(storage.clone()).with_version("v1.0");
 
-    // Schedule PARENT flow (order processing)
+    // Schedule parent flow only - it will spawn children
     let order = OrderProcessor {
-        order_id: "ORD-12345".to_string(),
-        items: vec![
-            "ITEM-A".to_string(),
-            "ITEM-B".to_string(),
-            "ITEM-C".to_string(),
-        ],
-        total_amount: 299.99,
-        customer_id: "CUST-001".to_string(),
+        order_id: "ORD-001".to_string(),
+        items: vec!["Widget".to_string(), "Gadget".to_string()],
+        total_amount: 99.99,
     };
-    scheduler.schedule(order).await?;
+    scheduler
+        .schedule_with(order.clone(), Uuid::new_v4())
+        .await?;
 
-    // Schedule CHILD flows (these run independently)
-    let payment = PaymentFlow {
-        transaction_id: "PAY-001".to_string(),
-        amount: 299.99,
-        payment_method: "credit_card".to_string(),
-    };
-    scheduler.schedule(payment).await?;
-
-    let inventory = InventoryFlow {
-        reservation_id: "INV-001".to_string(),
-        items: vec!["ITEM-A".to_string(), "ITEM-B".to_string()],
-    };
-    scheduler.schedule(inventory).await?;
-
-    // Start worker
-    let worker = Worker::new(storage.clone(), "orchestrator");
+    // Worker only needs to handle the parent flow type
+    // Child flows are executed inline, not scheduled separately
+    let worker = Worker::new(storage.clone(), "worker-1");
     worker
         .register(|flow: Arc<OrderProcessor>| flow.process_order())
         .await;
-    worker
-        .register(|flow: Arc<PaymentFlow>| flow.process())
-        .await;
-    worker
-        .register(|flow: Arc<InventoryFlow>| flow.process())
-        .await;
 
-    let worker_handle = worker.start().await;
+    let handle = worker.start().await;
 
     // Wait for completion
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Ok(incomplete) = storage.get_incomplete_flows().await {
-            if incomplete.is_empty() {
+        if let Ok(flows) = storage.get_incomplete_flows().await {
+            if flows.is_empty() {
                 break;
             }
         }
     }
 
-    worker_handle.shutdown().await;
+    handle.shutdown().await;
 
     Ok(())
 }

@@ -115,7 +115,6 @@ impl Document {
     async fn publish(self: Arc<Self>) -> Result<(), String> {
         println!("Waiting for approval...");
 
-        // Await signal at flow level (suspension point)
         let token = format!("approval-{}", self.id);
         let decision: Approval = await_external_signal(&token)
             .await

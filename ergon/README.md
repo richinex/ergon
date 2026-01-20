@@ -4,8 +4,11 @@
 [![Documentation](https://docs.rs/ergon/badge.svg)](https://docs.rs/ergon)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](../LICENSE)
 
-**Ergon** (ἔργον, Greek for "work" or "deed") is a durable execution framework for Rust, inspired by [Temporal](https://temporal.io/). It provides automatic state persistence, intelligent retry mechanisms, and distributed workflow orchestration.
+**Ergon** (ἔργον, Greek for "work" or "deed") is a durable execution framework for Rust, inspired by Gunnar Morling's [Persistasaurus](https://www.morling.dev/blog/building-durable-execution-engine-with-sqlite/). and several of Jack Vanlightly's blogs on [Durable Execution] (https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution).
 
+It provides automatic state persistence, intelligent retry mechanisms, and distributed workflow orchestration.
+
+Suffice to say that Ergon is a curiosity project for me because I wanted to learn the internals of many aspects of Rust e,g macros, async, typestate, autoref-specialization, to mention a few.
 ## Overview
 
 Ergon enables you to write reliable, fault-tolerant workflows that survive process crashes, network failures, and infrastructure outages. Your business logic is expressed as simple async Rust code, while Ergon handles:
@@ -17,11 +20,7 @@ Ergon enables you to write reliable, fault-tolerant workflows that survive proce
 - **Flow versioning** - Type-safe deployment versioning with compile-time checks
 - **External signals** - Human-in-the-loop and external event coordination
 - **Durable timers** - Long-running timers that survive crashes
-- **Distributed workers** - Scale horizontally with multiple worker processes
-
-<!-- TODO: Add architecture diagram here -->
-![Architecture Overview](https://via.placeholder.com/800x400/2c3e50/ffffff?text=Ergon+Architecture+Diagram)
-*Architecture diagram showing flow execution, storage, and worker coordination*
+- **Distributed workers** - Scale horizontally with multiple worker processes (Backed by Redis and Portgres)
 
 ## Features
 
@@ -42,30 +41,6 @@ async fn process_order(self: Arc<Self>) -> Result<Receipt, ExecutionError> {
 }
 ```
 
-### DAG-Based Parallelization
-
-```rust
-#[flow]
-async fn parallel_processing(self: Arc<Self>) -> Result<Summary, ExecutionError> {
-    dag! {
-        // These run in parallel automatically
-        let user_handle = self.register_validate_user();
-        let inventory_handle = self.register_check_inventory();
-        let fraud_handle = self.register_check_fraud();
-
-        // This waits for all three to complete
-        let final_handle = self.register_finalize(
-            user_handle,
-            inventory_handle,
-            fraud_handle
-        )
-    }
-}
-```
-
-<!-- TODO: Add DAG visualization here -->
-![DAG Execution](https://via.placeholder.com/800x300/34495e/ffffff?text=DAG+Parallel+Execution+Flow)
-*Visual representation of parallel step execution in a DAG*
 
 ### Smart Retry with Custom Errors
 
@@ -104,10 +79,6 @@ async fn await_manager_approval(
 }
 ```
 
-<!-- TODO: Add signal flow diagram here -->
-![Signal Flow](https://via.placeholder.com/800x300/27ae60/ffffff?text=External+Signal+Coordination)
-*Signal-based workflow coordination with external systems*
-
 ### Durable Timers
 
 ```rust
@@ -119,7 +90,7 @@ async fn wait_for_settlement(self: Arc<Self>) -> Result<(), ExecutionError> {
 }
 ```
 
-### 🔄 Flow Versioning
+### Flow Versioning
 
 ```rust
 // Configure scheduler with deployment version
@@ -136,7 +107,7 @@ let scheduler = Scheduler::new(storage).from_env();  // DEPLOY_VERSION=v1.2.3
 let scheduler = Scheduler::new(storage).unversioned();
 ```
 
-### 👥 Distributed Workers
+### Distributed Workers
 
 ```rust
 // Spawn multiple workers that share the queue
@@ -149,9 +120,6 @@ let worker2 = Worker::new(storage.clone(), "worker-2")
     .spawn();
 ```
 
-<!-- TODO: Add worker distribution diagram here -->
-![Distributed Workers](https://via.placeholder.com/800x300/e74c3c/ffffff?text=Multi-Worker+Distribution)
-*Multiple workers processing flows from shared queue*
 
 ## Installation
 
@@ -322,10 +290,6 @@ scheduler.schedule(flow2).await?;
 // Workers automatically distribute the load
 ```
 
-<!-- TODO: Add distributed execution diagram here -->
-![Distributed Execution](https://via.placeholder.com/800x350/3498db/ffffff?text=Distributed+Worker+Execution)
-*Load distribution across multiple worker processes*
-
 ## Error Handling
 
 Ergon provides fine-grained error control:
@@ -391,27 +355,20 @@ See the [examples directory](./examples/) for complete, runnable examples.
 - **Step granularity**: Balance between checkpointing overhead and replay cost
 - **Parallel execution**: Use DAG for independent operations
 - **Storage choice**: SQLite for single-process, Redis for distributed
-- **Worker count**: Scale based on queue depth and step duration
 - **Retry policies**: Configure appropriate backoff for your use case
 
-## Contributing
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
-
-## License
-
-MIT OR Apache-2.0 - see [LICENSE](../LICENSE) for details.
 
 ## Resources
 
 - [Documentation](https://docs.rs/ergon)
 - [GitHub Repository](https://github.com/richinex/ergon)
 - [Examples](./examples/)
-- [Changelog](../CHANGELOG.md)
 
 ## Acknowledgments
 
 Inspired by:
+- [Persistasaurus](https://www.morling.dev/blog/building-durable-execution-engine-with-sqlite/).
 - [Temporal](https://temporal.io/) - Durable execution platform
-- [Parnas](https://en.wikipedia.org/wiki/Information_hiding) - Information hiding principles
+- [Jack vanlightly] (https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution).
 - [Dave Cheney](https://dave.cheney.net/) - Practical programming wisdom
+- [Autoref Specialization] (https://github.com/dtolnay/case-studies/tree/master/autoref-specialization)

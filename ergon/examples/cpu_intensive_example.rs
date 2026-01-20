@@ -182,9 +182,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start.elapsed();
     println!("     Time for 5 flows (GOOD): {:?}", elapsed);
 
-    println!("\n=== Summary ===");
-    println!("BAD (blocking): Executor threads get starved, flows wait");
-    println!("GOOD (spawn_blocking): Flows run in parallel on blocking pool");
-
     Ok(())
 }

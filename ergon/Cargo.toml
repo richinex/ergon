@@ -57,50 +57,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Example configurations with required features
 [[example]]
-name = "distributed_redis"
-required-features = ["redis"]
-
-[[example]]
-name = "distributed_redis_demo"
-required-features = ["redis"]
-
-[[example]]
 name = "crash_recovery_demo"
 required-features = ["redis"]
 
 [[example]]
-name = "benchmark_redis"
-required-features = ["redis"]
-
-[[example]]
-name = "axum_order_processing_redis"
-required-features = ["redis"]
-
-[[example]]
-name = "distributed_worker_timer_redis"
-required-features = ["redis"]
-
-[[example]]
-name = "distributed_worker_timer_tracing_redis"
-required-features = ["redis"]
-
-[[example]]
-name = "complex_1_worker_dag_redis"
-required-features = ["redis"]
-
-
-[[example]]
-name = "timer_race_condition_redis"
-required-features = ["redis"]
-
-[[example]]
 name = "observability_demo"
-
-
-[[example]]
-name = "external_signal_abstraction_redis"
-required-features = ["redis"]
-
 
 [[example]]
 name = "axum_order_processing"
@@ -117,27 +78,6 @@ required-features = ["sqlite"]
 [[example]]
 name = "write_db_parallel"
 required-features = ["sqlite"]
-
-[[example]]
-name = "hybrid_ai_postgres"
-required-features = ["postgres"]
-
-[[example]]
-name = "hybrid_ai_redis"
-required-features = ["redis"]
-
-[[example]]
-name = "hybrid_ai_memory"
-
-[[example]]
-name = "hybrid_ai_distributed_scheduler"
-path = "examples/hybrid_ai_distributed/scheduler.rs"
-required-features = ["postgres"]
-
-[[example]]
-name = "hybrid_ai_distributed_worker"
-path = "examples/hybrid_ai_distributed/worker.rs"
-required-features = ["postgres"]
 
 [[bench]]
 name = "retryable_overhead"
