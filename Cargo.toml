@@ -23,14 +23,14 @@ serde_json = "1.0"
 base64 = "0.22"
 
 # Async runtime
-tokio = { version = "1.42", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 tokio-util = "0.7"
 
 # Error handling
 thiserror = "2.0"
 
 # IDs and time
-uuid = { version = "1.11", features = ["v4", "v5", "serde"] }
+uuid = { version = "1.19", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 seahash = "4.1"
 
@@ -44,12 +44,12 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Examples (web framework for examples only)
-axum = "0.8.5"
+axum = "0.8.8"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "uuid", "chrono"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "streams"] }
-deadpool-redis = "0.18"
+redis = { version = "1.0", features = ["tokio-comp", "connection-manager", "streams"] }
+deadpool-redis = "0.22"
 
 # Async
 async-trait = "0.1"
