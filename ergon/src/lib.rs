@@ -1,8 +1,6 @@
 //! Ergon: Durable Execution Framework for Rust
 //!
-//! `ergon` (ἔργον, Greek for "work" or "deed") is a durable execution framework inspired by
-//! Temporal, providing fault-tolerant workflow execution with automatic retry, caching,
-//! and DAG-based parallelization.
+//! `ergon` (ἔργον, Greek for "work" or "deed") is a durable execution framework.
 //!
 //! # Features
 //!

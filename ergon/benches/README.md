@@ -29,7 +29,7 @@ cargo bench --bench system_bottlenecks --features redis
 
 ## Current Results Summary
 
-**Storage Operation Performance (WITH PROPER CONNECTION POOLING):**
+**Storage Operation Performance:**
 
 | Storage | Write (µs) | Read 5 items (µs) | Notes |
 |---------|-----------|-------------------|-------|

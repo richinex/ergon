@@ -13,14 +13,6 @@
 //! to inspect the state of each flow, show step-by-step progress, and identify
 //! where failed flows are stuck.
 //!
-//! ## Key Takeaways
-//! - No manual logging code required - execution is automatically tracked
-//! - Query incomplete flows with simple API: storage.get_incomplete_flows()
-//! - Inspect step-by-step progress for any flow with get_invocations_for_flow()
-//! - Know exactly which step a flow is stuck at without custom instrumentation
-//! - Compare with regular queues where you'd need 100+ lines of boilerplate
-//! - Production-ready monitoring and debugging built into the framework
-//!
 //! ## Run with
 //! ```bash
 //! cargo run --example observability_demo

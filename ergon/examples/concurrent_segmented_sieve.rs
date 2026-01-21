@@ -7,8 +7,6 @@
 //! Scenario:
 //! Find primes up to 10,000,000.
 //! We split the work into chunks (Segments) and let 8 workers crunch them.
-//!
-//! Mathematical Fix applied: Sieve marking now starts at max(low, p*p).
 
 use ergon::prelude::*;
 use serde::{Deserialize, Serialize};
