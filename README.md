@@ -1,8 +1,8 @@
 # Ergon - Durable Execution Framework
 
-[![Crates.io](https://img.shields.io/crates/v/ergon.svg)](https://crates.io/crates/ergon)
-[![Documentation](https://docs.rs/ergon/badge.svg)](https://docs.rs/ergon)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](../LICENSE)
+[![CI](https://github.com/richinex/ergon/workflows/CI/badge.svg)](https://github.com/richinex/ergon/actions)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B%20%7C%20edition%202021-orange.svg)](https://www.rust-lang.org)
 
 **Ergon** (ἔργον, Greek for "work" or "deed") is a durable execution framework for Rust, inspired by Gunnar Morling's [Persistasaurus](https://www.morling.dev/blog/building-durable-execution-engine-with-sqlite/). and several of Jack Vanlightly's blogs on [Durable Execution] (https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution).
 
