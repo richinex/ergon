@@ -1,10 +1,10 @@
-# Ergon - Durable Execution Framework
+# Ergon - Durable Execution Library
 
 [![CI](https://github.com/richinex/ergon/workflows/CI/badge.svg)](https://github.com/richinex/ergon/actions)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B%20%7C%20edition%202021-orange.svg)](https://www.rust-lang.org)
 
-**Ergon** (ἔργον, Greek for "work" or "deed") is a durable execution framework for Rust, inspired by Gunnar Morling's [Persistasaurus](https://www.morling.dev/blog/building-durable-execution-engine-with-sqlite/). and several of Jack Vanlightly's blogs on [Durable Execution] (https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution).
+**Ergon** (ἔργον, Greek for "work" or "deed") is a durable execution library for Rust, inspired by Gunnar Morling's [Persistasaurus](https://www.morling.dev/blog/building-durable-execution-engine-with-sqlite/). and several of Jack Vanlightly's blogs on [Durable Execution] (https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution).
 
 It provides automatic state persistence, intelligent retry mechanisms, and distributed workflow orchestration.
 
@@ -348,8 +348,6 @@ The repository includes comprehensive examples:
 - **Distributed workers**: Multi-worker deployments
 - **Crash recovery**: Resilience testing
 
-See the [examples directory](./examples/) for complete, runnable examples.
-
 ## Performance Considerations
 
 - **Step granularity**: Balance between checkpointing overhead and replay cost
@@ -357,12 +355,6 @@ See the [examples directory](./examples/) for complete, runnable examples.
 - **Storage choice**: SQLite for single-process, Redis for distributed
 - **Retry policies**: Configure appropriate backoff for your use case
 
-
-## Resources
-
-- [Documentation](https://docs.rs/ergon)
-- [GitHub Repository](https://github.com/richinex/ergon)
-- [Examples](./examples/)
 
 ## Acknowledgments
 
